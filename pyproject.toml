@@ -1,0 +1,38 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pplx-agent-tools"
+version = "0.0.0"
+description = "Agent toolkit for Perplexity, backed by your Pro subscription's web session cookies"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+authors = [{ name = "ak2k" }]
+classifiers = [
+    "Development Status :: 1 - Planning",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Internet :: WWW/HTTP",
+    "Environment :: Console",
+]
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.scripts]
+pplx-search = "pplx_agent_tools.cli_search:main"
+
+[project.urls]
+Repository = "https://github.com/ak2k/pplx-agent-tools"
+Issues = "https://github.com/ak2k/pplx-agent-tools/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["pplx_agent_tools"]
