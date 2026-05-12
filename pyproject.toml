@@ -22,13 +22,17 @@ classifiers = [
     "Topic :: Internet :: WWW/HTTP",
     "Environment :: Console",
 ]
-dependencies = []
+dependencies = [
+    "curl_cffi>=0.7",
+    "rookiepy>=0.5",
+]
 
 [project.optional-dependencies]
 dev = ["pytest"]
 
 [project.scripts]
 pplx-search = "pplx_agent_tools.cli_search:main"
+pplx-auth = "pplx_agent_tools.cli_auth:main"
 
 [project.urls]
 Repository = "https://github.com/ak2k/pplx-agent-tools"
