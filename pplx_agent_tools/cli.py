@@ -10,13 +10,14 @@ from __future__ import annotations
 import sys
 from collections.abc import Callable, Sequence
 
-from . import cli_auth, cli_fetch, cli_search, cli_snippets
+from . import cli_auth, cli_fetch, cli_search, cli_skill, cli_snippets
 
 VERBS: dict[str, tuple[Callable[[Sequence[str] | None], int], str]] = {
     "search": (cli_search.main, "Search Perplexity for ranked web hits"),
     "fetch": (cli_fetch.main, "Fetch a URL (use --prompt for LLM extraction)"),
     "snippets": (cli_snippets.main, "Extract query-relevant excerpts from N URLs"),
     "auth": (cli_auth.main, "Manage Perplexity web-session cookies"),
+    "skill-path": (cli_skill.main, "Print path to bundled SKILL.md (for ~/.claude/skills symlink)"),
 }
 
 

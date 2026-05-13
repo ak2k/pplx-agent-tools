@@ -19,6 +19,26 @@ Single binary, subcommand-style (`pplx <verb>`):
 
 Each verb: text output by default, `-j` for JSON. Stable exit codes for agent retry semantics (2 = auth, 3 = rate limit, 4 = network, 5 = anti-bot). Single-shot CLIs; no daemon (the daemon model is a deferred Phase 2).
 
+## Install
+
+```bash
+# Install the CLI
+uv tool install pplx-agent-tools  # or: pipx install pplx-agent-tools
+
+# One-time: wire the agent skill so Claude Code (etc.) can find it
+mkdir -p ~/.claude/skills/pplx-agent-tools
+ln -sf "$(pplx skill-path)" ~/.claude/skills/pplx-agent-tools/SKILL.md
+
+# Import cookies from your browser (only need to do once per ~30 days,
+# or until you log out of perplexity.ai)
+pplx auth import --browser firefox  # also: brave, chrome, safari, ...
+pplx auth check                     # validate the session
+
+# Optional: extend the session indefinitely by refreshing periodically
+# (each refresh rotates the cookie with a fresh 30-day TTL)
+pplx auth refresh                   # add to cron / launchd for hands-off
+```
+
 ## Caveats
 
 - **Unofficial**. Uses Perplexity's internal web endpoints, not the official Sonar API. Endpoints can change without notice.

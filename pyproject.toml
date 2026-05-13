@@ -47,6 +47,11 @@ Issues = "https://github.com/ak2k/pplx-agent-tools/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["pplx_agent_tools"]
+# Ship SKILL.md inside the package so `pplx skill-path` can resolve it on
+# uv-tool-install / pipx / pip-installed setups (without a Nix-managed
+# ~/.claude/skills/ wiring). The source-of-truth lives at the repo root
+# for GitHub discoverability; we copy it under the package at build time.
+force-include = { "SKILL.md" = "pplx_agent_tools/SKILL.md" }
 
 [tool.ruff]
 target-version = "py310"
