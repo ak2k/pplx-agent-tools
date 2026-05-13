@@ -34,11 +34,17 @@ _json_values = st.recursive(
 
 # event-type tokens: no newlines (would break framing), no leading colon
 # (collides with comment-line prefix).
-_event_types = st.text(
-    alphabet=st.characters(blacklist_characters="\n\r:", min_codepoint=0x20, max_codepoint=0x7E),
-    min_size=1,
-    max_size=30,
-).map(str.strip).filter(lambda s: len(s) > 0)
+_event_types = (
+    st.text(
+        alphabet=st.characters(
+            blacklist_characters="\n\r:", min_codepoint=0x20, max_codepoint=0x7E
+        ),
+        min_size=1,
+        max_size=30,
+    )
+    .map(str.strip)
+    .filter(lambda s: len(s) > 0)
+)
 
 
 # ---------- shape invariants ----------

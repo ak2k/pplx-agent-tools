@@ -108,9 +108,7 @@ class Client:
                 new_val = self._session.cookies.get(name)
             except (KeyError, LookupError) as e:
                 # Cookie jar lookup raised — log so silent loss is observable.
-                print(
-                    f"warning: cookie jar lookup failed for {name!r}: {e}", file=sys.stderr
-                )
+                print(f"warning: cookie jar lookup failed for {name!r}: {e}", file=sys.stderr)
                 continue
             if new_val is not None and new_val != self._cookies[name]:
                 self._cookies[name] = new_val

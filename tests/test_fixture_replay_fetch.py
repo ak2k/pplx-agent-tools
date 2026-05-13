@@ -31,9 +31,7 @@ from pplx_agent_tools.verbs.fetch import _fetch_with_prompt
 from pplx_agent_tools.wire import Client
 
 FIXTURES = Path(__file__).parent / "fixtures" / "fetch-url"
-SANITIZER_SCRIPT = (
-    Path(__file__).parent.parent / "scripts" / "re-sanitize-fetch-fixture.py"
-)
+SANITIZER_SCRIPT = Path(__file__).parent.parent / "scripts" / "re-sanitize-fetch-fixture.py"
 
 # Matches the sentinels in scripts/re-sanitize-fetch-fixture.py.
 # Drift between this file and the script is caught by
@@ -99,9 +97,7 @@ def test_fetch_with_prompt_replays_real_stream(example_com_fixture: Path) -> Non
 
 def test_fetch_with_prompt_captures_thread_identifiers(example_com_fixture: Path) -> None:
     client = FixtureClient(example_com_fixture)
-    _fetch_with_prompt(
-        client, "https://example.com", "summarize", "example.com", max_chars=None
-    )
+    _fetch_with_prompt(client, "https://example.com", "summarize", "example.com", max_chars=None)
     # Default cleanup deletes the thread using the (backend_uuid, read_write_token)
     # pair carried by the SSE events.
     assert client.deleted == [(SENTINEL_BACKEND_UUID, SENTINEL_RW_TOKEN)]

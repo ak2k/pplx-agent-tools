@@ -43,8 +43,7 @@ def _require_http_url(url: str) -> None:
     parsed = urlparse(url)
     if parsed.scheme not in _ALLOWED_FETCH_SCHEMES:
         raise NetworkError(
-            f"fetch {url}: unsupported URL scheme {parsed.scheme!r} "
-            f"(only http/https allowed)"
+            f"fetch {url}: unsupported URL scheme {parsed.scheme!r} (only http/https allowed)"
         )
     if not parsed.netloc:
         raise NetworkError(f"fetch {url}: URL has no host")

@@ -60,9 +60,7 @@ def conn() -> sqlite3.Connection:
 def test_retrieve_scopes_results_to_requested_url(conn: sqlite3.Connection) -> None:
     """A query for URL_A must never return paragraphs from URL_B."""
     query_blob = _vec_to_blob([1.0, 0.0, 0.0])
-    results = _hybrid_retrieve(
-        conn, _fts5_escape("claude code CLI"), query_blob, URL_A, k=5
-    )
+    results = _hybrid_retrieve(conn, _fts5_escape("claude code CLI"), query_blob, URL_A, k=5)
     assert results, "expected at least one hit for URL_A"
     # Every result text must be one of URL_A's rows
     rows, _ = _make_rows()
@@ -73,9 +71,7 @@ def test_retrieve_scopes_results_to_requested_url(conn: sqlite3.Connection) -> N
 
 def test_retrieve_orders_by_rrf_score_descending(conn: sqlite3.Connection) -> None:
     query_blob = _vec_to_blob([1.0, 0.0, 0.0])
-    results = _hybrid_retrieve(
-        conn, _fts5_escape("claude code CLI"), query_blob, URL_A, k=5
-    )
+    results = _hybrid_retrieve(conn, _fts5_escape("claude code CLI"), query_blob, URL_A, k=5)
     scores = [score for _, score, _ in results]
     assert scores == sorted(scores, reverse=True), "RRF scores must be descending"
 
@@ -84,18 +80,14 @@ def test_retrieve_top_hit_is_most_relevant(conn: sqlite3.Connection) -> None:
     """BM25 (matches "claude code") + cosine (vec=[1,0,0]) both rank the
     first row highest, so it must come out on top under RRF."""
     query_blob = _vec_to_blob([1.0, 0.0, 0.0])
-    results = _hybrid_retrieve(
-        conn, _fts5_escape("claude code CLI"), query_blob, URL_A, k=5
-    )
+    results = _hybrid_retrieve(conn, _fts5_escape("claude code CLI"), query_blob, URL_A, k=5)
     top_text, _, _ = results[0]
     assert top_text == "claude code is a CLI for talking to claude"
 
 
 def test_retrieve_returns_word_count_for_token_budgeting(conn: sqlite3.Connection) -> None:
     query_blob = _vec_to_blob([1.0, 0.0, 0.0])
-    results = _hybrid_retrieve(
-        conn, _fts5_escape("CLI"), query_blob, URL_A, k=5
-    )
+    results = _hybrid_retrieve(conn, _fts5_escape("CLI"), query_blob, URL_A, k=5)
     rows, _ = _make_rows()
     expected = {text: words for url, text, words in rows if url == URL_A}
     for text, _, words in results:
@@ -107,9 +99,7 @@ def test_rrf_score_in_expected_range_when_both_indices_hit_top(conn: sqlite3.Con
     score must be exactly 2/(RRF_K + 1).
     """
     query_blob = _vec_to_blob([1.0, 0.0, 0.0])
-    results = _hybrid_retrieve(
-        conn, _fts5_escape("claude code"), query_blob, URL_A, k=5
-    )
+    results = _hybrid_retrieve(conn, _fts5_escape("claude code"), query_blob, URL_A, k=5)
     top_text, top_score, _ = results[0]
     assert top_text == "claude code is a CLI for talking to claude"
     expected = 2.0 / (RRF_K + 1)
@@ -124,9 +114,7 @@ def test_retrieve_handles_query_with_no_bm25_match(conn: sqlite3.Connection) -> 
     paragraphs (covering paraphrased / non-keyword queries).
     """
     query_blob = _vec_to_blob([1.0, 0.0, 0.0])
-    results = _hybrid_retrieve(
-        conn, _fts5_escape("xyzzy-not-a-word"), query_blob, URL_A, k=5
-    )
+    results = _hybrid_retrieve(conn, _fts5_escape("xyzzy-not-a-word"), query_blob, URL_A, k=5)
     # vector index should still return URL_A's rows
     assert results, "vector index must contribute when BM25 misses"
     rows, _ = _make_rows()
@@ -159,7 +147,5 @@ def test_retrieve_k_limits_per_index_candidates() -> None:
     rows, vecs = _make_rows()
     conn = _build_index(rows, vecs, dim=3)
     query_blob = _vec_to_blob([1.0, 0.0, 0.0])
-    results = _hybrid_retrieve(
-        conn, _fts5_escape("claude code CLI"), query_blob, URL_A, k=1
-    )
+    results = _hybrid_retrieve(conn, _fts5_escape("claude code CLI"), query_blob, URL_A, k=1)
     assert 1 <= len(results) <= 2

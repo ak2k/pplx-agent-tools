@@ -269,7 +269,9 @@ _paragraph_strategy = st.text(
 # A single (url, paragraph_text, word_count) row matching _build_index's
 # contract. word_count is generated independent of the actual word count
 # because _build_index treats it as opaque (only retrieval uses it).
-_row_strategy = st.tuples(_url_strategy, _paragraph_strategy, st.integers(min_value=1, max_value=50))
+_row_strategy = st.tuples(
+    _url_strategy, _paragraph_strategy, st.integers(min_value=1, max_value=50)
+)
 
 
 @given(rows=st.lists(_row_strategy, min_size=1, max_size=10))
@@ -289,9 +291,7 @@ def test_hybrid_retrieve_never_crashes_on_arbitrary_corpus(
     try:
         query_blob = _vec_to_blob([1.0, 0.0, 0.0])
         target_url = rows[0][0]
-        results = _hybrid_retrieve(
-            conn, _fts5_escape("test query"), query_blob, target_url, k=5
-        )
+        results = _hybrid_retrieve(conn, _fts5_escape("test query"), query_blob, target_url, k=5)
         # Whatever comes back must be a list of (text, score, words) where
         # text and score are reasonable and words is a positive int.
         for text, score, words in results:
