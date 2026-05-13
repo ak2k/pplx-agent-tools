@@ -1,4 +1,4 @@
-# pplx-search web — wire format
+# pplx search web — wire format
 
 Reverse-engineered 2026-05-12 against `www.perplexity.ai` frontend SPA build
 `8e78ece`. The web SPA exposes two relevant search surfaces:

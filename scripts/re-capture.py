@@ -40,7 +40,7 @@ FIREFOX_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 14.0; rv:128.0) Gecko/20100
 
 async def main(query: str, search_type: str, headed: bool, outdir: Path) -> int:
     if not COOKIES_FILE.exists():
-        print(f"no cookies at {COOKIES_FILE}; run pplx-auth import first", file=sys.stderr)
+        print(f"no cookies at {COOKIES_FILE}; run pplx auth import first", file=sys.stderr)
         return 2
 
     raw_cookies = json.loads(COOKIES_FILE.read_text())

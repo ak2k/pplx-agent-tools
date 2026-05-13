@@ -1,4 +1,4 @@
-"""pplx-search: agent-facing search CLI for Perplexity.
+"""pplx search: agent-facing search CLI for Perplexity.
 
 Queries Perplexity's realtime search via /rest/realtime/search-web (see
 docs/wire/search-web.md). Multi-query is server-side native — positional
@@ -21,7 +21,7 @@ from .wire import Client
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="pplx-search",
+        prog="pplx search",
         description="Search Perplexity using your Pro subscription's web session.",
     )
     parser.add_argument("query", nargs="+", help="one or more search queries")
@@ -52,7 +52,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         client = Client.from_default_cookies(profile=args.profile)
     except PplxError as e:
-        print(f"pplx-search: {e}", file=sys.stderr)
+        print(f"pplx search: {e}", file=sys.stderr)
         return exit_code(e)
 
     queries: list[str] = list(args.query)
@@ -68,7 +68,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             excluded_domains=excluded_domains,
         )
     except PplxError as e:
-        print(f"pplx-search: {e}", file=sys.stderr)
+        print(f"pplx search: {e}", file=sys.stderr)
         return exit_code(e)
 
     if args.json:

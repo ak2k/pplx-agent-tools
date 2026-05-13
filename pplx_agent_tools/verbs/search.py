@@ -1,4 +1,4 @@
-"""pplx-search verb: ranked hits via /rest/realtime/search-web.
+"""pplx search verb: ranked hits via /rest/realtime/search-web.
 
 The web SPA also offers SSE-chat-based search (/rest/sse/perplexity_ask), but
 the realtime endpoint is what Perplexity uses internally for fast ranked-hit

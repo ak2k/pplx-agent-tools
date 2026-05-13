@@ -1,4 +1,4 @@
-"""pplx-snippets: batched query-relevant excerpts from N URLs.
+"""pplx snippets: batched query-relevant excerpts from N URLs.
 
 Hybrid retrieval (BM25 + semantic) over locally-fetched content. See
 verbs/snippets.py and docs/wire/snippets.md for the rationale.
@@ -23,7 +23,7 @@ from .verbs.snippets import (
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="pplx-snippets",
+        prog="pplx snippets",
         description=(
             "Fetch N URLs and extract query-relevant paragraphs from each "
             "using hybrid retrieval (BM25 keyword + semantic vector)."
@@ -64,7 +64,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             embed_model=args.embed_model,
         )
     except PplxError as e:
-        print(f"pplx-snippets: {e}", file=sys.stderr)
+        print(f"pplx snippets: {e}", file=sys.stderr)
         return exit_code(e)
 
     if args.json:

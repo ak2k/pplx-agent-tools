@@ -39,10 +39,7 @@ dev = [
 ]
 
 [project.scripts]
-pplx-search = "pplx_agent_tools.cli_search:main"
-pplx-fetch = "pplx_agent_tools.cli_fetch:main"
-pplx-snippets = "pplx_agent_tools.cli_snippets:main"
-pplx-auth = "pplx_agent_tools.cli_auth:main"
+pplx = "pplx_agent_tools.cli:main"
 
 [project.urls]
 Repository = "https://github.com/ak2k/pplx-agent-tools"

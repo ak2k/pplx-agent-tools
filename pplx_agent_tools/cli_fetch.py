@@ -1,4 +1,4 @@
-"""pplx-fetch: URL → cleaned content (optional LLM extraction via --prompt).
+"""pplx fetch: URL → cleaned content (optional LLM extraction via --prompt).
 
 Plain mode fetches the URL locally (curl_cffi + trafilatura); --prompt mode
 routes through Perplexity's chat endpoint so its LLM can fetch+answer in
@@ -20,7 +20,7 @@ from .wire import Client
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="pplx-fetch",
+        prog="pplx fetch",
         description=(
             "Fetch a URL and return cleaned content. With --prompt, route "
             "through Perplexity's LLM for extraction in one round-trip."
@@ -51,7 +51,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         client = Client.from_default_cookies(profile=args.profile)
     except PplxError as e:
-        print(f"pplx-fetch: {e}", file=sys.stderr)
+        print(f"pplx fetch: {e}", file=sys.stderr)
         return exit_code(e)
 
     try:
@@ -62,7 +62,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             max_chars=args.max_chars,
         )
     except PplxError as e:
-        print(f"pplx-fetch: {e}", file=sys.stderr)
+        print(f"pplx fetch: {e}", file=sys.stderr)
         return exit_code(e)
 
     if args.json:

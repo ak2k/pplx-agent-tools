@@ -79,7 +79,7 @@ def load_cookies(profile: str | None = None) -> dict[str, str]:
 
     path = default_cookies_path(profile)
     if not path.exists():
-        raise AuthError(f"no cookies found at {path}; run pplx-auth import --browser brave")
+        raise AuthError(f"no cookies found at {path}; run pplx auth import --browser brave")
     return _load_from_file(path)
 
 

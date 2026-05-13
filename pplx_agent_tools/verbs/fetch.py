@@ -1,4 +1,4 @@
-"""pplx-fetch verb: URL → cleaned content (optional LLM extraction via --prompt).
+"""pplx fetch verb: URL → cleaned content (optional LLM extraction via --prompt).
 
 Hybrid implementation:
   - Plain mode (no --prompt): fetch the URL ourselves via curl_cffi (chrome-

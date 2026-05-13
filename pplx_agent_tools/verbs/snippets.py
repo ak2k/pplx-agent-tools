@@ -1,10 +1,10 @@
-"""pplx-snippets verb: batched query-relevant excerpts from N URLs.
+"""pplx snippets verb: batched query-relevant excerpts from N URLs.
 
 Pure-local implementation (Perplexity's web-session API has no snippets-per-URL
-endpoint; same finding as Step 6 for pplx-fetch). Architecture:
+endpoint; same finding as Step 6 for pplx fetch). Architecture:
 
   1. Concurrent-fetch each URL via curl_cffi + trafilatura (same path as
-     pplx-fetch's plain mode).
+     pplx fetch's plain mode).
   2. Paragraph-split each page, embed paragraphs with fastembed (ONNX, no
      PyTorch), insert into SQLite (FTS5 for BM25 + sqlite-vec for vector KNN).
   3. For each URL, retrieve top-K candidates from both indices, merge via
@@ -99,7 +99,7 @@ def snippets(
     try:
         from fastembed import TextEmbedding
     except ImportError as e:
-        raise SchemaError(f"fastembed is required for pplx-snippets: {e}") from e
+        raise SchemaError(f"fastembed is required for pplx snippets: {e}") from e
 
     embedder = TextEmbedding(model_name=embed_model)
     texts = [r[1] for r in rows]

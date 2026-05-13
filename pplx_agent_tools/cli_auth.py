@@ -1,4 +1,4 @@
-"""pplx-auth: manage Perplexity web-session cookies.
+"""pplx auth: manage Perplexity web-session cookies.
 
 Subcommands:
   check     — validate the session against /api/auth/session
@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from collections.abc import Sequence
 
 from .auth import (
     SUPPORTED_BROWSERS,
@@ -23,7 +24,7 @@ from .wire import Client
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="pplx-auth",
+        prog="pplx auth",
         description="Manage Perplexity web-session cookies.",
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -60,7 +61,7 @@ def cmd_check(args: argparse.Namespace) -> int:
         client = Client.from_default_cookies(profile=args.profile)
         session = client.auth_session()
     except PplxError as e:
-        print(f"pplx-auth check: {e}", file=sys.stderr)
+        print(f"pplx auth check: {e}", file=sys.stderr)
         return exit_code(e)
 
     user = session.get("user") or {}
@@ -78,7 +79,7 @@ def cmd_refresh(args: argparse.Namespace) -> int:
         client = Client.from_default_cookies(profile=args.profile)
         client.auth_session()
     except PplxError as e:
-        print(f"pplx-auth refresh: {e}", file=sys.stderr)
+        print(f"pplx auth refresh: {e}", file=sys.stderr)
         return exit_code(e)
     return 0
 
@@ -87,13 +88,13 @@ def cmd_import(args: argparse.Namespace) -> int:
     try:
         dest = import_from_browser(args.browser, profile=args.profile)
     except PplxError as e:
-        print(f"pplx-auth import: {e}", file=sys.stderr)
+        print(f"pplx auth import: {e}", file=sys.stderr)
         return exit_code(e)
     print(f"imported {args.browser} cookies to {dest}")
     return 0
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.cmd == "check":
