@@ -57,9 +57,10 @@ class FixtureClient(Client):
     """
 
     def __init__(self, fixture_path: Path) -> None:
-        self._cookies = {"fake": "cookie"}
-        self._base_url = "https://www.perplexity.ai"
-        self._timeout = 1.0
+        # Allocates a curl_cffi Session we never use, but the explicit
+        # super().__init__ keeps CodeQL's "missing super().__init__" rule
+        # happy and future-proofs us against Client gaining new __init__ state.
+        super().__init__({"fake": "cookie"})
         self._events: list[dict[str, Any]] = [
             json.loads(line) for line in fixture_path.read_text().splitlines() if line.strip()
         ]

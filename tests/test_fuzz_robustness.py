@@ -85,9 +85,10 @@ class _CannedClient(Client):
     """Stand-in Client that returns a canned post_json payload."""
 
     def __init__(self, canned: Any) -> None:
-        self._cookies = {"x": "y"}
-        self._base_url = "https://www.perplexity.ai"
-        self._timeout = 1.0
+        # Explicit super().__init__ to satisfy CodeQL's missing-super-init
+        # rule; the curl_cffi Session it allocates is unused since we
+        # override post_json below.
+        super().__init__({"x": "y"})
         self._canned = canned
 
     def post_json(self, path: str, body: dict[str, Any]) -> Any:  # type: ignore[override]
@@ -124,9 +125,8 @@ class _StreamClient(Client):
     """Stand-in Client that yields canned SSE events from `sse_post`."""
 
     def __init__(self, events: list[dict[str, Any]]) -> None:
-        self._cookies = {"x": "y"}
-        self._base_url = "https://www.perplexity.ai"
-        self._timeout = 1.0
+        # See _CannedClient.__init__ for the super().__init__ rationale.
+        super().__init__({"x": "y"})
         self._events = events
 
     def sse_post(self, path: str, body: dict[str, Any]) -> Iterator[dict[str, Any]]:  # type: ignore[override]
