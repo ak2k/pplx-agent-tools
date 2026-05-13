@@ -1,0 +1,51 @@
+# gitleaks config for pplx-agent-tools
+#
+# We use the built-in default ruleset (catches generic JWT/AWS/GitHub/SSH/etc
+# patterns + high-entropy strings) and add one custom rule for Perplexity-
+# specific cookie names so a session-token assignment in any future file
+# fails the scan before it can ever land.
+#
+# Run locally: gitleaks detect --source . --redact -v
+# Run via pre-commit (hook config in .pre-commit-config.yaml).
+
+title = "pplx-agent-tools gitleaks config"
+
+[extend]
+# Inherit gitleaks' default rules.
+useDefault = true
+
+[[rules]]
+id = "pplx-perplexity-cookie-value"
+description = "Perplexity web-session cookie value (NextAuth / Cloudflare)"
+# Match: <cookie-name> followed by = or :, then a 20+ char alphanumeric blob.
+# The cookies we care about: __Secure-next-auth.session-token, cf_clearance,
+# __cf_bm, next-auth.session-token (no __Secure prefix on http variants),
+# next-auth.csrf-token. Any of these followed by a long random value is a leak.
+regex = '''(?i)(__Secure-next-auth\.session-token|next-auth\.session-token|next-auth\.csrf-token|cf_clearance|__cf_bm|CF_AppSession)["\']?\s*[:=]\s*["\']?[A-Za-z0-9._\-+/=]{20,}'''
+keywords = [
+  "session-token",
+  "cf_clearance",
+  "__cf_bm",
+  "CF_AppSession",
+  "csrf-token",
+]
+
+[allowlist]
+# Field-name references are legitimate (they appear in code that maps the
+# cookie names, not in committed values). These are matches on the literal
+# name string ALONE, with no value after — distinguished by the regex from
+# real leaks which have a value after the = or :.
+description = "Allow code references to cookie names (no value attached)"
+# Paths that intentionally reference cookie names without secret values
+paths = [
+  '''pplx_agent_tools/auth\.py$''',
+  '''pplx_agent_tools/wire\.py$''',
+  '''pplx_agent_tools/verbs/fetch\.py$''',
+  '''scripts/.*''',
+  '''tests/.*''',
+  '''docs/.*''',
+  '''re-fixtures/.*''',
+  '''.gitleaks\.toml$''',
+  '''README\.md$''',
+  '''SKILL\.md$''',
+]

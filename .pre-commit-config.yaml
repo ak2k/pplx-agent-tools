@@ -1,0 +1,11 @@
+# Pre-commit hooks for pplx-agent-tools.
+# Install: `uv tool install pre-commit` (or `pip install pre-commit`)
+# Activate: `pre-commit install`
+# Run on all files: `pre-commit run --all-files`
+
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.21.2
+    hooks:
+      - id: gitleaks
+        args: ["--config", ".gitleaks.toml"]
