@@ -90,11 +90,11 @@
               );
         };
 
-      # Bundle the runtime venv with SKILL.md at a stable share/ path so
-      # home-manager can symlink it into ~/.claude/skills/pplx-agent-tools/.
+      # Bundle the runtime venv with SKILL.md at the ak2k-skills convention
+      # path ($out/share/skills/<name>/) so ak2k-skills' registry can pick
+      # it up the same way as krisp-cli / claude-sessions / msgvault-query.
       # SKILL.md is also force-included in the wheel under pplx_agent_tools/
-      # for non-Nix consumers (`pplx skill-path`), but exposing it under
-      # $out/share/ gives Nix a predictable derivation-output target.
+      # for non-Nix consumers (`pplx skill-path`).
       mkPplx =
         system:
         let
@@ -106,8 +106,8 @@
           name = "pplx-agent-tools";
           paths = [ venv ];
           postBuild = ''
-            mkdir -p $out/share/pplx-agent-tools
-            cp ${./SKILL.md} $out/share/pplx-agent-tools/SKILL.md
+            mkdir -p $out/share/skills/pplx-agent-tools
+            cp ${./SKILL.md} $out/share/skills/pplx-agent-tools/SKILL.md
           '';
           meta = {
             description = "Agent toolkit for Perplexity, backed by your Pro subscription's web session cookies";
