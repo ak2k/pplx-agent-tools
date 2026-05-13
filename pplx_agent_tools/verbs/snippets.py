@@ -73,6 +73,12 @@ def snippets(
     if not urls:
         return SnippetsResult(query=query, results=[])
 
+    # Dedupe input while preserving order. Duplicates would (a) double-count
+    # the same paragraphs in the FTS/vec index, skewing rankings, and (b)
+    # share a single UrlSnippets object across the dup'd output slots,
+    # causing snippets to appear N times.
+    urls = list(dict.fromkeys(urls))
+
     pages = _fetch_all(urls)
 
     # Split → embed → index. Paragraphs from all URLs into one DB, with URL as a tag.

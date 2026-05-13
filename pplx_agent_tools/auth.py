@@ -21,6 +21,7 @@ import json
 import os
 import stat
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -90,11 +91,36 @@ def save_cookies(cookies: dict[str, str], profile: str | None = None) -> Path:
     """
     dest = default_cookies_path(profile)
     dest.parent.mkdir(parents=True, exist_ok=True)
-    tmp = dest.with_name(dest.name + ".tmp")
-    tmp.write_text(json.dumps(cookies, indent=2, sort_keys=True))
-    tmp.chmod(0o600)
-    tmp.replace(dest)
+    _atomic_write_0600(dest, json.dumps(cookies, indent=2, sort_keys=True))
     return dest
+
+
+def _atomic_write_0600(dest: Path, content: str) -> None:
+    """Write `content` to `dest` atomically with mode 0o600 from byte zero.
+
+    `tempfile.NamedTemporaryFile` is backed by `mkstemp` on POSIX, which
+    creates the file with mode 0o600 ignoring umask — so the tmp is never
+    world-readable, even in the window before the rename. We place the tmp
+    in dest.parent so the final replace stays on one filesystem (required
+    for atomic rename) and unlink it on any failure to avoid leftovers.
+    """
+    tmp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=dest.parent,
+            prefix=f"{dest.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as fh:
+            tmp_path = Path(fh.name)
+            fh.write(content)
+        tmp_path.replace(dest)
+        tmp_path = None  # ownership transferred; skip cleanup
+    finally:
+        if tmp_path is not None:
+            tmp_path.unlink(missing_ok=True)
 
 
 def _load_from_file(path: Path) -> dict[str, str]:
@@ -209,10 +235,4 @@ def import_from_browser(browser: str, profile: str | None = None) -> Path:
             f"sign in at perplexity.ai in {browser} first"
         )
 
-    dest = default_cookies_path(profile)
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    tmp = dest.with_name(dest.name + ".tmp")
-    tmp.write_text(json.dumps(cookies, indent=2, sort_keys=True))
-    tmp.chmod(0o600)
-    tmp.replace(dest)
-    return dest
+    return save_cookies(cookies, profile=profile)

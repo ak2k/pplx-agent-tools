@@ -105,6 +105,7 @@ def render_fetch_json(result: FetchResult) -> dict[str, Any]:
         "domain": result.domain,
         "is_extracted": result.is_extracted,
         "truncated": result.truncated,
+        "stream_complete": result.stream_complete,
         "content": result.content,
     }
     if result.title is not None:

@@ -26,6 +26,27 @@ from ..wire import Client
 
 _PROMPT_ENDPOINT = "/rest/sse/perplexity_ask"
 
+# Schemes accepted for outbound fetch. Anything else (file://, ftp://,
+# gopher://, custom) is rejected up front — we never want curl_cffi to
+# touch the local filesystem or non-HTTP backends from a user-supplied URL.
+_ALLOWED_FETCH_SCHEMES = frozenset({"http", "https"})
+
+
+def _require_http_url(url: str) -> None:
+    """Reject non-HTTP(S) URLs and URLs missing a host. Raises NetworkError.
+
+    Prevents SSRF via file:// and custom schemes, and rejects obviously
+    malformed inputs (e.g. `localhost:8080` parsed without a scheme).
+    """
+    parsed = urlparse(url)
+    if parsed.scheme not in _ALLOWED_FETCH_SCHEMES:
+        raise NetworkError(
+            f"fetch {url}: unsupported URL scheme {parsed.scheme!r} "
+            f"(only http/https allowed)"
+        )
+    if not parsed.netloc:
+        raise NetworkError(f"fetch {url}: URL has no host")
+
 
 @dataclass
 class FetchResult:
@@ -36,6 +57,9 @@ class FetchResult:
     is_extracted: bool  # True iff --prompt was used (content is LLM-generated)
     published_date: str | None = None
     truncated: bool = False
+    # False iff the server stream was cut before a COMPLETED signal arrived
+    # (only meaningful for --prompt mode; plain mode is always True).
+    stream_complete: bool = True
 
 
 def fetch(
@@ -65,6 +89,7 @@ def fetch(
 
 def _fetch_local(url: str, domain: str, *, max_chars: int | None) -> FetchResult:
     """Fetch the URL via curl_cffi and extract content with trafilatura."""
+    _require_http_url(url)
     try:
         # Use a fresh session so we don't send perplexity.ai cookies to a
         # random third-party host. curl_cffi keeps the chrome TLS fingerprint
@@ -73,6 +98,8 @@ def _fetch_local(url: str, domain: str, *, max_chars: int | None) -> FetchResult
 
         with cf_requests.Session(impersonate="chrome") as sess:
             resp = sess.get(url, timeout=30, allow_redirects=True)
+    except NetworkError:
+        raise
     except Exception as e:
         raise NetworkError(f"fetch {url}: {e!s}") from e
 
@@ -200,6 +227,7 @@ def _fetch_with_prompt(
         is_extracted=True,
         published_date=None,
         truncated=truncated,
+        stream_complete=saw_completed,
     )
 
 
