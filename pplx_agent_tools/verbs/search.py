@@ -70,12 +70,16 @@ def search(
 ) -> SearchResult:
     """Run a single search query against /rest/realtime/search-web.
 
-    `search_type` is currently only `"web"`. Other types (academic, images,
-    videos, shopping) need separate RE — see plan Step 9.
+    `search_type` is currently only `"web"`. The other types (academic,
+    images, videos, shopping) don't have dedicated cookie-auth endpoints
+    (RE-confirmed). They're Phase 2 territory: would route through
+    /rest/sse/perplexity_ask with sources=["scholar"/"videos"/etc.] and
+    parse type-specific block shapes.
     """
     if search_type != "web":
         raise NotImplementedError(
-            f"search_type={search_type!r} not yet implemented (Step 9 in the plan)"
+            f"search_type={search_type!r} is Phase 2 — no dedicated endpoint "
+            f"for cookie auth. Track via plan-doc Step 9."
         )
 
     return search_many(
