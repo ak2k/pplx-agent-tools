@@ -66,8 +66,9 @@ class FixtureClient(Client):
         for payload in self._events:
             yield {"event": "message", "data": payload}
 
-    def delete_thread(self, entry_uuid: str, read_write_token: str) -> None:  # type: ignore[override]
+    def delete_thread(self, entry_uuid: str, read_write_token: str) -> bool:  # type: ignore[override]
         self.deleted.append((entry_uuid, read_write_token))
+        return True
 
 
 @pytest.fixture

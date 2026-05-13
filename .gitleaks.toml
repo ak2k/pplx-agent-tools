@@ -44,7 +44,8 @@ paths = [
   '''scripts/.*''',
   '''tests/.*''',
   '''docs/.*''',
-  '''re-fixtures/.*''',
+  # re-fixtures/ is .gitignore'd; do NOT allowlist it here so an accidental
+  # force-add of a raw capture still trips the scanner.
   '''.gitleaks\.toml$''',
   '''README\.md$''',
   '''SKILL\.md$''',

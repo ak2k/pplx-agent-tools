@@ -61,6 +61,15 @@ def test_build_chat_body_strips_ui_widget_lists() -> None:
     assert "supported_features" not in body["params"]
 
 
+def test_build_chat_body_timezone_is_utc_not_location() -> None:
+    # We deliberately send UTC instead of the local timezone — leaking the
+    # user's location to Perplexity beyond what cookies already imply is
+    # not in scope, and time.tzname returns abbreviations Perplexity may
+    # not even accept.
+    body = _build_chat_body("q")
+    assert body["params"]["timezone"] == "UTC"
+
+
 # ---------- _fetch_with_prompt chunk accumulation ----------
 
 
@@ -94,10 +103,16 @@ class FakeClient(Client):
     def sse_post(self, path: str, body: dict[str, Any]) -> Iterator[dict[str, Any]]:  # type: ignore[override]
         yield from self._events
 
-    def delete_thread(self, entry_uuid: str, read_write_token: str) -> None:  # type: ignore[override]
+    def delete_thread(self, entry_uuid: str, read_write_token: str) -> bool:  # type: ignore[override]
         if self.delete_should_fail:
-            raise RuntimeError("simulated cleanup failure")
+            # Real Client.delete_thread is best-effort: it logs to stderr
+            # and returns False. Mirror that so the caller stays simple.
+            import sys
+
+            print("warning: thread cleanup failed: simulated cleanup failure", file=sys.stderr)
+            return False
         self.deleted.append((entry_uuid, read_write_token))
+        return True
 
 
 def test_chunk_accumulation_only_reads_ask_text_blocks() -> None:

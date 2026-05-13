@@ -21,6 +21,8 @@ from typing import Any
 from urllib.parse import urlparse
 from uuid import uuid4
 
+from curl_cffi import requests as cf_requests
+
 from ..errors import NetworkError, SchemaError
 from ..wire import Client
 
@@ -91,11 +93,9 @@ def _fetch_local(url: str, domain: str, *, max_chars: int | None) -> FetchResult
     """Fetch the URL via curl_cffi and extract content with trafilatura."""
     _require_http_url(url)
     try:
-        # Use a fresh session so we don't send perplexity.ai cookies to a
+        # Fresh session per call so we don't send perplexity.ai cookies to a
         # random third-party host. curl_cffi keeps the chrome TLS fingerprint
-        # which is what we want for Cloudflare-protected sources too.
-        from curl_cffi import requests as cf_requests
-
+        # which also handles Cloudflare-protected sources transparently.
         with cf_requests.Session(impersonate="chrome") as sess:
             resp = sess.get(url, timeout=30, allow_redirects=True)
     except NetworkError:
@@ -204,15 +204,11 @@ def _fetch_with_prompt(
     if not content and not saw_completed:
         raise SchemaError(f"no markdown_block content received from {_PROMPT_ENDPOINT}")
 
-    # Best-effort thread cleanup. Don't fail the user's call if cleanup fails —
-    # they got their answer, an orphaned thread is the worst outcome.
+    # Best-effort thread cleanup. client.delete_thread is documented + actually
+    # implemented as best-effort: any failure prints to stderr and returns
+    # False, so the user's call survives an orphaned thread on Perplexity's side.
     if not keep_thread and backend_uuid and read_write_token:
-        try:
-            client.delete_thread(backend_uuid, read_write_token)
-        except Exception as e:
-            import sys
-
-            print(f"warning: thread cleanup failed: {e}", file=sys.stderr)
+        client.delete_thread(backend_uuid, read_write_token)
 
     truncated = False
     if max_chars and len(content) > max_chars:
@@ -234,6 +230,11 @@ def _fetch_with_prompt(
 def _build_chat_body(query: str) -> dict[str, Any]:
     """Minimum-viable body for /rest/sse/perplexity_ask. See docs/wire/search-web.md
     for the full captured shape; we strip UI-specific fields here.
+
+    `timezone` is set to "UTC" rather than detected from the host: detection
+    actively leaks the user's location, and `time.tzname` returns
+    abbreviations ("EST") rather than the IANA names ("America/New_York")
+    Perplexity expects. UTC is deterministic and accepted everywhere.
     """
     frontend_uuid = str(uuid4())
     return {
@@ -244,7 +245,7 @@ def _build_chat_body(query: str) -> dict[str, Any]:
             "source": "default",
             "version": "2.18",
             "language": "en-US",
-            "timezone": "America/New_York",
+            "timezone": "UTC",
             "search_focus": "internet",
             "sources": ["web"],
             "mode": "copilot",

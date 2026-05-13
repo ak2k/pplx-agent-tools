@@ -54,6 +54,9 @@ class UrlSnippets:
 class SnippetsResult:
     query: str
     results: list[UrlSnippets]
+    # Aggregate, free-form messages (e.g. "fetched 3/5 URLs successfully").
+    # Per-URL fetch/index errors live on each UrlSnippets.error instead.
+    warnings: list[str] = field(default_factory=list)
 
 
 def snippets(
@@ -114,36 +117,38 @@ def snippets(
     dim = len(query_vec)
 
     conn = _build_index(rows, paragraph_vecs, dim)
+    try:
+        # Tokenize the FTS5 query once. Strip special chars to avoid syntax errors.
+        fts_query = _fts5_escape(query)
+        query_blob = _vec_to_blob(query_vec)
 
-    # Tokenize the FTS5 query once. Strip special chars to avoid syntax errors.
-    fts_query = _fts5_escape(query)
-    query_blob = _vec_to_blob(query_vec)
-
-    by_url: dict[str, UrlSnippets] = {url: UrlSnippets(url=url) for url, *_ in pages}
-    for url, _, err in pages:
-        if err is not None:
-            by_url[url].error = err
-            continue
-
-    total_tokens = 0
-    for url in urls:
-        if by_url[url].error is not None:
-            continue
-        budget = min(max_tokens_per_page, max_tokens - total_tokens)
-        if budget <= 0:
-            break
-        ranked = _hybrid_retrieve(conn, fts_query, query_blob, url, k=DEFAULT_K_PER_URL)
-        for para_text, score, words in ranked:
-            tokens = int(words * _TOKEN_PER_WORD)
-            if tokens > budget:
+        by_url: dict[str, UrlSnippets] = {url: UrlSnippets(url=url) for url, *_ in pages}
+        for url, _, err in pages:
+            if err is not None:
+                by_url[url].error = err
                 continue
-            by_url[url].snippets.append(Snippet(text=para_text, score=score, tokens=tokens))
-            budget -= tokens
-            total_tokens += tokens
+
+        total_tokens = 0
+        for url in urls:
+            if by_url[url].error is not None:
+                continue
+            budget = min(max_tokens_per_page, max_tokens - total_tokens)
             if budget <= 0:
                 break
+            ranked = _hybrid_retrieve(conn, fts_query, query_blob, url, k=DEFAULT_K_PER_URL)
+            for para_text, score, words in ranked:
+                tokens = int(words * _TOKEN_PER_WORD)
+                if tokens > budget:
+                    continue
+                by_url[url].snippets.append(Snippet(text=para_text, score=score, tokens=tokens))
+                budget -= tokens
+                total_tokens += tokens
+                if budget <= 0:
+                    break
 
-    return SnippetsResult(query=query, results=[by_url[url] for url in urls])
+        return SnippetsResult(query=query, results=[by_url[url] for url in urls])
+    finally:
+        conn.close()
 
 
 def _fetch_all(urls: list[str]) -> list[tuple[str, str, str | None]]:
@@ -162,8 +167,15 @@ def _fetch_all(urls: list[str]) -> list[tuple[str, str, str | None]]:
             return (url, "", f"fetch failed: {e}")
         return (url, result.content or "", None)
 
-    with ThreadPoolExecutor(max_workers=min(len(urls), 6)) as pool:
+    pool = ThreadPoolExecutor(max_workers=min(len(urls), 6))
+    try:
+        # pool.map preserves order and raises only via the result iterator;
+        # `one` catches its own exceptions, so the iterator never raises.
         return list(pool.map(one, urls))
+    finally:
+        # cancel_futures=True drops any unstarted work so Ctrl-C / outer
+        # exceptions don't block on already-queued URLs.
+        pool.shutdown(wait=True, cancel_futures=True)
 
 
 def _split_paragraphs(content: str) -> list[str]:

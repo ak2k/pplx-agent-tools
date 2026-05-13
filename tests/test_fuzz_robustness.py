@@ -125,8 +125,8 @@ class _StreamClient(Client):
     def sse_post(self, path: str, body: dict[str, Any]) -> Iterator[dict[str, Any]]:  # type: ignore[override]
         yield from self._events
 
-    def delete_thread(self, entry_uuid: str, read_write_token: str) -> None:  # type: ignore[override]
-        return None
+    def delete_thread(self, entry_uuid: str, read_write_token: str) -> bool:  # type: ignore[override]
+        return True
 
 
 # An adversarial SSE event has the {event, data} envelope but `data` is

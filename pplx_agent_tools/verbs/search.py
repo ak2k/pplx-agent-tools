@@ -54,6 +54,10 @@ class SearchResult:
     query: str
     type: str
     hits: list[Hit]
+    # Count of hits actually returned (post-dedup, post-limit). The
+    # `/rest/realtime/search-web` endpoint does not return a server-side
+    # total, so this is NOT the count of available matches on Perplexity's
+    # side — just `len(hits)`, surfaced as a field for caller ergonomics.
     total: int
     warnings: list[str] = field(default_factory=list)
 
@@ -134,11 +138,14 @@ def search_many(
         seen.add(h.url)
         deduped.append(h)
 
+    # `total` mirrors `len(hits)` deliberately — the endpoint doesn't ship
+    # a server-side count, so a "true total" would just be misleading.
+    hits = deduped[:limit]
     return SearchResult(
         query=" | ".join(queries),
         type=search_type,
-        hits=deduped[:limit],
-        total=min(len(deduped), limit),
+        hits=hits,
+        total=len(hits),
     )
 
 
