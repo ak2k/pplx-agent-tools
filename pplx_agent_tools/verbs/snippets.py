@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..errors import NetworkError, SchemaError
+from ..wire import Client
 
 DEFAULT_MAX_TOKENS = 4000
 DEFAULT_MAX_TOKENS_PER_PAGE = 1500
@@ -63,6 +64,7 @@ def snippets(
     query: str,
     urls: list[str],
     *,
+    client: Client | None = None,
     max_tokens: int = DEFAULT_MAX_TOKENS,
     max_tokens_per_page: int = DEFAULT_MAX_TOKENS_PER_PAGE,
     embed_model: str = DEFAULT_EMBED_MODEL,
@@ -72,7 +74,14 @@ def snippets(
     Returns SnippetsResult with one UrlSnippets per input URL (errors recorded
     on the per-URL object rather than raised, so one bad URL doesn't kill the
     whole call).
+
+    `client` is accepted for API symmetry with `search` / `fetch` (both of
+    which require a Client) and reserved for a future authenticated mode.
+    The current implementation is pure-local — fetch_page uses a fresh
+    curl_cffi session with no cookies — so passing None is the default and
+    has the same behavior as passing a Client today.
     """
+    _ = client  # currently unused; see docstring
     if not urls:
         return SnippetsResult(query=query, results=[])
 
