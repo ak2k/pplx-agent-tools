@@ -271,7 +271,14 @@ _row_strategy = st.tuples(
 
 
 @given(rows=st.lists(_row_strategy, min_size=1, max_size=10))
-@settings(suppress_health_check=[HealthCheck.too_slow], max_examples=30)
+@settings(
+    suppress_health_check=[HealthCheck.too_slow],
+    max_examples=30,
+    # SQLite + sqlite-vec extension setup per example is naturally jittery
+    # (~50-300ms on cold CI runners); the default 200ms deadline trips
+    # spuriously. Robustness, not latency, is what this test is checking.
+    deadline=None,
+)
 def test_hybrid_retrieve_never_crashes_on_arbitrary_corpus(
     rows: list[tuple[str, str, int]],
 ) -> None:
