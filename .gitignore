@@ -46,5 +46,7 @@ htmlcov/
 
 # Project-specific
 *.log
-re-fixtures/**/*.har
+# re-fixtures/ is scratch space for RE captures — may contain raw cookies in
+# HAR headers. Sanitized fixtures intended for tests live under tests/fixtures/.
+re-fixtures/**
 !re-fixtures/**/.gitkeep

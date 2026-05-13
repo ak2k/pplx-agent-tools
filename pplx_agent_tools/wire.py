@@ -10,7 +10,8 @@ accepts us as a real Chrome client. See balakumardev/perplexity-web-wrapper.
 
 from __future__ import annotations
 
-from typing import Any
+import json
+from typing import Any, Iterator
 
 from curl_cffi import requests as cf_requests
 
@@ -66,6 +67,50 @@ class Client:
             raise AuthError("session expired or unauthenticated; re-import cookies")
         return data
 
+    def sse_post(self, path: str, body: dict[str, Any]) -> Iterator[dict[str, Any]]:
+        """POST a JSON body, stream the SSE response, yield parsed events.
+
+        Each yielded value is `{"event": str | None, "data": parsed_json | str | None}`.
+        Consumers may break the loop early — the underlying connection is closed
+        when the iterator is no longer referenced (via curl_cffi's response context).
+
+        Raises the same typed errors as the GET path (auth/rate-limit/etc.) on
+        connection or status-code failure.
+        """
+        url = self._base_url + path
+        try:
+            resp = self._session.post(
+                url,
+                cookies=self._cookies,
+                json=body,
+                headers={"accept": "text/event-stream"},
+                stream=True,
+                timeout=self._timeout,
+            )
+        except Exception as e:
+            raise NetworkError(f"POST {path} failed: {e!s}") from e
+        # Headers / status validated before we start consuming the body.
+        self._check_status(resp, path)
+
+        buffer = ""
+        try:
+            for chunk in resp.iter_content(chunk_size=4096):
+                if not chunk:
+                    continue
+                buffer += chunk.decode("utf-8", errors="replace")
+                # Normalize CRLF that SSE protocol uses.
+                buffer = buffer.replace("\r\n", "\n")
+                while "\n\n" in buffer:
+                    raw_event, buffer = buffer.split("\n\n", 1)
+                    parsed = _parse_sse_event(raw_event)
+                    if parsed is not None:
+                        yield parsed
+        finally:
+            try:
+                resp.close()
+            except Exception:
+                pass
+
     def _get(self, path: str, **kwargs: Any) -> Any:
         url = self._base_url + path
         try:
@@ -114,3 +159,30 @@ class Client:
             return float(ra)
         except ValueError:
             return None
+
+
+def _parse_sse_event(raw: str) -> dict[str, Any] | None:
+    """Parse one SSE event block (without trailing blank line).
+
+    Returns None for an empty block (multiple blank lines in a row). Otherwise
+    returns {"event": <type or None>, "data": <parsed JSON, raw string, or None>}.
+    """
+    if not raw.strip():
+        return None
+    event_type: str | None = None
+    data_lines: list[str] = []
+    for line in raw.split("\n"):
+        if line.startswith(":"):
+            continue  # SSE comment line
+        if line.startswith("event:"):
+            event_type = line[6:].strip()
+        elif line.startswith("data:"):
+            data_lines.append(line[5:].lstrip())
+    if not data_lines:
+        return {"event": event_type, "data": None}
+    data_str = "\n".join(data_lines)
+    try:
+        data: Any = json.loads(data_str)
+    except json.JSONDecodeError:
+        data = data_str
+    return {"event": event_type, "data": data}
