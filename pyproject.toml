@@ -85,6 +85,9 @@ max-branches = 16  # default 12; verb orchestrators legitimately need a few more
 [tool.ruff.lint.per-file-ignores]
 # Scripts are exploratory RE tooling — relax style/complexity rules.
 "scripts/*" = ["ARG", "ERA", "PLR", "SIM105"]
+# Tests routinely have unused fixture args (activated for side effects) and
+# fake-class method args that match base-class signatures.
+"tests/*" = ["ARG", "PLR2004"]
 
 [tool.vulture]
 paths = ["pplx_agent_tools"]
