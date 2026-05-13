@@ -17,6 +17,7 @@ from .auth import (
     default_cookies_path,
     import_from_browser,
     resolve_profile,
+    save_cookies,
 )
 from .errors import PplxError, exit_code
 from .wire import Client
@@ -75,9 +76,19 @@ def cmd_check(args: argparse.Namespace) -> int:
 
 
 def cmd_refresh(args: argparse.Namespace) -> int:
+    """Ping /api/auth/session and persist any rotated cookies back to disk.
+
+    Perplexity's NextAuth uses rolling sessions — each authenticated call
+    returns a fresh session-token via Set-Cookie. Without persistence the
+    rotation is wasted; with it, periodic refresh keeps the session alive
+    indefinitely (each refresh extends the 30-day TTL).
+    """
     try:
         client = Client.from_default_cookies(profile=args.profile)
         client.auth_session()
+        # auth_session captures rotated cookies into client.cookies; persist
+        # back so the next pplx invocation reads the fresh token.
+        save_cookies(client.cookies, profile=args.profile)
     except PplxError as e:
         print(f"pplx auth refresh: {e}", file=sys.stderr)
         return exit_code(e)

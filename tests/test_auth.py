@@ -15,6 +15,7 @@ from pplx_agent_tools.auth import (
     default_cookies_path,
     load_cookies,
     resolve_profile,
+    save_cookies,
 )
 from pplx_agent_tools.errors import AuthError
 
@@ -219,3 +220,54 @@ def test_load_cookies_path_nonexistent_raises(monkeypatch: pytest.MonkeyPatch) -
     with pytest.raises(AuthError) as ei:
         load_cookies()
     assert "does not exist" in str(ei.value)
+
+
+# ---------- save_cookies (rotation persistence) ----------
+
+
+def test_save_cookies_writes_with_0600_perms(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    dest = save_cookies({"a": "1", "b": "2"})
+    assert dest.exists()
+    assert stat.S_IMODE(dest.stat().st_mode) == 0o600
+    assert json.loads(dest.read_text()) == {"a": "1", "b": "2"}
+
+
+def test_save_cookies_per_profile(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    dest = save_cookies({"x": "1"}, profile="work")
+    assert "work" in str(dest)
+    assert json.loads(dest.read_text()) == {"x": "1"}
+
+
+def test_save_cookies_creates_parent_dirs(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    # No pre-existing perplexity/<profile>/ directory
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "fresh"))
+    dest = save_cookies({"x": "1"})
+    assert dest.parent.is_dir()
+
+
+def test_save_cookies_atomic_replace(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    # First write
+    dest = save_cookies({"v": "old"})
+    inode_a = dest.stat().st_ino
+    # Overwrite with new content
+    dest2 = save_cookies({"v": "new"})
+    assert dest == dest2
+    assert json.loads(dest.read_text()) == {"v": "new"}
+    # The .tmp file should not exist after rename
+    assert not dest.with_name(dest.name + ".tmp").exists()
+    # Inode should change (atomic rename creates new inode)
+    inode_b = dest.stat().st_ino
+    assert inode_a != inode_b
+
+
+def test_save_cookies_then_load_roundtrip(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.delenv("PPLX_COOKIES_PATH", raising=False)
+    monkeypatch.delenv("PPLX_COOKIES", raising=False)
+    save_cookies({"session-token": "abc123", "csrf": "xyz"})
+    assert load_cookies() == {"session-token": "abc123", "csrf": "xyz"}

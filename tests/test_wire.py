@@ -160,3 +160,44 @@ def test_check_status_3xx_is_schema(client: Client) -> None:
     # do, treat as unexpected.
     with pytest.raises(SchemaError):
         client._check_status(FakeResp(301), "/x")
+
+
+# ---------- capture_rotated_cookies ----------
+
+
+# For rotation tests we populate the real curl_cffi Cookies jar via its
+# .set() API rather than monkeypatching .cookies entirely — curl_cffi's
+# Cookies class has a custom __setattr__ that prevents wholesale replacement.
+
+
+def test_capture_rotation_updates_only_existing_names() -> None:
+    c = Client({"session-token": "OLD", "csrf": "C1"})
+    c._session.cookies.set("session-token", "NEW")
+    c._session.cookies.set("irrelevant", "X")
+    changed = c.capture_rotated_cookies()
+    assert changed is True
+    assert c.cookies["session-token"] == "NEW"
+    assert c.cookies["csrf"] == "C1"  # csrf wasn't in the jar; unchanged
+    assert "irrelevant" not in c.cookies  # never pick up new third-party names
+
+
+def test_capture_rotation_returns_false_when_unchanged() -> None:
+    c = Client({"session-token": "SAME"})
+    c._session.cookies.set("session-token", "SAME")
+    assert c.capture_rotated_cookies() is False
+    assert c.cookies["session-token"] == "SAME"
+
+
+def test_capture_rotation_handles_empty_jar() -> None:
+    # Jar has none of our cookies — nothing changes
+    c = Client({"a": "1", "b": "2"})
+    assert c.capture_rotated_cookies() is False
+    assert c.cookies == {"a": "1", "b": "2"}
+
+
+def test_cookies_property_returns_copy() -> None:
+    c = Client({"a": "1"})
+    snapshot = c.cookies
+    snapshot["a"] = "MUTATED"
+    # Caller's mutation must not affect Client state
+    assert c.cookies["a"] == "1"

@@ -83,6 +83,20 @@ def load_cookies(profile: str | None = None) -> dict[str, str]:
     return _load_from_file(path)
 
 
+def save_cookies(cookies: dict[str, str], profile: str | None = None) -> Path:
+    """Persist cookies to the profile's on-disk file with mode 0600.
+
+    Atomic via tmp + rename. Returns the path written.
+    """
+    dest = default_cookies_path(profile)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_name(dest.name + ".tmp")
+    tmp.write_text(json.dumps(cookies, indent=2, sort_keys=True))
+    tmp.chmod(0o600)
+    tmp.replace(dest)
+    return dest
+
+
 def _load_from_file(path: Path) -> dict[str, str]:
     if not path.exists():
         raise AuthError(f"cookie file does not exist: {path}")

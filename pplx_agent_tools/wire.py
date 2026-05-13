@@ -58,6 +58,11 @@ class Client:
 
         NextAuth returns `{}` for unauthenticated; a populated dict (with `user`)
         for an authenticated session. We treat empty/missing-user as AuthError.
+
+        Captures rotated cookies into `self._cookies` (NextAuth's rolling-session
+        pattern issues a fresh `__Secure-next-auth.session-token` on each call;
+        without capture, a 30-day-old cookie that's been rotating silently still
+        expires from our perspective on day 30).
         """
         resp = self._get("/api/auth/session")
         try:
@@ -68,7 +73,34 @@ class Client:
             raise SchemaError(f"/api/auth/session returned {type(data).__name__}, expected object")
         if not data or "user" not in data:
             raise AuthError("session expired or unauthenticated; re-import cookies")
+        self.capture_rotated_cookies()
         return data
+
+    def capture_rotated_cookies(self) -> bool:
+        """Update `self._cookies` with any rotated values from the underlying
+        curl_cffi session jar. Returns True iff anything changed.
+
+        Only updates names we already had (so we don't grow our cookie set
+        unexpectedly with third-party cookies the server set).
+        """
+        changed = False
+        for name in list(self._cookies):
+            try:
+                new_val = self._session.cookies.get(name)
+            except Exception:
+                continue
+            if new_val and new_val != self._cookies[name]:
+                self._cookies[name] = new_val
+                changed = True
+        return changed
+
+    @property
+    def cookies(self) -> dict[str, str]:
+        """Current in-memory cookies (may include rotated values from the
+        latest authenticated call). Returns a copy so callers can't mutate
+        internal state.
+        """
+        return dict(self._cookies)
 
     def post_json(self, path: str, body: dict[str, Any]) -> Any:
         """POST a JSON body, return the parsed JSON response.
