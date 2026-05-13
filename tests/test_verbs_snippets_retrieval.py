@@ -149,3 +149,25 @@ def test_retrieve_k_limits_per_index_candidates() -> None:
     query_blob = _vec_to_blob([1.0, 0.0, 0.0])
     results = _hybrid_retrieve(conn, _fts5_escape("claude code CLI"), query_blob, URL_A, k=1)
     assert 1 <= len(results) <= 2
+
+
+def test_retrieve_sparse_url_still_gets_vector_signal() -> None:
+    """Regression: sqlite-vec's MATCH is a GLOBAL top-K. A URL with few rows
+    in a large corpus would silently lose its vector signal unless k is
+    scaled by total_rows / url_rows. Construct a 1-row sparse URL against
+    a 9-row dense corpus and verify the sparse URL's row is retrieved.
+    """
+    # Dense URL: 9 rows with vec ~(0,1,0) — far from the query
+    # Sparse URL: 1 row with vec (1,0,0) — exact match for the query
+    rows = [(f"https://dense/{i}", f"dense paragraph {i}", 3) for i in range(9)]
+    rows.append(("https://sparse/", "the one matching paragraph", 4))
+    vecs = [[0.0, 1.0, 0.0] for _ in range(9)]
+    vecs.append([1.0, 0.0, 0.0])
+
+    conn = _build_index(rows, vecs, dim=3)
+    query_blob = _vec_to_blob([1.0, 0.0, 0.0])
+    # Use a query term that doesn't match the sparse row, so BM25 contributes
+    # nothing — vector retrieval is the only path to surface this paragraph.
+    results = _hybrid_retrieve(conn, _fts5_escape("xyzzy"), query_blob, "https://sparse/", k=2)
+    assert results, "sparse URL must surface via the vector branch"
+    assert results[0][0] == "the one matching paragraph"

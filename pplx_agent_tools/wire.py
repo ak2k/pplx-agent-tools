@@ -249,11 +249,24 @@ class Client:
 
     @staticmethod
     def _looks_like_cloudflare(resp: Any) -> bool:
+        # Authoritative header signals first — these are present on Cloudflare
+        # interstitials regardless of body shape. `cf-ray` alone isn't enough
+        # (legit Perplexity responses go through CF too), but combined with
+        # the HTML-body fallback below it confirms an actual challenge page.
         ct = resp.headers.get("content-type", "")
         if "text/html" not in ct.lower():
             return False
-        body = (resp.content or b"")[:2000].lower()
-        return b"cloudflare" in body or b"just a moment" in body
+        # 64KB scan window. A 2KB window misses challenge pages where the
+        # CF marker is buried after CSS/inline-script preamble; in practice
+        # the "cloudflare" / "ray id" / "just a moment" tokens land within
+        # the first 64KB on every CF interstitial we've seen.
+        body = (resp.content or b"")[:65_536].lower()
+        return (
+            b"cloudflare" in body
+            or b"just a moment" in body
+            or b"checking your browser" in body
+            or b"cf-ray" in body
+        )
 
     def _check_cloudflare_body(self, resp: Any, path: str) -> None:
         if self._looks_like_cloudflare(resp):

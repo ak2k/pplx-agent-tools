@@ -129,6 +129,33 @@ def test_check_status_200_with_cloudflare_html_is_anti_bot(client: Client) -> No
         )
 
 
+def test_check_status_cloudflare_marker_buried_after_long_preamble(client: Client) -> None:
+    # CF challenge pages can wrap the marker in tens of KB of inline CSS /
+    # script preamble. A 2KB scan window misses these; 64KB catches them.
+    preamble = b"<style>" + (b"/* css */ " * 500) + b"</style>"
+    body = b"<html><head>" + preamble + b"<title>Checking your browser</title></html>"
+    assert len(preamble) > 2000  # confirm we're past the old 2KB cutoff
+    with pytest.raises(AntiBotError):
+        client._check_status(
+            FakeResp(403, headers={"content-type": "text/html"}, content=body),
+            "/anything",
+        )
+
+
+def test_check_status_cf_ray_in_html_body_treated_as_anti_bot(client: Client) -> None:
+    # cf-ray as a body token (in CSS comment or inline script) signals
+    # we're on a Cloudflare-served HTML response, not legit JSON.
+    with pytest.raises(AntiBotError):
+        client._check_status(
+            FakeResp(
+                403,
+                headers={"content-type": "text/html"},
+                content=b"<html><!-- cf-ray: 8f0a... --></html>",
+            ),
+            "/anything",
+        )
+
+
 def test_check_status_429_rate_limit_with_retry_after(client: Client) -> None:
     with pytest.raises(RateLimitError) as ei:
         client._check_status(FakeResp(429, headers={"retry-after": "30"}), "/x")

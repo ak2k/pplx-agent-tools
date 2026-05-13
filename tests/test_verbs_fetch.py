@@ -15,11 +15,11 @@ import pytest
 from pplx_agent_tools.errors import NetworkError, SchemaError
 from pplx_agent_tools.verbs.fetch import (
     _build_chat_body,
-    _fetch_local,
     _fetch_with_prompt,
     _require_http_url,
+    fetch_page,
 )
-from pplx_agent_tools.wire import Client
+from tests._doubles import _TestClientBase
 
 # ---------- _build_chat_body ----------
 
@@ -87,15 +87,13 @@ def _ev(blocks: list[dict[str, Any]], *, status: str | None = None) -> dict[str,
     return {"event": "message", "data": payload}
 
 
-class FakeClient(Client):
+class FakeClient(_TestClientBase):
     """Client stand-in that yields canned SSE events from sse_post + records
     delete_thread calls for assertion.
     """
 
     def __init__(self, events: list[dict[str, Any]]) -> None:
-        self._cookies = {"x": "y"}
-        self._base_url = "https://www.perplexity.ai"
-        self._timeout = 1.0
+        super().__init__()
         self._events = events
         self.deleted: list[tuple[str, str]] = []
         self.delete_should_fail = False
@@ -343,10 +341,10 @@ def test_require_http_url_rejects_missing_host() -> None:
     assert "no host" in str(ei.value)
 
 
-def test_fetch_local_rejects_file_scheme_before_network() -> None:
+def test_fetch_page_rejects_file_scheme_before_network() -> None:
     # File-scheme URLs must be rejected up front — never reach curl_cffi.
     with pytest.raises(NetworkError) as ei:
-        _fetch_local("file:///etc/passwd", domain="local", max_chars=None)
+        fetch_page("file:///etc/passwd", domain="local", max_chars=None)
     assert "scheme" in str(ei.value)
 
 

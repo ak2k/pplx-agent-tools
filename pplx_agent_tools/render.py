@@ -1,6 +1,19 @@
 """Render layer: pure functions from typed Result objects to text or JSON.
 
 No I/O, no exceptions, fully deterministic — safe to snapshot-test.
+
+This module is the single rendering registry for the CLI: every verb's
+Result type has a `render_<verb>_text` / `render_<verb>_json` pair here,
+and `cli_<verb>.py` imports them by name. Concentrating them in one file
+trades fan-in coupling (this module imports from all verb modules) for
+two upsides:
+
+  1. Browsing the formatting decisions across verbs is a single-file read.
+  2. Cross-verb consistency (timestamp formatting, truncation markers,
+     version envelopes in JSON) is easy to enforce.
+
+Adding a new verb means adding a new pair here — see the new-verb
+checklist in `verbs/__init__.py` for the full file-edit list.
 """
 
 from __future__ import annotations
