@@ -79,9 +79,7 @@ def load_cookies(profile: str | None = None) -> dict[str, str]:
 
     path = default_cookies_path(profile)
     if not path.exists():
-        raise AuthError(
-            f"no cookies found at {path}; run pplx-auth import --browser brave"
-        )
+        raise AuthError(f"no cookies found at {path}; run pplx-auth import --browser brave")
     return _load_from_file(path)
 
 
@@ -112,8 +110,7 @@ def _enforce_perms(path: Path) -> None:
 
     if world_bits:
         raise AuthError(
-            f"cookie file is world-accessible (mode {perms:04o}): {path}; "
-            f"run: chmod 600 {path}"
+            f"cookie file is world-accessible (mode {perms:04o}): {path}; run: chmod 600 {path}"
         )
     if group_bits:
         print(
@@ -124,9 +121,7 @@ def _enforce_perms(path: Path) -> None:
         try:
             path.chmod(0o600)
         except OSError as e:
-            raise AuthError(
-                f"could not tighten perms on cookie file: {path}: {e.strerror}"
-            ) from e
+            raise AuthError(f"could not tighten perms on cookie file: {path}: {e.strerror}") from e
 
 
 def _normalize(data: Any, *, source: str) -> dict[str, str]:
@@ -141,15 +136,11 @@ def _normalize(data: Any, *, source: str) -> dict[str, str]:
         flat = {}
         for i, entry in enumerate(data):
             if not isinstance(entry, dict):
-                raise AuthError(
-                    f"cookie entry {i} in {source} is not an object"
-                )
+                raise AuthError(f"cookie entry {i} in {source} is not an object")
             name = entry.get("name")
             value = entry.get("value")
             if not isinstance(name, str) or value is None:
-                raise AuthError(
-                    f"cookie entry {i} in {source} missing 'name' or 'value'"
-                )
+                raise AuthError(f"cookie entry {i} in {source} missing 'name' or 'value'")
             flat[name] = str(value)
     else:
         raise AuthError(
@@ -178,15 +169,12 @@ def import_from_browser(browser: str, profile: str | None = None) -> Path:
     try:
         import rookiepy
     except ImportError as e:
-        raise AuthError(
-            f"rookiepy is required for browser import: {e}"
-        ) from e
+        raise AuthError(f"rookiepy is required for browser import: {e}") from e
 
     fn = getattr(rookiepy, browser, None)
     if fn is None:
         raise AuthError(
-            f"rookiepy has no '{browser}' loader; "
-            f"upgrade rookiepy or pick a different browser"
+            f"rookiepy has no '{browser}' loader; upgrade rookiepy or pick a different browser"
         )
 
     try:

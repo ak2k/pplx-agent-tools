@@ -20,7 +20,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -57,7 +56,10 @@ async def main(query: str, search_type: str, headed: bool, outdir: Path) -> int:
         for name, value in raw_cookies.items()
         if name not in SKIP_COOKIES
     ]
-    print(f"injecting {len(cookies)} cookies (skipping {len(raw_cookies) - len(cookies)} CF-bound)", file=sys.stderr)
+    print(
+        f"injecting {len(cookies)} cookies (skipping {len(raw_cookies) - len(cookies)} CF-bound)",
+        file=sys.stderr,
+    )
 
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%SZ")
     label = f"{search_type}-{query.replace(' ', '_')[:30]}-{ts}"
@@ -82,23 +84,27 @@ async def main(query: str, search_type: str, headed: bool, outdir: Path) -> int:
         page = await ctx.new_page()
 
         def on_request(req: Request) -> None:
-            request_log.append({
-                "phase": "request",
-                "url": req.url,
-                "method": req.method,
-                "resource_type": req.resource_type,
-                "post_data_size": len(req.post_data or "") if req.post_data else 0,
-            })
+            request_log.append(
+                {
+                    "phase": "request",
+                    "url": req.url,
+                    "method": req.method,
+                    "resource_type": req.resource_type,
+                    "post_data_size": len(req.post_data or "") if req.post_data else 0,
+                }
+            )
 
         async def on_response(resp: Response) -> None:
             try:
-                request_log.append({
-                    "phase": "response",
-                    "url": resp.url,
-                    "status": resp.status,
-                    "content_type": resp.headers.get("content-type", ""),
-                    "size_hint": int(resp.headers.get("content-length", "0") or 0),
-                })
+                request_log.append(
+                    {
+                        "phase": "response",
+                        "url": resp.url,
+                        "status": resp.status,
+                        "content_type": resp.headers.get("content-type", ""),
+                        "size_hint": int(resp.headers.get("content-length", "0") or 0),
+                    }
+                )
             except Exception as e:
                 request_log.append({"phase": "response_error", "url": resp.url, "error": str(e)})
 
@@ -126,7 +132,7 @@ async def main(query: str, search_type: str, headed: bool, outdir: Path) -> int:
         candidates = [
             'textarea[placeholder*="Ask" i]',
             'textarea[placeholder*="anything" i]',
-            'textarea',
+            "textarea",
             '[role="textbox"]',
             'input[type="text"]',
         ]
@@ -163,14 +169,20 @@ async def main(query: str, search_type: str, headed: bool, outdir: Path) -> int:
     log_path.write_text("\n".join(json.dumps(e) for e in request_log) + "\n")
 
     pplx_xhrs = [
-        e for e in request_log
+        e
+        for e in request_log
         if e.get("phase") == "request"
         and "perplexity.ai" in e.get("url", "")
         and e.get("resource_type") in ("xhr", "fetch", "eventsource")
     ]
-    print(f"\ncaptured {len(request_log)} total events; {len(pplx_xhrs)} perplexity.ai XHR/fetch requests", file=sys.stderr)
-    print(f"\noutput:\n  har:  {har_path}\n  log:  {log_path}\n  shots: {shot_dir}", file=sys.stderr)
-    print(f"\nfirst 20 perplexity.ai XHR URLs:", file=sys.stderr)
+    print(
+        f"\ncaptured {len(request_log)} total events; {len(pplx_xhrs)} perplexity.ai XHR/fetch requests",
+        file=sys.stderr,
+    )
+    print(
+        f"\noutput:\n  har:  {har_path}\n  log:  {log_path}\n  shots: {shot_dir}", file=sys.stderr
+    )
+    print("\nfirst 20 perplexity.ai XHR URLs:", file=sys.stderr)
     seen = set()
     for e in pplx_xhrs:
         key = e["method"] + " " + e["url"].split("?")[0]

@@ -131,7 +131,10 @@ def main(query: str, send_text: bool, out_dir: Path) -> int:
     buffer = ""
     n_events = 0
     event_types: dict[str, int] = {}
-    with raw_path.open("w", encoding="utf-8") as raw_fh, events_path.open("w", encoding="utf-8") as ev_fh:
+    with (
+        raw_path.open("w", encoding="utf-8") as raw_fh,
+        events_path.open("w", encoding="utf-8") as ev_fh,
+    ):
         for chunk in resp.iter_content(chunk_size=4096):
             if not chunk:
                 continue
@@ -150,7 +153,7 @@ def main(query: str, send_text: bool, out_dir: Path) -> int:
     print(f"\n→ captured {n_events} events", file=sys.stderr)
     print(f"  raw:    {raw_path}", file=sys.stderr)
     print(f"  events: {events_path}", file=sys.stderr)
-    print(f"\nevent type counts:", file=sys.stderr)
+    print("\nevent type counts:", file=sys.stderr)
     for et, n in sorted(event_types.items(), key=lambda x: -x[1]):
         print(f"  {n:4d}  {et}", file=sys.stderr)
     return 0
@@ -159,7 +162,9 @@ def main(query: str, send_text: bool, out_dir: Path) -> int:
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("query")
-    ap.add_argument("--no-text", action="store_true", help="set send_back_text_in_streaming_api=false")
+    ap.add_argument(
+        "--no-text", action="store_true", help="set send_back_text_in_streaming_api=false"
+    )
     ap.add_argument(
         "--outdir",
         type=Path,

@@ -10,8 +10,10 @@ accepts us as a real Chrome client. See balakumardev/perplexity-web-wrapper.
 
 from __future__ import annotations
 
+import contextlib
 import json
-from typing import Any, Iterator
+from collections.abc import Iterator
+from typing import Any
 
 from curl_cffi import requests as cf_requests
 
@@ -40,10 +42,13 @@ class Client:
         self._cookies = dict(cookies)
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
-        self._session = cf_requests.Session(impersonate=impersonate)
+        # curl_cffi types `impersonate` as a closed Literal union; our default
+        # is "chrome" (an alias the lib accepts at runtime). Cast rather than
+        # mirror an internal Literal list that drifts on every curl_cffi release.
+        self._session = cf_requests.Session(impersonate=impersonate)  # type: ignore[arg-type]
 
     @classmethod
-    def from_default_cookies(cls, profile: str | None = None, **kwargs: Any) -> "Client":
+    def from_default_cookies(cls, profile: str | None = None, **kwargs: Any) -> Client:
         from .auth import load_cookies
 
         return cls(load_cookies(profile), **kwargs)
@@ -60,9 +65,7 @@ class Client:
         except Exception as e:
             raise SchemaError("non-JSON response from /api/auth/session") from e
         if not isinstance(data, dict):
-            raise SchemaError(
-                f"/api/auth/session returned {type(data).__name__}, expected object"
-            )
+            raise SchemaError(f"/api/auth/session returned {type(data).__name__}, expected object")
         if not data or "user" not in data:
             raise AuthError("session expired or unauthenticated; re-import cookies")
         return data
@@ -127,17 +130,13 @@ class Client:
                     if parsed is not None:
                         yield parsed
         finally:
-            try:
+            with contextlib.suppress(Exception):
                 resp.close()
-            except Exception:
-                pass
 
     def _get(self, path: str, **kwargs: Any) -> Any:
         url = self._base_url + path
         try:
-            resp = self._session.get(
-                url, cookies=self._cookies, timeout=self._timeout, **kwargs
-            )
+            resp = self._session.get(url, cookies=self._cookies, timeout=self._timeout, **kwargs)
         except Exception as e:
             raise NetworkError(f"request to {path} failed: {e!s}") from e
         self._check_status(resp, path)

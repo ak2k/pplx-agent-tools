@@ -28,9 +28,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    p_check = sub.add_parser(
-        "check", help="validate the session against /api/auth/session"
-    )
+    p_check = sub.add_parser("check", help="validate the session against /api/auth/session")
     p_check.add_argument(
         "--profile",
         help="cookie profile (default: $PPLX_PROFILE or 'default')",
@@ -41,9 +39,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_refresh.add_argument("--profile", help="cookie profile")
 
-    p_import = sub.add_parser(
-        "import", help="import cookies from a local browser profile"
-    )
+    p_import = sub.add_parser("import", help="import cookies from a local browser profile")
     p_import.add_argument(
         "--browser",
         choices=list(SUPPORTED_BROWSERS),

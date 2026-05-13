@@ -30,7 +30,14 @@ TARGET_URL = "https://example.com"
 async def main() -> int:
     raw = json.loads(COOKIES_FILE.read_text())
     cookies = [
-        {"name": n, "value": v, "domain": ".perplexity.ai", "path": "/", "secure": True, "sameSite": "Lax"}
+        {
+            "name": n,
+            "value": v,
+            "domain": ".perplexity.ai",
+            "path": "/",
+            "secure": True,
+            "sameSite": "Lax",
+        }
         for n, v in raw.items()
     ]
 
@@ -66,12 +73,17 @@ async def main() -> int:
             request_log.append(entry)
 
         page.on("request", on_request)
-        page.on("response", lambda r: request_log.append({
-            "phase": "response",
-            "url": r.url,
-            "status": r.status,
-            "content_type": r.headers.get("content-type", ""),
-        }))
+        page.on(
+            "response",
+            lambda r: request_log.append(
+                {
+                    "phase": "response",
+                    "url": r.url,
+                    "status": r.status,
+                    "content_type": r.headers.get("content-type", ""),
+                }
+            ),
+        )
 
         await page.goto("https://www.perplexity.ai/", wait_until="domcontentloaded", timeout=30000)
         # Wait for textbox
@@ -102,7 +114,8 @@ async def main() -> int:
     log_path.write_text("\n".join(json.dumps(e) for e in request_log) + "\n")
 
     pplx = [
-        e for e in request_log
+        e
+        for e in request_log
         if e.get("phase") == "request"
         and "perplexity.ai" in e.get("url", "")
         and e.get("resource_type") in ("xhr", "fetch", "eventsource")

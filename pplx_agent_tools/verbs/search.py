@@ -113,15 +113,11 @@ def search_many(
     )
     raw = client.post_json(ENDPOINT, body)
     if not isinstance(raw, dict):
-        raise SchemaError(
-            f"unexpected response type from {ENDPOINT}: {type(raw).__name__}"
-        )
+        raise SchemaError(f"unexpected response type from {ENDPOINT}: {type(raw).__name__}")
 
     raw_hits = raw.get("web_results") or []
     if not isinstance(raw_hits, list):
-        raise SchemaError(
-            f"{ENDPOINT} returned non-list web_results: {type(raw_hits).__name__}"
-        )
+        raise SchemaError(f"{ENDPOINT} returned non-list web_results: {type(raw_hits).__name__}")
 
     hits = [_to_hit(h) for h in raw_hits if _keep(h)]
     # Stable de-dupe by URL (server may already do this for queries[]; we
@@ -152,9 +148,7 @@ def _to_hit(raw: dict[str, Any]) -> Hit:
     url = raw.get("url")
     title = raw.get("name")
     if not isinstance(url, str) or not isinstance(title, str):
-        raise SchemaError(
-            f"web_result missing url/name: keys={sorted(raw.keys())[:10]}"
-        )
+        raise SchemaError(f"web_result missing url/name: keys={sorted(raw.keys())[:10]}")
     images_raw = []
     meta = raw.get("meta_data")
     if isinstance(meta, dict):

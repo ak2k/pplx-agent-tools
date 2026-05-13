@@ -11,7 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from typing import Sequence
+from collections.abc import Sequence
 
 from .errors import PplxError, exit_code
 from .render import render_search_json, render_search_text
@@ -35,9 +35,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("-n", "--limit", type=int, default=10, help="result count (default: 10)")
     parser.add_argument("--country", default="US", help="country code (default: US)")
     parser.add_argument("--domains", help="comma-separated include domains (web only)")
-    parser.add_argument(
-        "--excluded-domains", help="comma-separated exclude domains (web only)"
-    )
+    parser.add_argument("--excluded-domains", help="comma-separated exclude domains (web only)")
     parser.add_argument("-j", "--json", action="store_true", help="output JSON")
     parser.add_argument(
         "--profile",

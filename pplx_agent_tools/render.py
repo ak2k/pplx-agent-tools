@@ -8,6 +8,7 @@ from __future__ import annotations
 from typing import Any
 
 from . import __version__
+from .verbs.fetch import FetchResult
 from .verbs.search import Hit, SearchResult
 
 
@@ -41,6 +42,37 @@ def render_search_json(result: SearchResult) -> dict[str, Any]:
     }
     if result.warnings:
         out["warnings"] = list(result.warnings)
+    return out
+
+
+def render_fetch_text(result: FetchResult) -> str:
+    """Header (title / URL / domain / extracted flag) followed by content."""
+    header_lines: list[str] = []
+    if result.title:
+        header_lines.append(f"# {result.title}")
+    header_lines.append(result.url)
+    extra: list[str] = [f"domain: {result.domain}"]
+    if result.published_date:
+        extra.append(f"date: {result.published_date}")
+    if result.is_extracted:
+        extra.append("extracted: yes (LLM)")
+    header_lines.append(" · ".join(extra))
+    return "\n".join(header_lines) + "\n\n" + result.content
+
+
+def render_fetch_json(result: FetchResult) -> dict[str, Any]:
+    out: dict[str, Any] = {
+        "_pplx_tools_version": __version__,
+        "url": result.url,
+        "domain": result.domain,
+        "is_extracted": result.is_extracted,
+        "truncated": result.truncated,
+        "content": result.content,
+    }
+    if result.title is not None:
+        out["title"] = result.title
+    if result.published_date is not None:
+        out["published_date"] = result.published_date
     return out
 
 

@@ -25,13 +25,20 @@ classifiers = [
 dependencies = [
     "curl_cffi>=0.7",
     "rookiepy>=0.5",
+    "trafilatura>=1.12",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest"]
+dev = [
+    "pytest",
+    "ruff>=0.6",
+    "vulture>=2.10",
+    "pyright>=1.1.380",
+]
 
 [project.scripts]
 pplx-search = "pplx_agent_tools.cli_search:main"
+pplx-fetch = "pplx_agent_tools.cli_fetch:main"
 pplx-auth = "pplx_agent_tools.cli_auth:main"
 
 [project.urls]
@@ -40,3 +47,63 @@ Issues = "https://github.com/ak2k/pplx-agent-tools/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["pplx_agent_tools"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+extend-exclude = ["re-fixtures", "scripts/_inspect_hits.py"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes (unused imports/vars)
+    "I",    # isort
+    "B",    # bugbear
+    "UP",   # pyupgrade
+    "RUF",  # ruff-specific
+    "SIM",  # flake8-simplify
+    "PIE",  # flake8-pie (misc)
+    # "TC" rules (TYPE_CHECKING-block imports) intentionally omitted —
+    # `from __future__ import annotations` makes them runtime-irrelevant
+    # but the TYPE_CHECKING ceremony hurts readability.
+    "ARG",  # unused arguments
+    "PTH",  # pathlib usage
+    "ERA",  # commented-out code
+    "PLR",  # pylint refactor
+    "PLW",  # pylint warnings
+]
+ignore = [
+    "E501",     # line too long — line-length is the source of truth
+    "PLR0913",  # too many arguments — CLI verb signatures are wide
+    "PLR2004",  # magic value comparisons — false positives in tests
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Scripts are exploratory RE tooling — relax style/complexity rules.
+"scripts/*" = ["ARG", "ERA", "PLR", "SIM105"]
+
+[tool.vulture]
+paths = ["pplx_agent_tools"]
+min_confidence = 70
+ignore_decorators = ["@dataclass", "@classmethod", "@staticmethod"]
+ignore_names = [
+    # Entry points exported via [project.scripts]
+    "main",
+    "build_parser",
+    # Dataclass fields and verb-public APIs
+    "warnings",
+    "media_items",
+]
+
+[tool.pyright]
+include = ["pplx_agent_tools"]
+exclude = ["re-fixtures", "**/__pycache__"]
+pythonVersion = "3.10"
+typeCheckingMode = "standard"
+# Third-party deps without stubs: curl_cffi (Rust bindings), rookiepy (Rust),
+# trafilatura (older lib, no inline annotations). Silence stub-missing noise
+# rather than burn time chasing it.
+reportMissingTypeStubs = false
+reportMissingImports = "warning"
+useLibraryCodeForTypes = true
