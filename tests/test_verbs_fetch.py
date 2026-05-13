@@ -12,7 +12,12 @@ from typing import Any
 
 import pytest
 
-from pplx_agent_tools.errors import NetworkError, SchemaError
+from pplx_agent_tools.errors import (
+    NetworkError,
+    RateLimitError,
+    SchemaError,
+    StreamDeadlineError,
+)
 from pplx_agent_tools.verbs.fetch import (
     _build_chat_body,
     _fetch_with_prompt,
@@ -98,7 +103,13 @@ class FakeClient(_TestClientBase):
         self.deleted: list[tuple[str, str]] = []
         self.delete_should_fail = False
 
-    def sse_post(self, path: str, body: dict[str, Any]) -> Iterator[dict[str, Any]]:  # type: ignore[override]
+    def sse_post(  # type: ignore[override]
+        self,
+        path: str,
+        body: dict[str, Any],
+        *,
+        max_total_seconds: float | None = None,
+    ) -> Iterator[dict[str, Any]]:
         yield from self._events
 
     def delete_thread(self, entry_uuid: str, read_write_token: str) -> bool:  # type: ignore[override]
@@ -382,3 +393,187 @@ def test_stream_complete_false_when_stream_cuts_mid_flight() -> None:
     result = _fetch_with_prompt(client, "u", "p", "d", max_chars=None)
     assert result.content == "partial..."
     assert result.stream_complete is False
+
+
+# ---------- StreamDeadlineError soft-fail (overall timeout) ----------
+
+
+class _DeadlineClient(_TestClientBase):
+    """Yields a prefix of events, then raises StreamDeadlineError to simulate
+    the wall-clock deadline tripping mid-stream.
+    """
+
+    def __init__(self, events_before_deadline: list[dict[str, Any]]) -> None:
+        super().__init__()
+        self._events = events_before_deadline
+
+    def sse_post(  # type: ignore[override]
+        self,
+        path: str,
+        body: dict[str, Any],
+        *,
+        max_total_seconds: float | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        yield from self._events
+        raise StreamDeadlineError("simulated deadline")
+
+    def delete_thread(self, entry_uuid: str, read_write_token: str) -> bool:  # type: ignore[override]
+        return True
+
+
+def test_deadline_soft_fails_with_partial_content() -> None:
+    events = [
+        _ev([_block("ask_text", ["partial-"])]),
+        _ev([_block("ask_text", ["answer."])]),
+        # then deadline trips before COMPLETED
+    ]
+    client = _DeadlineClient(events)
+    result = _fetch_with_prompt(client, "u", "p", "d", max_chars=None, timeout=5.0)
+    assert result.content == "partial-answer."
+    assert result.stream_complete is False
+    assert result.is_extracted is True
+
+
+def test_deadline_with_no_content_raises_stream_deadline() -> None:
+    # Deadline trips before any chunks arrive — there's nothing to salvage,
+    # so caller gets the typed error (exit 4).
+    client = _DeadlineClient([])
+    with pytest.raises(StreamDeadlineError):
+        _fetch_with_prompt(client, "u", "p", "d", max_chars=None, timeout=5.0)
+
+
+def test_deadline_kwarg_propagates_to_sse_post() -> None:
+    seen: dict[str, float | None] = {}
+
+    class _Spy(_TestClientBase):
+        def sse_post(  # type: ignore[override]
+            self,
+            path: str,
+            body: dict[str, Any],
+            *,
+            max_total_seconds: float | None = None,
+        ) -> Iterator[dict[str, Any]]:
+            seen["max_total_seconds"] = max_total_seconds
+            yield from [_ev([_block("ask_text", ["x"])], status="COMPLETED")]
+
+        def delete_thread(self, *_a: Any, **_k: Any) -> bool:  # type: ignore[override]
+            return True
+
+    _fetch_with_prompt(_Spy(), "u", "p", "d", max_chars=None, timeout=7.5)
+    assert seen["max_total_seconds"] is not None
+    # Slightly less than 7.5 because some monotonic time passed between the
+    # caller computing the deadline and the spy reading the remaining budget.
+    assert 0 < seen["max_total_seconds"] <= 7.5
+
+
+def test_no_timeout_passes_none_to_sse_post() -> None:
+    seen: dict[str, float | None] = {"max_total_seconds": -1.0}
+
+    class _Spy(_TestClientBase):
+        def sse_post(  # type: ignore[override]
+            self,
+            path: str,
+            body: dict[str, Any],
+            *,
+            max_total_seconds: float | None = None,
+        ) -> Iterator[dict[str, Any]]:
+            seen["max_total_seconds"] = max_total_seconds
+            yield from [_ev([_block("ask_text", ["x"])], status="COMPLETED")]
+
+        def delete_thread(self, *_a: Any, **_k: Any) -> bool:  # type: ignore[override]
+            return True
+
+    _fetch_with_prompt(_Spy(), "u", "p", "d", max_chars=None, timeout=None)
+    assert seen["max_total_seconds"] is None
+
+
+# ---------- Auto-retry on RateLimitError ----------
+
+
+class _RateLimitClient(_TestClientBase):
+    """Raises RateLimitError on the first N attempts, then yields events."""
+
+    def __init__(
+        self,
+        fail_attempts: int,
+        events_on_success: list[dict[str, Any]],
+        retry_after: float | None = 0.0,
+    ) -> None:
+        super().__init__()
+        self._fail_attempts = fail_attempts
+        self._events = events_on_success
+        self._retry_after = retry_after
+        self.attempts = 0
+
+    def sse_post(  # type: ignore[override]
+        self,
+        path: str,
+        body: dict[str, Any],
+        *,
+        max_total_seconds: float | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        self.attempts += 1
+        if self.attempts <= self._fail_attempts:
+            raise RateLimitError("rate limited", retry_after=self._retry_after)
+        yield from self._events
+
+    def delete_thread(self, entry_uuid: str, read_write_token: str) -> bool:  # type: ignore[override]
+        return True
+
+
+def test_rate_limit_retries_then_succeeds() -> None:
+    events = [_ev([_block("ask_text", ["ok"])], status="COMPLETED")]
+    # Fail twice with 0s retry_after so we don't actually sleep
+    client = _RateLimitClient(fail_attempts=2, events_on_success=events, retry_after=0.0)
+    result = _fetch_with_prompt(client, "u", "p", "d", max_chars=None, timeout=30.0)
+    assert client.attempts == 3
+    assert result.content == "ok"
+    assert result.stream_complete is True
+
+
+def test_rate_limit_gives_up_after_max_attempts() -> None:
+    # All 3 attempts fail → final RateLimitError propagates (exit 3)
+    client = _RateLimitClient(fail_attempts=10, events_on_success=[], retry_after=0.0)
+    with pytest.raises(RateLimitError):
+        _fetch_with_prompt(client, "u", "p", "d", max_chars=None, timeout=30.0)
+    assert client.attempts == 3  # _RATE_LIMIT_MAX_ATTEMPTS
+
+
+def test_rate_limit_retry_respects_deadline(capsys: pytest.CaptureFixture) -> None:
+    # retry_after exceeds remaining timeout → sleep gets capped, then raises.
+    client = _RateLimitClient(fail_attempts=10, events_on_success=[], retry_after=60.0)
+    with pytest.raises(RateLimitError):
+        _fetch_with_prompt(client, "u", "p", "d", max_chars=None, timeout=0.01)
+    # Process didn't actually sleep 60s — test would time out long before
+    # we got here if it had.
+
+
+# ---------- Progress heartbeat ----------
+
+
+def test_progress_emits_stderr_after_event_stride(
+    capsys: pytest.CaptureFixture,
+) -> None:
+    # Need >= _PROGRESS_EVENT_STRIDE events to see any heartbeat. Default = 10.
+    events = [_ev([_block("ask_text", [f"c{i}"])]) for i in range(12)] + [
+        _ev([], status="COMPLETED")
+    ]
+    client = FakeClient(events)
+    _fetch_with_prompt(client, "u", "p", "d", max_chars=None, progress=True)
+    err = capsys.readouterr().err
+    # At least one heartbeat dot was emitted, plus a trailing newline.
+    assert "." in err
+    assert err.endswith("\n")
+
+
+def test_progress_silent_when_disabled(
+    capsys: pytest.CaptureFixture,
+) -> None:
+    events = [_ev([_block("ask_text", [f"c{i}"])]) for i in range(30)] + [
+        _ev([], status="COMPLETED")
+    ]
+    client = FakeClient(events)
+    _fetch_with_prompt(client, "u", "p", "d", max_chars=None, progress=False)
+    err = capsys.readouterr().err
+    # No heartbeat output. The fake's delete_thread path doesn't emit either.
+    assert err == ""

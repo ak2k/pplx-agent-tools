@@ -130,6 +130,34 @@ def test_render_fetch_text_marks_extracted_mode() -> None:
     assert "extracted: yes (LLM)" in render_fetch_text(result)
 
 
+def test_render_fetch_text_marks_incomplete_stream() -> None:
+    # Partial answer from a deadline-clipped or server-cut stream must be
+    # visually distinct from a complete one — a human eyeballing stdout
+    # shouldn't mistake the two.
+    result = FetchResult(
+        url="u",
+        title=None,
+        domain="d",
+        content="partial...",
+        is_extracted=True,
+        stream_complete=False,
+    )
+    out = render_fetch_text(result)
+    assert "stream: incomplete" in out
+
+
+def test_render_fetch_text_no_incomplete_marker_when_complete() -> None:
+    result = FetchResult(
+        url="u",
+        title=None,
+        domain="d",
+        content="full answer",
+        is_extracted=True,
+        stream_complete=True,
+    )
+    assert "stream: incomplete" not in render_fetch_text(result)
+
+
 def test_render_fetch_json_shape() -> None:
     result = FetchResult(
         url="https://example.com/",

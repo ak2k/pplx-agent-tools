@@ -14,6 +14,11 @@ EXIT_AUTH: Final = 2
 EXIT_RATE_LIMIT: Final = 3
 EXIT_NETWORK: Final = 4
 EXIT_ANTI_BOT: Final = 5
+# Partial-success: stdout carries usable content, but the upstream stream did
+# not signal COMPLETED (deadline tripped or server cut). Distinct from network
+# (exit 4) because the retry semantic differs: bumping --timeout or accepting
+# the partial is usually the right move, not a blind backoff retry.
+EXIT_PARTIAL: Final = 6
 
 
 class PplxError(Exception):
@@ -40,6 +45,16 @@ class RateLimitError(PplxError):
 
 class NetworkError(PplxError):
     """DNS / timeout / connection refused / TLS error. Agent retry: linear backoff. Exit 4."""
+
+
+class StreamDeadlineError(NetworkError):
+    """SSE stream exceeded the caller-provided overall deadline.
+
+    Subclasses NetworkError so the exit-code mapping treats it like any other
+    timeout (exit 4). Distinguished from NetworkError so verbs that can salvage
+    a partial result (e.g. `pplx fetch --prompt` accumulating chunks) can catch
+    it specifically without swallowing real network failures.
+    """
 
 
 class AntiBotError(PplxError):

@@ -63,7 +63,13 @@ class FixtureClient(_TestClientBase):
         ]
         self.deleted: list[tuple[str, str]] = []
 
-    def sse_post(self, path: str, body: dict[str, Any]) -> Iterator[dict[str, Any]]:  # type: ignore[override]
+    def sse_post(  # type: ignore[override]
+        self,
+        path: str,
+        body: dict[str, Any],
+        *,
+        max_total_seconds: float | None = None,
+    ) -> Iterator[dict[str, Any]]:
         for payload in self._events:
             yield {"event": "message", "data": payload}
 
