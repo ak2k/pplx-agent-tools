@@ -10,6 +10,7 @@ from typing import Any
 from . import __version__
 from .verbs.fetch import FetchResult
 from .verbs.search import Hit, SearchResult
+from .verbs.snippets import SnippetsResult
 
 
 def render_search_text(result: SearchResult) -> str:
@@ -43,6 +44,43 @@ def render_search_json(result: SearchResult) -> dict[str, Any]:
     if result.warnings:
         out["warnings"] = list(result.warnings)
     return out
+
+
+def render_snippets_text(result: SnippetsResult) -> str:
+    """Per-URL block, header followed by relevance-ranked excerpts."""
+    if not result.results:
+        return "(no results)"
+    parts: list[str] = []
+    for ur in result.results:
+        parts.append(f"# {ur.url}")
+        if ur.error:
+            parts.append(f"  error: {ur.error}")
+        elif not ur.snippets:
+            parts.append("  (no relevant snippets)")
+        else:
+            for s in ur.snippets:
+                parts.append("")
+                parts.append(s.text)
+        parts.append("")
+    return "\n".join(parts).rstrip()
+
+
+def render_snippets_json(result: SnippetsResult) -> dict[str, Any]:
+    return {
+        "_pplx_tools_version": __version__,
+        "query": result.query,
+        "results": [
+            {
+                "url": ur.url,
+                **({"error": ur.error} if ur.error else {}),
+                "snippets": [
+                    {"text": s.text, "score": round(s.score, 5), "tokens": s.tokens}
+                    for s in ur.snippets
+                ],
+            }
+            for ur in result.results
+        ],
+    }
 
 
 def render_fetch_text(result: FetchResult) -> str:

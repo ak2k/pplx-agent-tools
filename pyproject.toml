@@ -26,6 +26,8 @@ dependencies = [
     "curl_cffi>=0.7",
     "rookiepy>=0.5",
     "trafilatura>=1.12",
+    "fastembed>=0.4",
+    "sqlite-vec>=0.1.6",
 ]
 
 [project.optional-dependencies]
@@ -39,6 +41,7 @@ dev = [
 [project.scripts]
 pplx-search = "pplx_agent_tools.cli_search:main"
 pplx-fetch = "pplx_agent_tools.cli_fetch:main"
+pplx-snippets = "pplx_agent_tools.cli_snippets:main"
 pplx-auth = "pplx_agent_tools.cli_auth:main"
 
 [project.urls]
@@ -78,6 +81,9 @@ ignore = [
     "PLR0913",  # too many arguments — CLI verb signatures are wide
     "PLR2004",  # magic value comparisons — false positives in tests
 ]
+
+[tool.ruff.lint.pylint]
+max-branches = 16  # default 12; verb orchestrators legitimately need a few more
 
 [tool.ruff.lint.per-file-ignores]
 # Scripts are exploratory RE tooling — relax style/complexity rules.
