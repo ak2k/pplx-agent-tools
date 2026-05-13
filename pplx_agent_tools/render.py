@@ -12,8 +12,10 @@ from .verbs.search import Hit, SearchResult
 
 
 def render_search_text(result: SearchResult) -> str:
-    """Numbered hit list, one entry per result. Three lines per hit
-    (title / URL / wrapped snippet).
+    """Numbered hit list, three lines per hit (title / URL / one-line snippet).
+
+    Snippets are collapsed to a single line (some sources — Reddit, forum
+    posts — have multi-line snippets that would break the format).
     """
     if not result.hits:
         return "(no results)"
@@ -22,9 +24,9 @@ def render_search_text(result: SearchResult) -> str:
         lines.append(f"{i}. {hit.title}")
         lines.append(f"   {hit.url}")
         if hit.snippet:
-            lines.append(f"   {hit.snippet}")
+            snippet = " ".join(hit.snippet.split())
+            lines.append(f"   {snippet}")
         lines.append("")
-    # Strip the trailing blank
     return "\n".join(lines[:-1]) if lines else ""
 
 
@@ -51,6 +53,8 @@ def _hit_to_json(hit: Hit) -> dict[str, Any]:
         out["domain"] = hit.domain
     if hit.snippet is not None:
         out["snippet"] = hit.snippet
+    if hit.summary is not None:
+        out["summary"] = hit.summary
     if hit.published_date is not None:
         out["published_date"] = hit.published_date
     if hit.images:

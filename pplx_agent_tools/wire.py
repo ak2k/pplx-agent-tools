@@ -67,6 +67,27 @@ class Client:
             raise AuthError("session expired or unauthenticated; re-import cookies")
         return data
 
+    def post_json(self, path: str, body: dict[str, Any]) -> Any:
+        """POST a JSON body, return the parsed JSON response.
+
+        Same error mapping as `_get`: auth/rate-limit/network/CF.
+        """
+        url = self._base_url + path
+        try:
+            resp = self._session.post(
+                url,
+                cookies=self._cookies,
+                json=body,
+                timeout=self._timeout,
+            )
+        except Exception as e:
+            raise NetworkError(f"POST {path} failed: {e!s}") from e
+        self._check_status(resp, path)
+        try:
+            return resp.json()
+        except Exception as e:
+            raise SchemaError(f"non-JSON response from {path}") from e
+
     def sse_post(self, path: str, body: dict[str, Any]) -> Iterator[dict[str, Any]]:
         """POST a JSON body, stream the SSE response, yield parsed events.
 

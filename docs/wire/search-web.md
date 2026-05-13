@@ -1,187 +1,143 @@
 # pplx-search web — wire format
 
 Reverse-engineered 2026-05-12 against `www.perplexity.ai` frontend SPA build
-`8e78ece`. Captured via `scripts/re-capture.py` (Playwright/CDP) + replayed
-via `scripts/re-replay-search.py` for the SSE body (HAR can't record SSE).
+`8e78ece`. The web SPA exposes two relevant search surfaces:
+
+1. **`/rest/realtime/search-web`** — direct ranked-hit search (what we use)
+2. `/rest/sse/perplexity_ask` — SSE-streamed chat with web_results as one of
+   many response blocks (heavier; documented at end for reference / future
+   `--prompt` use)
 
 ## Endpoint
 
 ```
-POST https://www.perplexity.ai/rest/sse/perplexity_ask
+POST https://www.perplexity.ai/rest/realtime/search-web
 Content-Type: application/json
-Accept: text/event-stream
 ```
 
-The web frontend uses **one** endpoint for all queries (search, chat, deep
-research). There is no separate ranked-hits endpoint. The `mode` and
-`search_focus` params steer behavior.
+JSON request, JSON response, no streaming, no LLM cost. The endpoint takes
+~5s on the wire — designed for fast hit retrieval.
 
 ## Request body
 
-Captured production body has ~30 params, most UI-specific. The minimal viable
-set for a web search verb:
+Minimum viable:
 
 ```json
 {
-  "query_str": "<user query>",
-  "params": {
-    "query_source": "home",
-    "prompt_source": "user",
-    "source": "default",
-    "version": "2.18",
-    "language": "en-US",
-    "timezone": "America/New_York",
-
-    "search_focus": "internet",
-    "sources": ["web"],
-    "mode": "copilot",
-    "model_preference": "turbo",
-
-    "frontend_uuid": "<uuid4>",
-    "frontend_context_uuid": "<uuid4>",
-    "client_search_results_cache_key": "<same as frontend_uuid>",
-
-    "use_schematized_api": true,
-    "send_back_text_in_streaming_api": true,
-    "skip_search_enabled": true,
-    "is_nav_suggestions_disabled": false,
-    "is_incognito": false,
-    "is_related_query": false,
-    "is_sponsored": false,
-    "always_search_override": false,
-    "override_no_search": false,
-    "local_search_enabled": false,
-    "extended_context": false,
-
-    "attachments": [],
-    "mentions": [],
-    "client_coordinates": null,
-    "dsl_query": "<same as query_str>"
-  }
+  "session_id": "<uuid4>",
+  "queries": ["<query>", "<query>", ...]
 }
 ```
 
-Fields we strip from the captured request:
-- `time_from_first_type`, `rum_session_id` — UI telemetry
-- `supported_block_use_cases`, `supported_features` — widget rendering hints
-- `should_ask_for_mcp_tool_confirmation`, `browser_agent_*`, `force_*` — interactive UX
+Required fields confirmed via 422 validation messages:
+- `session_id` — per-call tracking UUID; no server-side state observed across
+  calls, so we generate a fresh one each invocation
+- `queries[]` — array of strings. **Multi-query is native** — pass N strings
+  to get one merged/deduped result list back
 
-## Response: SSE stream
+Not yet probed against this endpoint (deliberately optimistic — may 422):
+- `country` — country-code filter
+- `domain_filter` / `excluded_domains` — domain include/exclude lists
 
-`Content-Type: text/event-stream; charset=utf-8`, CRLF line endings (RFC).
-Two event types observed:
+If any of these 422, our code path forwards them only when explicitly set, so
+the default-case call (no filters) is safe.
 
-| Event | Count (per query) | Meaning |
-|---|---|---|
-| `message` | many (150+) | streaming progress + intermediate states + final answer |
-| `end_of_stream` | 1 | terminal event with status `COMPLETED` |
-
-Each `data:` payload is JSON. Top-level shape (only fields we care about):
+## Response
 
 ```json
 {
-  "backend_uuid": "...",
-  "status": "PENDING" | "COMPLETED",
-  "text_completed": false | true,
-  "blocks": [
-    { "intended_usage": "...", "<block_kind>": { ... } },
-    ...
-  ],
-  "telemetry_data": { "has_displayed_search_results": true, ... }
+  "media_items": [],
+  "web_results": [
+    { /* hit */ }, ...
+  ]
 }
 ```
 
-### web_results location
-
-```
-blocks[i].web_result_block.web_results[]
-```
-
-The block with `web_result_block` populated typically appears at event **index 2**
-(very early in the stream — confirmed for `"claude code"` query). The same hit
-list reappears in the final event (~151). The list is stable once populated:
-no re-ranking observed across events.
+`media_items` is non-empty when the query has video/image results (e.g.
+"youtube travel videos"); see Step 9 for `-t images / videos` variants.
 
 ### Hit shape
 
-```json
-{
-  "name": "Claude Code overview - Claude Code Docs",
-  "snippet": "Claude Code is an agentic coding tool that...",
-  "url": "https://code.claude.com/docs/en/overview",
-  "timestamp": "2026-05-11T00:00:00",
-  "meta_data": {
-    "citation_domain_name": "code.claude",
-    "client": "web",
-    "images": ["https://..."]
-  },
-  "is_attachment": false,
-  "is_image": false,
-  "is_code_interpreter": false,
-  "is_knowledge_card": false,
-  "is_navigational": false,
-  "is_widget": false,
-  "is_focused_web": false,
-  "is_client_context": false,
-  "is_memory": false,
-  "is_conversation_history": false,
-  "is_conversation_summary": false
-}
-```
+Full field inventory (captured for query "claude code"):
 
-## Mapping to our `hits[]` shape
+| Field | Type | Notes |
+|---|---|---|
+| `url` | string | the link |
+| `name` | string | page title |
+| `domain` | string | bare domain (e.g. "anthropic.skilljar.com") |
+| `snippet` | string | short description, ~200 chars typical |
+| `summary` | string | longer extraction, ~1500 chars typical — agent-friendly |
+| `timestamp` | ISO 8601 | publication or index date (varies by source) |
+| `id` | string | per-hit UUID — likely stable across calls for cache keys |
+| `language` | string | "en", "" if unknown |
+| `meta_data` | object?\|null | `{images: [...]}` when image previews exist |
+| `media_items` | array?\|null | nested media for this hit (mostly null) |
+| `url_content` | string?\|null | always null in observed responses — possibly populated when a different param is set; unconfirmed |
+| `relevance_score` / `score` | number?\|null | always null; ranking is implicit by array order |
+| `tab_id`, `page_id`, `source`, `client`, `query`, `engine`, `request_source` | string? | metadata, mostly empty in observed responses |
+| `connector_s3_key`, `file_metadata`, `finance_ticker_attributes` | various | non-web-result variants — null for web hits |
+| `is_*` flags (15 booleans) | bool | type discriminators — see filter below |
+
+### Filter flags
+
+A `web_result` carries 15 `is_*` flags. We drop the hit if any of these are
+true (they're not "web search hits" in the agent sense — they're widgets,
+nav suggestions, etc.):
+
+- `is_navigational` — URL-bar autosuggest
+- `is_widget` — embedded UI cards (weather, finance, ...)
+- `is_knowledge_card` — knowledge-graph panels
+- `is_image` / `is_video` / `is_audio` — non-web media (use `-t <type>`)
+- `is_map` — places preview
+- `is_memory` / `is_conversation_history` / `is_conversation_summary` — user's prior threads
+- `is_attachment` — user-uploaded files
+- `is_extra_info` — metadata-only entries
+- `is_pro_search_table` — pro-search structured tables
+
+Kept (informational, no filtering):
+- `is_entropy_visible_result` — true for normal web hits
+- `is_code_interpreter`, `is_video_preview`, `is_scrubbed`, `is_truncated`, etc.
+
+## Mapping to our Hit shape
 
 | Our field | Source path | Notes |
 |---|---|---|
 | `url` | `.url` | direct |
 | `title` | `.name` | renamed for consistency with kagi-search |
-| `domain` | `.meta_data.citation_domain_name` | drop `meta_data` wrapper |
+| `domain` | `.domain` | direct (no longer nested in meta_data) |
 | `snippet` | `.snippet` | direct |
+| `summary` | `.summary` | new field — ~10x snippet length, agent gold |
 | `published_date` | `.timestamp` | optional; ISO-8601 |
-| `images` | `.meta_data.images` | optional list of URLs |
+| `images` | `.meta_data.images` | optional list |
 
-## Filtering
+## Pivot history
 
-Drop hits where any of the following are true (they're not "web search hits"
-in the conventional sense the user wants from `pplx-search`):
+The initial Step-5 implementation used `/rest/sse/perplexity_ask` (the SSE
+chat endpoint) and early-terminated after the first event with web_results.
+That worked but cost a 3.9 MB stream per query and burned LLM tokens we
+didn't use. Switched to `/rest/realtime/search-web` after broader RE pass
+(2026-05-12) found this endpoint among the SPA's API client call sites.
 
-- `is_navigational` — URL-bar autosuggest, "go to wikipedia.org"
-- `is_widget` — embedded UI cards (weather, finance, etc.)
-- `is_knowledge_card` — knowledge graph panels
-- `is_image` — image-search-style results (use `-t images` for those)
-- `is_memory` / `is_conversation_*` — user's prior threads
-- `is_attachment` / `is_client_context` — user-uploaded context
+## Reference: /rest/sse/perplexity_ask
 
-## Early termination
+Still relevant for the chat / `--prompt` use case (Step 7). Captured request
+body and SSE event shape preserved in `re-fixtures/search-web/*.events.jsonl`
+and `*.raw.sse`. Key facts:
 
-We can abort the SSE connection as soon as we see the first event whose
-`blocks[].web_result_block.web_results[]` is non-empty. This avoids streaming
-the full LLM synthesis (the remaining ~95% of the response by bytes) which
-we don't use. Saves bandwidth, latency, and the user's Pro-subscription
-LLM-throughput budget.
-
-## Multi-query
-
-The plan describes positional multi-query: `pplx-search "q1" "q2" "q3"`.
-The web endpoint takes one `query_str` per request. We fire N concurrent
-POSTs and merge/dedupe by URL client-side. (Server-side merge is described
-in the `pplx --help` text but not exposed via this endpoint.)
-
-## Variants (`-t academic` / `-t images` / etc.)
-
-Not RE'd yet. Likely changes:
-- `sources` field: `["scholar"]` for academic, `["images"]` for images, etc.
-- Possibly `search_focus`: `"scholar"`, `"images"`, etc.
-- Hit shape may change for non-web sources.
-
-Captured via `scripts/re-capture.py "..." --type <kind>` and document here as
-each variant is RE'd.
+- Body: ~30 params, see `scripts/re-replay-search.py` for canonical shape
+- Response: SSE `text/event-stream` with CRLF line endings, ~150 events for
+  a typical query, 3-4 MB total
+- web_results land in `blocks[].web_result_block.web_results[]` at event ~2
+- LLM-synthesized answer lands in `blocks[].markdown_block`
+- Terminal event has `event: end_of_stream` and `status: COMPLETED`
 
 ## Captured fixtures
 
-- `re-fixtures/search-web/<query>-<ts>.har` — full network capture (Playwright)
-- `re-fixtures/search-web/<query>-<ts>.requests.jsonl` — request log
+Working captures (gitignored):
+- `re-fixtures/search-web/realtime-search-web-<ts>.json` — clean realtime response
 - `re-fixtures/search-web/<query>-text_True-<ts>.events.jsonl` — parsed SSE events
 - `re-fixtures/search-web/<query>-text_True-<ts>.raw.sse` — raw SSE bytes
+- `re-fixtures/search-web/<query>-<ts>.har` — Playwright network capture
 
-Cookie values are stripped via the .gitignore pattern; review before committing.
+Sanitized fixtures intended for tests will live under `tests/fixtures/` per
+the plan's test strategy section.
