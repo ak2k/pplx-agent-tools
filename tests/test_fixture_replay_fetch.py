@@ -31,8 +31,13 @@ from pplx_agent_tools.verbs.fetch import _fetch_with_prompt
 from pplx_agent_tools.wire import Client
 
 FIXTURES = Path(__file__).parent / "fixtures" / "fetch-url"
+SANITIZER_SCRIPT = (
+    Path(__file__).parent.parent / "scripts" / "re-sanitize-fetch-fixture.py"
+)
 
-# Matches the sentinels in scripts/re-sanitize-fetch-fixture.py
+# Matches the sentinels in scripts/re-sanitize-fetch-fixture.py.
+# Drift between this file and the script is caught by
+# test_sentinels_match_sanitizer_script below — keep them in lockstep.
 SENTINEL_BACKEND_UUID = "00000000-0000-4000-8000-000000000001"
 SENTINEL_RW_TOKEN = "TEST_RW_TOKEN"
 
@@ -123,3 +128,22 @@ def test_fetch_with_prompt_truncates_real_stream(example_com_fixture: Path) -> N
     assert len(result.content) == 20
     assert result.truncated is True
     assert result.content == EXPECTED_ANSWER[:20]
+
+
+def test_sentinels_match_sanitizer_script() -> None:
+    """Defensive: detect drift between the sanitizer's SENTINELS dict and
+    the constants this test asserts against. If someone changes one without
+    the other, the fixture-replay tests would mysteriously fail on the
+    next regeneration — better to fail loudly here.
+    """
+    assert SANITIZER_SCRIPT.exists(), f"missing script: {SANITIZER_SCRIPT}"
+    script = SANITIZER_SCRIPT.read_text()
+    # Each sentinel that the replay test asserts on MUST appear verbatim
+    # in the script. Substring match is fine — the script wraps these in
+    # the SENTINELS dict.
+    assert SENTINEL_BACKEND_UUID in script, (
+        f"SENTINEL_BACKEND_UUID {SENTINEL_BACKEND_UUID!r} not in sanitizer script"
+    )
+    assert SENTINEL_RW_TOKEN in script, (
+        f"SENTINEL_RW_TOKEN {SENTINEL_RW_TOKEN!r} not in sanitizer script"
+    )

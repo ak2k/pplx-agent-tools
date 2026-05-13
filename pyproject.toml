@@ -123,6 +123,9 @@ exclude_also = [
     "if __name__ == .__main__.:",
 ]
 show_missing = true
+# Floor — `pytest --cov` fails below this. Bumped manually when coverage
+# climbs and we want the new floor enforced (not auto-ratcheted to current).
+fail_under = 60
 
 [tool.pyright]
 include = ["pplx_agent_tools"]

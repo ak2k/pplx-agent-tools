@@ -145,3 +145,47 @@ def test_parser_never_raises_on_ascii_input(raw: str) -> None:
     if out is None:
         return
     assert set(out.keys()) == {"event", "data"}
+
+
+# ---------- non-ASCII input ----------
+
+# Production decode path is UTF-8 (wire.py:178). Emoji, CJK, accented
+# characters, RTL marks — all reachable from Perplexity's response and
+# all of them must round-trip cleanly through the parser.
+_unicode_payload = st.text(
+    alphabet=st.characters(
+        blacklist_characters="\n\r",
+        blacklist_categories=("Cs",),  # exclude surrogates (invalid in JSON strings)
+    ),
+    max_size=40,
+)
+
+
+@given(_unicode_payload)
+def test_parse_unicode_string_payload_roundtrips(text: str) -> None:
+    """Non-JSON UTF-8 payload (e.g. prose with emoji/CJK) survives parsing
+    on the string-fallback branch.
+
+    A `#` prefix forces the JSON-decode branch to fail so we stay on the
+    raw-string path — hypothesis would otherwise generate inputs that
+    happen to be valid JSON ("0", "null", "[]") and dispatch to the JSON
+    branch, which has its own roundtrip test below.
+    """
+    payload = f"#{text}"
+    raw = f"data: {payload}"
+    out = _parse_sse_event(raw)
+    assert out is not None
+    assert out["data"] == payload
+
+
+@given(_unicode_payload)
+def test_parse_unicode_json_payload_roundtrips(text: str) -> None:
+    """A JSON value containing non-ASCII text must round-trip through
+    json.loads (the JSON spec mandates UTF-8 / Unicode escapes).
+    """
+    import json as _json
+
+    raw = f"data: {_json.dumps({'text': text})}"
+    out = _parse_sse_event(raw)
+    assert out is not None
+    assert out["data"] == {"text": text}

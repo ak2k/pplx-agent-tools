@@ -1,6 +1,6 @@
 """Hypothesis fuzz tests for input-robustness invariants.
 
-Three surfaces, each with the same shape of invariant: against adversarial
+Five surfaces, each with the same shape of invariant: against adversarial
 input, the function MUST either return a sensible value or raise a typed
 exception we own. Crashing with TypeError / KeyError / AttributeError is
 a bug — it means the verb leaks an implementation detail.
@@ -9,6 +9,8 @@ a bug — it means the verb leaks an implementation detail.
   2. Fetch verb SSE consumption    — _fetch_with_prompt
   3. FTS5 query escaping          — _fts5_escape (never crash SQLite)
   4. Cookie shape normalization   — auth._normalize (dict[str,str] or AuthError)
+  5. Snippets retrieval pipeline  — _build_index + _hybrid_retrieve over
+                                    adversarial corpora
 """
 
 from __future__ import annotations
@@ -24,7 +26,12 @@ from pplx_agent_tools.auth import _normalize
 from pplx_agent_tools.errors import AuthError, SchemaError
 from pplx_agent_tools.verbs.fetch import _fetch_with_prompt
 from pplx_agent_tools.verbs.search import _keep, _to_hit, search_many
-from pplx_agent_tools.verbs.snippets import _fts5_escape
+from pplx_agent_tools.verbs.snippets import (
+    _build_index,
+    _fts5_escape,
+    _hybrid_retrieve,
+    _vec_to_blob,
+)
 from pplx_agent_tools.wire import Client
 
 # ---------- shared strategies ----------
@@ -236,3 +243,61 @@ def test_normalize_cookie_editor_array_well_formed(entries: list[dict[str, Any]]
     for k, v in out.items():
         assert isinstance(k, str)
         assert isinstance(v, str)
+
+
+# ====================================================================
+# 5. Snippets _build_index + _hybrid_retrieve robustness
+# ====================================================================
+
+
+_url_strategy = st.text(
+    alphabet=st.characters(min_codepoint=0x21, max_codepoint=0x7E, blacklist_characters="'\""),
+    min_size=1,
+    max_size=30,
+).map(lambda s: f"https://x/{s}")
+
+_paragraph_strategy = st.text(
+    alphabet=st.characters(
+        min_codepoint=0x20,
+        max_codepoint=0x7E,
+        blacklist_categories=("Cs",),
+    ),
+    min_size=1,
+    max_size=80,
+)
+
+# A single (url, paragraph_text, word_count) row matching _build_index's
+# contract. word_count is generated independent of the actual word count
+# because _build_index treats it as opaque (only retrieval uses it).
+_row_strategy = st.tuples(_url_strategy, _paragraph_strategy, st.integers(min_value=1, max_value=50))
+
+
+@given(rows=st.lists(_row_strategy, min_size=1, max_size=10))
+@settings(suppress_health_check=[HealthCheck.too_slow], max_examples=30)
+def test_hybrid_retrieve_never_crashes_on_arbitrary_corpus(
+    rows: list[tuple[str, str, int]],
+) -> None:
+    """Build an index from adversarial-but-well-typed rows, run a hybrid
+    retrieve scoped to one of those URLs. The invariant: the SQL pipeline
+    (FTS5 MATCH + sqlite-vec KNN + RRF merge) must never raise — neither
+    on the indexing side (unusual punctuation, very long strings) nor on
+    retrieval (URL with no matching paragraphs).
+    """
+    dim = 3
+    vecs = [[float(i % 3 == 0), float(i % 3 == 1), float(i % 3 == 2)] for i in range(len(rows))]
+    conn = _build_index(rows, vecs, dim)
+    try:
+        query_blob = _vec_to_blob([1.0, 0.0, 0.0])
+        target_url = rows[0][0]
+        results = _hybrid_retrieve(
+            conn, _fts5_escape("test query"), query_blob, target_url, k=5
+        )
+        # Whatever comes back must be a list of (text, score, words) where
+        # text and score are reasonable and words is a positive int.
+        for text, score, words in results:
+            assert isinstance(text, str)
+            assert isinstance(score, float)
+            assert isinstance(words, int)
+            assert words > 0
+    finally:
+        conn.close()
