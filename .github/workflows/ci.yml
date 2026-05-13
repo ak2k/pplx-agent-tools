@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: check (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest   # x86_64-linux
+          - macos-14        # aarch64-darwin (matches the user's primary target)
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}
+
+      - uses: cachix/cachix-action@v17
+        with:
+          name: ak2k
+          # CACHIX_AUTH_TOKEN is optional — without it, the build runs read-
+          # only against the cache (still much faster than rebuilding from
+          # scratch). Pushes happen only on the primary repo with the token.
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+      - name: Flake check (builds package + runs lint/typecheck/tests/deadcode)
+        run: nix flake check -L
