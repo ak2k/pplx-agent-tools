@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from collections.abc import Sequence
 
@@ -42,6 +43,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--profile",
         help="cookie profile (default: $PPLX_PROFILE or 'default')",
     )
+    parser.add_argument(
+        "--keep-thread",
+        action="store_true",
+        help=(
+            "for --prompt mode: keep the chat thread in your Perplexity UI. "
+            "Default behavior deletes it post-call so agent runs don't pollute "
+            "thread history. Also honors $PPLX_KEEP_THREADS=1."
+        ),
+    )
     return parser
 
 
@@ -54,12 +64,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"pplx fetch: {e}", file=sys.stderr)
         return exit_code(e)
 
+    keep_thread = args.keep_thread or os.environ.get("PPLX_KEEP_THREADS") == "1"
+
     try:
         result = fetch(
             client,
             args.url,
             prompt=args.prompt,
             max_chars=args.max_chars,
+            keep_thread=keep_thread,
         )
     except PplxError as e:
         print(f"pplx fetch: {e}", file=sys.stderr)

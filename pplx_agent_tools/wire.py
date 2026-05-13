@@ -123,6 +123,28 @@ class Client:
         except Exception as e:
             raise SchemaError(f"non-JSON response from {path}") from e
 
+    def delete_thread(self, entry_uuid: str, read_write_token: str) -> None:
+        """Delete a thread by entry UUID. Best-effort: failures log to stderr
+        but don't propagate (a failed cleanup shouldn't fail the user's call).
+        """
+        url = self._base_url + "/rest/thread/delete_thread_by_entry_uuid"
+        try:
+            resp = self._session.request(
+                "DELETE",
+                url,
+                cookies=self._cookies,
+                json={"entry_uuid": entry_uuid, "read_write_token": read_write_token},
+                timeout=self._timeout,
+            )
+        except Exception as e:
+            raise NetworkError(f"DELETE thread {entry_uuid}: {e!s}") from e
+        if resp is None:
+            raise NetworkError(f"DELETE thread {entry_uuid}: no response")
+        status = resp.status_code
+        if status >= 400:
+            body = (resp.text or "")[:200]
+            raise NetworkError(f"DELETE thread {entry_uuid} returned {status}: {body}")
+
     def sse_post(self, path: str, body: dict[str, Any]) -> Iterator[dict[str, Any]]:
         """POST a JSON body, stream the SSE response, yield parsed events.
 

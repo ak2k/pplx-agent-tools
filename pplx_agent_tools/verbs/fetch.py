@@ -44,16 +44,23 @@ def fetch(
     *,
     prompt: str | None = None,
     max_chars: int | None = None,
+    keep_thread: bool = False,
 ) -> FetchResult:
     """Fetch a URL, optionally route through Perplexity's LLM for extraction.
 
     `max_chars` caps the returned content; the result's `truncated` flag
     indicates whether truncation occurred.
+
+    `keep_thread` controls whether the chat-endpoint thread created by
+    `--prompt` mode is preserved in the user's Perplexity UI. Default
+    (False) deletes it post-call.
     """
     domain = urlparse(url).netloc or "(unknown)"
     if prompt is None:
         return _fetch_local(url, domain, max_chars=max_chars)
-    return _fetch_with_prompt(client, url, prompt, domain, max_chars=max_chars)
+    return _fetch_with_prompt(
+        client, url, prompt, domain, max_chars=max_chars, keep_thread=keep_thread
+    )
 
 
 def _fetch_local(url: str, domain: str, *, max_chars: int | None) -> FetchResult:
@@ -118,12 +125,15 @@ def _fetch_with_prompt(
     domain: str,
     *,
     max_chars: int | None,
+    keep_thread: bool = False,
 ) -> FetchResult:
     """Submit url+prompt to /rest/sse/perplexity_ask; Perplexity's LLM has
     URL-fetching as a tool and will fetch+extract+answer in one round trip.
 
     We accumulate the markdown_block text across events as the answer
-    streams in.
+    streams in. Unless `keep_thread` is True, we also delete the thread
+    Perplexity creates in the UI post-call (default behavior is to clean
+    up so agent calls don't pollute the user's thread history).
     """
     query = f"{prompt}\n\nFor URL: {url}"
     body = _build_chat_body(query)
@@ -136,11 +146,19 @@ def _fetch_with_prompt(
     # same chunk — accumulate from only one to avoid duplication.
     chunks_acc: list[str] = []
     saw_completed = False
+    # Thread identifiers needed for cleanup (delete_thread_by_entry_uuid).
+    # Captured from any event; they're stable across the stream.
+    backend_uuid: str | None = None
+    read_write_token: str | None = None
 
     for event in client.sse_post(_PROMPT_ENDPOINT, body):
         data = event.get("data")
         if not isinstance(data, dict):
             continue
+        if backend_uuid is None and isinstance(data.get("backend_uuid"), str):
+            backend_uuid = data["backend_uuid"]
+        if read_write_token is None and isinstance(data.get("read_write_token"), str):
+            read_write_token = data["read_write_token"]
         for block in data.get("blocks") or []:
             if not isinstance(block, dict):
                 continue
@@ -158,6 +176,16 @@ def _fetch_with_prompt(
     content = "".join(chunks_acc).strip()
     if not content and not saw_completed:
         raise SchemaError(f"no markdown_block content received from {_PROMPT_ENDPOINT}")
+
+    # Best-effort thread cleanup. Don't fail the user's call if cleanup fails —
+    # they got their answer, an orphaned thread is the worst outcome.
+    if not keep_thread and backend_uuid and read_write_token:
+        try:
+            client.delete_thread(backend_uuid, read_write_token)
+        except Exception as e:
+            import sys
+
+            print(f"warning: thread cleanup failed: {e}", file=sys.stderr)
 
     truncated = False
     if max_chars and len(content) > max_chars:

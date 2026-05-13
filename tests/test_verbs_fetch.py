@@ -74,16 +74,25 @@ def _ev(blocks: list[dict[str, Any]], *, status: str | None = None) -> dict[str,
 
 
 class FakeClient(Client):
-    """Client stand-in that yields canned SSE events from sse_post."""
+    """Client stand-in that yields canned SSE events from sse_post + records
+    delete_thread calls for assertion.
+    """
 
     def __init__(self, events: list[dict[str, Any]]) -> None:
         self._cookies = {"x": "y"}
         self._base_url = "https://www.perplexity.ai"
         self._timeout = 1.0
         self._events = events
+        self.deleted: list[tuple[str, str]] = []
+        self.delete_should_fail = False
 
     def sse_post(self, path: str, body: dict[str, Any]) -> Iterator[dict[str, Any]]:  # type: ignore[override]
         yield from self._events
+
+    def delete_thread(self, entry_uuid: str, read_write_token: str) -> None:  # type: ignore[override]
+        if self.delete_should_fail:
+            raise RuntimeError("simulated cleanup failure")
+        self.deleted.append((entry_uuid, read_write_token))
 
 
 def test_chunk_accumulation_only_reads_ask_text_blocks() -> None:
@@ -186,3 +195,95 @@ def test_chunk_accumulation_ignores_non_dict_event_data() -> None:
     client = FakeClient(events)
     result = _fetch_with_prompt(client, "u", "p", "d", max_chars=None)
     assert result.content == "ok"
+
+
+# ---------- thread cleanup (default behavior + --keep-thread) ----------
+
+
+def _ev_with_thread(
+    blocks: list[dict[str, Any]],
+    *,
+    backend_uuid: str = "thread-abc",
+    read_write_token: str = "rwt-xyz",
+    status: str | None = None,
+) -> dict[str, Any]:
+    """Event with the thread identifiers that real responses carry."""
+    payload: dict[str, Any] = {
+        "blocks": blocks,
+        "backend_uuid": backend_uuid,
+        "read_write_token": read_write_token,
+    }
+    if status:
+        payload["status"] = status
+    return {"event": "message", "data": payload}
+
+
+def test_thread_cleanup_default_deletes_after_call() -> None:
+    events = [
+        _ev_with_thread(
+            [_block("ask_text", ["answer."])],
+            status="COMPLETED",
+        ),
+    ]
+    client = FakeClient(events)
+    _fetch_with_prompt(client, "u", "p", "d", max_chars=None)
+    assert client.deleted == [("thread-abc", "rwt-xyz")]
+
+
+def test_thread_cleanup_keep_thread_skips_delete() -> None:
+    events = [
+        _ev_with_thread(
+            [_block("ask_text", ["answer."])],
+            status="COMPLETED",
+        ),
+    ]
+    client = FakeClient(events)
+    _fetch_with_prompt(client, "u", "p", "d", max_chars=None, keep_thread=True)
+    assert client.deleted == []
+
+
+def test_thread_cleanup_skipped_when_no_backend_uuid() -> None:
+    # Defensive: an event stream that doesn't expose backend_uuid (e.g. an
+    # edge case in Perplexity's response) shouldn't crash — just skip cleanup
+    events = [
+        _ev([_block("ask_text", ["answer."])], status="COMPLETED"),
+    ]
+    client = FakeClient(events)
+    _fetch_with_prompt(client, "u", "p", "d", max_chars=None)
+    assert client.deleted == []
+
+
+def test_thread_cleanup_first_event_uuid_used() -> None:
+    # backend_uuid should be captured from the first event that carries it
+    # (real responses keep it stable across the stream)
+    events = [
+        _ev_with_thread(
+            [_block("ask_text", ["part one"])],
+            backend_uuid="first-uuid",
+            read_write_token="first-token",
+        ),
+        _ev_with_thread(
+            [_block("ask_text", ["part two"])],
+            backend_uuid="should-not-overwrite",
+            read_write_token="should-not-overwrite",
+            status="COMPLETED",
+        ),
+    ]
+    client = FakeClient(events)
+    _fetch_with_prompt(client, "u", "p", "d", max_chars=None)
+    assert client.deleted == [("first-uuid", "first-token")]
+
+
+def test_thread_cleanup_failure_does_not_propagate(
+    capsys: pytest.CaptureFixture,
+) -> None:
+    events = [
+        _ev_with_thread([_block("ask_text", ["ok"])], status="COMPLETED"),
+    ]
+    client = FakeClient(events)
+    client.delete_should_fail = True
+    # Should NOT raise — best-effort cleanup
+    result = _fetch_with_prompt(client, "u", "p", "d", max_chars=None)
+    assert result.content == "ok"
+    err = capsys.readouterr().err
+    assert "thread cleanup failed" in err
