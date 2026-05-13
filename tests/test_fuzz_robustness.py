@@ -125,7 +125,13 @@ class _StreamClient(_TestClientBase):
         super().__init__()
         self._events = events
 
-    def sse_post(self, path: str, body: dict[str, Any]) -> Iterator[dict[str, Any]]:  # type: ignore[override]
+    def sse_post(  # type: ignore[override]
+        self,
+        path: str,
+        body: dict[str, Any],
+        *,
+        max_total_seconds: float | None = None,
+    ) -> Iterator[dict[str, Any]]:
         yield from self._events
 
     def delete_thread(self, entry_uuid: str, read_write_token: str) -> bool:  # type: ignore[override]

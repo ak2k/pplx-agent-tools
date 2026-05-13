@@ -107,6 +107,11 @@ def render_fetch_text(result: FetchResult) -> str:
         extra.append(f"date: {result.published_date}")
     if result.is_extracted:
         extra.append("extracted: yes (LLM)")
+    if not result.stream_complete:
+        # Surfaced on the header line so a human eyeballing stdout doesn't
+        # mistake a deadline-clipped partial answer for a complete one.
+        # `cli_fetch` also emits a stderr warning for machine-parseable runs.
+        extra.append("stream: incomplete (deadline or cut)")
     header_lines.append(" · ".join(extra))
     return "\n".join(header_lines) + "\n\n" + result.content
 

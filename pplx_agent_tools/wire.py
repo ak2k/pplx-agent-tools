@@ -13,12 +13,20 @@ from __future__ import annotations
 import contextlib
 import json
 import sys
+import time
 from collections.abc import Iterator
 from typing import Any
 
 from curl_cffi import requests as cf_requests
 
-from .errors import AntiBotError, AuthError, NetworkError, RateLimitError, SchemaError
+from .errors import (
+    AntiBotError,
+    AuthError,
+    NetworkError,
+    RateLimitError,
+    SchemaError,
+    StreamDeadlineError,
+)
 
 BASE_URL = "https://www.perplexity.ai"
 DEFAULT_TIMEOUT = 30.0
@@ -177,12 +185,25 @@ class Client:
             return False
         return True
 
-    def sse_post(self, path: str, body: dict[str, Any]) -> Iterator[dict[str, Any]]:
+    def sse_post(
+        self,
+        path: str,
+        body: dict[str, Any],
+        *,
+        max_total_seconds: float | None = None,
+    ) -> Iterator[dict[str, Any]]:
         """POST a JSON body, stream the SSE response, yield parsed events.
 
         Each yielded value is `{"event": str | None, "data": parsed_json | str | None}`.
         Consumers may break the loop early — the underlying connection is closed
         when the iterator is no longer referenced (via curl_cffi's response context).
+
+        `max_total_seconds` bounds the wall-clock duration of consuming the stream.
+        When exceeded, raises `StreamDeadlineError` so the caller can decide
+        whether to salvage partial results. None (default) preserves the legacy
+        behavior of relying on `DEFAULT_SSE_READ_TIMEOUT` for per-chunk idle only
+        — a stream that keeps trickling bytes more often than every 60 s but
+        never reaches COMPLETED can otherwise run indefinitely.
 
         Raises the same typed errors as the GET path (auth/rate-limit/etc.) on
         connection or status-code failure.
@@ -205,9 +226,15 @@ class Client:
         # Headers / status validated before we start consuming the body.
         self._check_status(resp, path)
 
+        # Use monotonic so wall-clock jumps (NTP, sleep) don't trip the deadline.
+        deadline = (time.monotonic() + max_total_seconds) if max_total_seconds else None
         buffer = ""
         try:
             for chunk in resp.iter_content(chunk_size=4096):
+                if deadline is not None and time.monotonic() > deadline:
+                    raise StreamDeadlineError(
+                        f"SSE stream on {path} exceeded {max_total_seconds:.1f}s deadline"
+                    )
                 if not chunk:
                     continue
                 buffer += chunk.decode("utf-8", errors="replace")
@@ -218,6 +245,13 @@ class Client:
                     parsed = _parse_sse_event(raw_event)
                     if parsed is not None:
                         yield parsed
+                        # Re-check deadline between yields so a generator
+                        # consumer that processes events slowly can't outrun
+                        # the bound either.
+                        if deadline is not None and time.monotonic() > deadline:
+                            raise StreamDeadlineError(
+                                f"SSE stream on {path} exceeded {max_total_seconds:.1f}s deadline"
+                            )
         finally:
             with contextlib.suppress(Exception):
                 resp.close()

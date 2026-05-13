@@ -14,6 +14,7 @@ from pplx_agent_tools.errors import (
     NetworkError,
     RateLimitError,
     SchemaError,
+    StreamDeadlineError,
 )
 from pplx_agent_tools.wire import Client, _parse_sse_event
 
@@ -237,3 +238,83 @@ def test_cookies_property_returns_copy() -> None:
     snapshot["a"] = "MUTATED"
     # Caller's mutation must not affect Client state
     assert c.cookies["a"] == "1"
+
+
+# ---------- sse_post overall-deadline ----------
+
+
+class _FakeStreamResp:
+    """Stand-in for the curl_cffi streaming response shape sse_post consumes."""
+
+    def __init__(
+        self,
+        chunks: list[bytes],
+        *,
+        chunk_delay_s: float = 0.0,
+        status_code: int = 200,
+    ) -> None:
+        self.status_code = status_code
+        self.headers: dict[str, str] = {}
+        self.content = b""
+        self._chunks = chunks
+        self._chunk_delay_s = chunk_delay_s
+        self.closed = False
+
+    def iter_content(self, chunk_size: int) -> object:
+        import time as _t
+
+        def gen() -> object:
+            for c in self._chunks:
+                if self._chunk_delay_s:
+                    _t.sleep(self._chunk_delay_s)
+                yield c
+
+        return gen()
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _FakeSession:
+    """Minimum curl_cffi.Session surface that sse_post touches."""
+
+    def __init__(self, resp: _FakeStreamResp) -> None:
+        self._resp = resp
+
+    def post(self, url: str, **_kwargs: object) -> _FakeStreamResp:  # type: ignore[no-untyped-def]
+        return self._resp
+
+
+def _client_with_session(resp: _FakeStreamResp) -> Client:
+    c = Client({"any": "cookie"})
+    c._session = _FakeSession(resp)  # type: ignore[assignment]
+    return c
+
+
+def test_sse_post_deadline_trips_with_slow_chunks() -> None:
+    # Three chunks, each delayed 50ms. With a 60ms deadline we should trip
+    # between chunks 1 and 2 — the deadline check fires at top-of-loop.
+    framed = b'data: {"a": 1}\n\n'
+    resp = _FakeStreamResp([framed, framed, framed], chunk_delay_s=0.05)
+    client = _client_with_session(resp)
+    with pytest.raises(StreamDeadlineError):
+        list(client.sse_post("/x", {}, max_total_seconds=0.06))
+    assert resp.closed is True
+
+
+def test_sse_post_no_deadline_runs_to_completion() -> None:
+    framed = b'data: {"a": 1}\n\n'
+    resp = _FakeStreamResp([framed, framed], chunk_delay_s=0.01)
+    client = _client_with_session(resp)
+    events = list(client.sse_post("/x", {}, max_total_seconds=None))
+    assert len(events) == 2
+    assert resp.closed is True
+
+
+def test_sse_post_deadline_zero_disabled_by_caller() -> None:
+    # Caller passes None → no enforcement at all even if iteration takes time.
+    framed = b'data: {"a": 1}\n\n'
+    resp = _FakeStreamResp([framed], chunk_delay_s=0.0)
+    client = _client_with_session(resp)
+    events = list(client.sse_post("/x", {}))  # default max_total_seconds=None
+    assert len(events) == 1

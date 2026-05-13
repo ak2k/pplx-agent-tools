@@ -33,6 +33,13 @@ pplx fetch "https://docs.anthropic.com/claude-code"
 pplx fetch "https://release.notes/perplexity-comet-1.2" \
   --prompt "What was added in this release? Bullet list."
 
+# Bound the wall-clock budget for slow prompts; on deadline, returns whatever
+# the stream produced with stderr warning + "stream: incomplete" header marker.
+pplx fetch "$URL" --prompt "..." --timeout 60
+
+# Heartbeat dots to stderr (useful when backgrounding concurrent calls)
+pplx fetch "$URL" --prompt "..." --progress
+
 # Hybrid retrieval over N URLs (BM25 + semantic via fastembed + sqlite-vec)
 pplx snippets "TLS fingerprinting" \
   "https://github.com/lexiforest/curl_cffi" \
@@ -53,6 +60,7 @@ pplx auth check
 | 3 | Rate limit (429) | exponential backoff |
 | 4 | Network (DNS / timeout / TLS) | linear backoff |
 | 5 | Anti-bot (Cloudflare challenge) | investigate, don't auto-retry |
+| 6 | Partial: stream incomplete (deadline tripped or server cut). Stdout still carries usable content. | accept partial OR bump `--timeout`; blind retry usually hits the same backend slowness |
 
 Stdout is results only; stderr carries diagnostics. `2>/dev/null` gives clean parseable stdout.
 
@@ -67,3 +75,4 @@ Stdout is results only; stderr carries diagnostics. `2>/dev/null` gives clean pa
 - `-t academic / images / videos / shopping` for `pplx search` are Phase 2 (raise `NotImplementedError` today; no cookie-auth endpoints exist for those variants).
 - `pplx fetch` plain mode is a local fetch (no Perplexity-backend paywall bypass / cache reuse). Use `--prompt` for LLM-routed extraction when those features matter.
 - Prompt-injection awareness: `pplx fetch --prompt` sends fetched page content to Perplexity's LLM. Adversarial pages can manipulate the extraction.
+- `pplx fetch --prompt` defaults to a 180 s overall deadline (override with `--timeout N`, `$PPLX_FETCH_TIMEOUT`, or 0 to disable). On deadline trip you get any partial content + a `stream: incomplete` header marker + a stderr warning — check `stream_complete` in JSON output or grep stderr if your script can't tolerate a partial answer. 429s auto-retry up to 3 attempts honoring `retry-after`, bounded by the same deadline.
