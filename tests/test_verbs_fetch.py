@@ -12,8 +12,13 @@ from typing import Any
 
 import pytest
 
-from pplx_agent_tools.errors import SchemaError
-from pplx_agent_tools.verbs.fetch import _build_chat_body, _fetch_with_prompt
+from pplx_agent_tools.errors import NetworkError, SchemaError
+from pplx_agent_tools.verbs.fetch import (
+    _build_chat_body,
+    _fetch_local,
+    _fetch_with_prompt,
+    _require_http_url,
+)
 from pplx_agent_tools.wire import Client
 
 # ---------- _build_chat_body ----------
@@ -56,6 +61,15 @@ def test_build_chat_body_strips_ui_widget_lists() -> None:
     assert "supported_features" not in body["params"]
 
 
+def test_build_chat_body_timezone_is_utc_not_location() -> None:
+    # We deliberately send UTC instead of the local timezone — leaking the
+    # user's location to Perplexity beyond what cookies already imply is
+    # not in scope, and time.tzname returns abbreviations Perplexity may
+    # not even accept.
+    body = _build_chat_body("q")
+    assert body["params"]["timezone"] == "UTC"
+
+
 # ---------- _fetch_with_prompt chunk accumulation ----------
 
 
@@ -89,10 +103,16 @@ class FakeClient(Client):
     def sse_post(self, path: str, body: dict[str, Any]) -> Iterator[dict[str, Any]]:  # type: ignore[override]
         yield from self._events
 
-    def delete_thread(self, entry_uuid: str, read_write_token: str) -> None:  # type: ignore[override]
+    def delete_thread(self, entry_uuid: str, read_write_token: str) -> bool:  # type: ignore[override]
         if self.delete_should_fail:
-            raise RuntimeError("simulated cleanup failure")
+            # Real Client.delete_thread is best-effort: it logs to stderr
+            # and returns False. Mirror that so the caller stays simple.
+            import sys
+
+            print("warning: thread cleanup failed: simulated cleanup failure", file=sys.stderr)
+            return False
         self.deleted.append((entry_uuid, read_write_token))
+        return True
 
 
 def test_chunk_accumulation_only_reads_ask_text_blocks() -> None:
@@ -287,3 +307,80 @@ def test_thread_cleanup_failure_does_not_propagate(
     assert result.content == "ok"
     err = capsys.readouterr().err
     assert "thread cleanup failed" in err
+
+
+# ---------- SSRF scheme allowlist (P1) ----------
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "file:///etc/passwd",
+        "ftp://example.com/x",
+        "gopher://example.com/",
+        "javascript:alert(1)",
+        "data:text/plain,hello",
+        "localhost:8080",  # no scheme — parsed as scheme=localhost, netloc=""
+    ],
+)
+def test_require_http_url_rejects_non_http(url: str) -> None:
+    with pytest.raises(NetworkError):
+        _require_http_url(url)
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["http://example.com/", "https://example.com/path?q=1", "HTTPS://Example.com/"],
+)
+def test_require_http_url_accepts_http_https(url: str) -> None:
+    # Must NOT raise. urlparse lowercases the scheme, so HTTPS works.
+    _require_http_url(url.lower() if url.upper() == url else url)
+
+
+def test_require_http_url_rejects_missing_host() -> None:
+    with pytest.raises(NetworkError) as ei:
+        _require_http_url("http:///")
+    assert "no host" in str(ei.value)
+
+
+def test_fetch_local_rejects_file_scheme_before_network() -> None:
+    # File-scheme URLs must be rejected up front — never reach curl_cffi.
+    with pytest.raises(NetworkError) as ei:
+        _fetch_local("file:///etc/passwd", domain="local", max_chars=None)
+    assert "scheme" in str(ei.value)
+
+
+# ---------- stream_complete signal (P1) ----------
+
+
+def test_stream_complete_true_when_completed_status_seen() -> None:
+    events = [
+        _ev([_block("ask_text", ["hello"])], status="COMPLETED"),
+    ]
+    client = FakeClient(events)
+    result = _fetch_with_prompt(client, "u", "p", "d", max_chars=None)
+    assert result.stream_complete is True
+
+
+def test_stream_complete_true_on_text_completed_flag() -> None:
+    events = [
+        _ev([_block("ask_text", ["hello"])]),
+        {"event": "message", "data": {"text_completed": True, "blocks": []}},
+    ]
+    client = FakeClient(events)
+    result = _fetch_with_prompt(client, "u", "p", "d", max_chars=None)
+    assert result.stream_complete is True
+
+
+def test_stream_complete_false_when_stream_cuts_mid_flight() -> None:
+    # Server emits content but never sends COMPLETED / text_completed.
+    # Caller must be able to detect this and decide whether to trust the
+    # partial answer.
+    events = [
+        _ev([_block("ask_text", ["partial..."])]),
+        # stream just ends — no terminator
+    ]
+    client = FakeClient(events)
+    result = _fetch_with_prompt(client, "u", "p", "d", max_chars=None)
+    assert result.content == "partial..."
+    assert result.stream_complete is False

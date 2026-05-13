@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import sys
 from collections.abc import Iterator
 from typing import Any
 
@@ -22,6 +23,10 @@ from .errors import AntiBotError, AuthError, NetworkError, RateLimitError, Schem
 BASE_URL = "https://www.perplexity.ai"
 DEFAULT_TIMEOUT = 30.0
 DEFAULT_IMPERSONATE = "chrome"
+# SSE-only: idle deadline between consecutive chunks. A stalled server
+# would otherwise hold our connection forever — DEFAULT_TIMEOUT only
+# bounds the initial connect on streaming requests.
+DEFAULT_SSE_READ_TIMEOUT = 60.0
 
 
 class Client:
@@ -48,10 +53,22 @@ class Client:
         self._session = cf_requests.Session(impersonate=impersonate)  # type: ignore[arg-type]
 
     @classmethod
-    def from_default_cookies(cls, profile: str | None = None, **kwargs: Any) -> Client:
+    def from_default_cookies(
+        cls,
+        profile: str | None = None,
+        *,
+        base_url: str = BASE_URL,
+        impersonate: str = DEFAULT_IMPERSONATE,
+        timeout: float = DEFAULT_TIMEOUT,
+    ) -> Client:
         from .auth import load_cookies
 
-        return cls(load_cookies(profile), **kwargs)
+        return cls(
+            load_cookies(profile),
+            base_url=base_url,
+            impersonate=impersonate,
+            timeout=timeout,
+        )
 
     def auth_session(self) -> dict[str, Any]:
         """GET /api/auth/session. Returns parsed JSON.
@@ -73,23 +90,27 @@ class Client:
             raise SchemaError(f"/api/auth/session returned {type(data).__name__}, expected object")
         if not data or "user" not in data:
             raise AuthError("session expired or unauthenticated; re-import cookies")
-        self.capture_rotated_cookies()
+        self._capture_rotated_cookies()
         return data
 
-    def capture_rotated_cookies(self) -> bool:
+    def _capture_rotated_cookies(self) -> bool:
         """Update `self._cookies` with any rotated values from the underlying
         curl_cffi session jar. Returns True iff anything changed.
 
         Only updates names we already had (so we don't grow our cookie set
-        unexpectedly with third-party cookies the server set).
+        unexpectedly with third-party cookies the server set). Empty-string
+        rotations are captured (`is not None`, not truthiness) — a cookie
+        rotated to empty is a real state change.
         """
         changed = False
         for name in list(self._cookies):
             try:
                 new_val = self._session.cookies.get(name)
-            except Exception:
+            except (KeyError, LookupError) as e:
+                # Cookie jar lookup raised — log so silent loss is observable.
+                print(f"warning: cookie jar lookup failed for {name!r}: {e}", file=sys.stderr)
                 continue
-            if new_val and new_val != self._cookies[name]:
+            if new_val is not None and new_val != self._cookies[name]:
                 self._cookies[name] = new_val
                 changed = True
         return changed
@@ -123,9 +144,10 @@ class Client:
         except Exception as e:
             raise SchemaError(f"non-JSON response from {path}") from e
 
-    def delete_thread(self, entry_uuid: str, read_write_token: str) -> None:
-        """Delete a thread by entry UUID. Best-effort: failures log to stderr
-        but don't propagate (a failed cleanup shouldn't fail the user's call).
+    def delete_thread(self, entry_uuid: str, read_write_token: str) -> bool:
+        """Delete a thread by entry UUID. Best-effort: any failure is logged
+        to stderr and returns False. Never raises, so callers can issue this
+        as fire-and-forget cleanup.
         """
         url = self._base_url + "/rest/thread/delete_thread_by_entry_uuid"
         try:
@@ -137,13 +159,23 @@ class Client:
                 timeout=self._timeout,
             )
         except Exception as e:
-            raise NetworkError(f"DELETE thread {entry_uuid}: {e!s}") from e
+            print(f"warning: thread cleanup failed: {e}", file=sys.stderr)
+            return False
         if resp is None:
-            raise NetworkError(f"DELETE thread {entry_uuid}: no response")
+            print(
+                f"warning: thread cleanup failed: no response for {entry_uuid}",
+                file=sys.stderr,
+            )
+            return False
         status = resp.status_code
         if status >= 400:
             body = (resp.text or "")[:200]
-            raise NetworkError(f"DELETE thread {entry_uuid} returned {status}: {body}")
+            print(
+                f"warning: thread cleanup failed: DELETE {entry_uuid} returned {status}: {body}",
+                file=sys.stderr,
+            )
+            return False
+        return True
 
     def sse_post(self, path: str, body: dict[str, Any]) -> Iterator[dict[str, Any]]:
         """POST a JSON body, stream the SSE response, yield parsed events.
@@ -163,7 +195,10 @@ class Client:
                 json=body,
                 headers={"accept": "text/event-stream"},
                 stream=True,
-                timeout=self._timeout,
+                # Tuple form: (connect_timeout, read_timeout). The read leg
+                # is the per-chunk idle deadline — a Perplexity stream that
+                # stops emitting events should fail loudly rather than hang.
+                timeout=(self._timeout, DEFAULT_SSE_READ_TIMEOUT),
             )
         except Exception as e:
             raise NetworkError(f"POST {path} failed: {e!s}") from e

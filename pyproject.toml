@@ -33,6 +33,8 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest",
+    "pytest-cov>=5",
+    "hypothesis>=6.100",
     "ruff>=0.6",
     "vulture>=2.10",
     "pyright>=1.1.380",
@@ -106,6 +108,24 @@ ignore_names = [
     "warnings",
     "media_items",
 ]
+
+[tool.coverage.run]
+# Default `--cov` target so contributors get a useful report without flags
+# (uv run --extra dev pytest --cov).
+source = ["pplx_agent_tools"]
+branch = true
+omit = ["pplx_agent_tools/__init__.py"]
+
+[tool.coverage.report]
+exclude_also = [
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+]
+show_missing = true
+# Floor — `pytest --cov` fails below this. Bumped manually when coverage
+# climbs and we want the new floor enforced (not auto-ratcheted to current).
+fail_under = 60
 
 [tool.pyright]
 include = ["pplx_agent_tools"]

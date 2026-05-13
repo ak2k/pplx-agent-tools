@@ -21,10 +21,32 @@ from typing import Any
 from urllib.parse import urlparse
 from uuid import uuid4
 
+from curl_cffi import requests as cf_requests
+
 from ..errors import NetworkError, SchemaError
 from ..wire import Client
 
 _PROMPT_ENDPOINT = "/rest/sse/perplexity_ask"
+
+# Schemes accepted for outbound fetch. Anything else (file://, ftp://,
+# gopher://, custom) is rejected up front — we never want curl_cffi to
+# touch the local filesystem or non-HTTP backends from a user-supplied URL.
+_ALLOWED_FETCH_SCHEMES = frozenset({"http", "https"})
+
+
+def _require_http_url(url: str) -> None:
+    """Reject non-HTTP(S) URLs and URLs missing a host. Raises NetworkError.
+
+    Prevents SSRF via file:// and custom schemes, and rejects obviously
+    malformed inputs (e.g. `localhost:8080` parsed without a scheme).
+    """
+    parsed = urlparse(url)
+    if parsed.scheme not in _ALLOWED_FETCH_SCHEMES:
+        raise NetworkError(
+            f"fetch {url}: unsupported URL scheme {parsed.scheme!r} (only http/https allowed)"
+        )
+    if not parsed.netloc:
+        raise NetworkError(f"fetch {url}: URL has no host")
 
 
 @dataclass
@@ -36,6 +58,9 @@ class FetchResult:
     is_extracted: bool  # True iff --prompt was used (content is LLM-generated)
     published_date: str | None = None
     truncated: bool = False
+    # False iff the server stream was cut before a COMPLETED signal arrived
+    # (only meaningful for --prompt mode; plain mode is always True).
+    stream_complete: bool = True
 
 
 def fetch(
@@ -65,14 +90,15 @@ def fetch(
 
 def _fetch_local(url: str, domain: str, *, max_chars: int | None) -> FetchResult:
     """Fetch the URL via curl_cffi and extract content with trafilatura."""
+    _require_http_url(url)
     try:
-        # Use a fresh session so we don't send perplexity.ai cookies to a
+        # Fresh session per call so we don't send perplexity.ai cookies to a
         # random third-party host. curl_cffi keeps the chrome TLS fingerprint
-        # which is what we want for Cloudflare-protected sources too.
-        from curl_cffi import requests as cf_requests
-
+        # which also handles Cloudflare-protected sources transparently.
         with cf_requests.Session(impersonate="chrome") as sess:
             resp = sess.get(url, timeout=30, allow_redirects=True)
+    except NetworkError:
+        raise
     except Exception as e:
         raise NetworkError(f"fetch {url}: {e!s}") from e
 
@@ -177,15 +203,11 @@ def _fetch_with_prompt(
     if not content and not saw_completed:
         raise SchemaError(f"no markdown_block content received from {_PROMPT_ENDPOINT}")
 
-    # Best-effort thread cleanup. Don't fail the user's call if cleanup fails —
-    # they got their answer, an orphaned thread is the worst outcome.
+    # Best-effort thread cleanup. client.delete_thread is documented + actually
+    # implemented as best-effort: any failure prints to stderr and returns
+    # False, so the user's call survives an orphaned thread on Perplexity's side.
     if not keep_thread and backend_uuid and read_write_token:
-        try:
-            client.delete_thread(backend_uuid, read_write_token)
-        except Exception as e:
-            import sys
-
-            print(f"warning: thread cleanup failed: {e}", file=sys.stderr)
+        client.delete_thread(backend_uuid, read_write_token)
 
     truncated = False
     if max_chars and len(content) > max_chars:
@@ -200,12 +222,18 @@ def _fetch_with_prompt(
         is_extracted=True,
         published_date=None,
         truncated=truncated,
+        stream_complete=saw_completed,
     )
 
 
 def _build_chat_body(query: str) -> dict[str, Any]:
     """Minimum-viable body for /rest/sse/perplexity_ask. See docs/wire/search-web.md
     for the full captured shape; we strip UI-specific fields here.
+
+    `timezone` is set to "UTC" rather than detected from the host: detection
+    actively leaks the user's location, and `time.tzname` returns
+    abbreviations ("EST") rather than the IANA names ("America/New_York")
+    Perplexity expects. UTC is deterministic and accepted everywhere.
     """
     frontend_uuid = str(uuid4())
     return {
@@ -216,7 +244,7 @@ def _build_chat_body(query: str) -> dict[str, Any]:
             "source": "default",
             "version": "2.18",
             "language": "en-US",
-            "timezone": "America/New_York",
+            "timezone": "UTC",
             "search_focus": "internet",
             "sources": ["web"],
             "mode": "copilot",
