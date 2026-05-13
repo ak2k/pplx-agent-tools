@@ -15,21 +15,18 @@ from typing import Any
 import pytest
 
 from pplx_agent_tools.verbs.search import search_many
-from pplx_agent_tools.wire import Client
+from tests._doubles import _TestClientBase
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
-class FakeClient(Client):
+class FakeClient(_TestClientBase):
     """Test stand-in: skips the curl_cffi setup, returns a canned payload
     from `post_json`. Inherits Client so type checks downstream still hold.
     """
 
     def __init__(self, canned: dict[str, Any]) -> None:
-        # Skip Client.__init__ deliberately — we don't want a Session here.
-        self._cookies = {"fake": "cookie"}
-        self._base_url = "https://www.perplexity.ai"
-        self._timeout = 1.0
+        super().__init__()
         self._canned = canned
         self.calls: list[tuple[str, dict[str, Any]]] = []
 

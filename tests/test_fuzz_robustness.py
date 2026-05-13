@@ -32,7 +32,7 @@ from pplx_agent_tools.verbs.snippets import (
     _hybrid_retrieve,
     _vec_to_blob,
 )
-from pplx_agent_tools.wire import Client
+from tests._doubles import _TestClientBase
 
 # ---------- shared strategies ----------
 
@@ -81,14 +81,11 @@ def test_to_hit_either_succeeds_or_raises_schema(payload: dict[str, Any]) -> Non
     assert isinstance(hit.images, list)
 
 
-class _CannedClient(Client):
+class _CannedClient(_TestClientBase):
     """Stand-in Client that returns a canned post_json payload."""
 
     def __init__(self, canned: Any) -> None:
-        # Explicit super().__init__ to satisfy CodeQL's missing-super-init
-        # rule; the curl_cffi Session it allocates is unused since we
-        # override post_json below.
-        super().__init__({"x": "y"})
+        super().__init__()
         self._canned = canned
 
     def post_json(self, path: str, body: dict[str, Any]) -> Any:  # type: ignore[override]
@@ -121,12 +118,11 @@ def test_search_many_degrades_or_raises_schema(payload: Any) -> None:
 # ====================================================================
 
 
-class _StreamClient(Client):
+class _StreamClient(_TestClientBase):
     """Stand-in Client that yields canned SSE events from `sse_post`."""
 
     def __init__(self, events: list[dict[str, Any]]) -> None:
-        # See _CannedClient.__init__ for the super().__init__ rationale.
-        super().__init__({"x": "y"})
+        super().__init__()
         self._events = events
 
     def sse_post(self, path: str, body: dict[str, Any]) -> Iterator[dict[str, Any]]:  # type: ignore[override]

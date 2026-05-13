@@ -82,14 +82,19 @@ def fetch(
     """
     domain = urlparse(url).netloc or "(unknown)"
     if prompt is None:
-        return _fetch_local(url, domain, max_chars=max_chars)
+        return fetch_page(url, domain, max_chars=max_chars)
     return _fetch_with_prompt(
         client, url, prompt, domain, max_chars=max_chars, keep_thread=keep_thread
     )
 
 
-def _fetch_local(url: str, domain: str, *, max_chars: int | None) -> FetchResult:
-    """Fetch the URL via curl_cffi and extract content with trafilatura."""
+def fetch_page(url: str, domain: str, *, max_chars: int | None) -> FetchResult:
+    """Public: fetch a URL via curl_cffi and extract content with trafilatura.
+
+    No auth: uses a fresh curl_cffi session so perplexity.ai cookies are not
+    leaked to third-party hosts. Used by `fetch()` (no-prompt mode) and by
+    `verbs/snippets._fetch_all` for the concurrent-fetch path.
+    """
     _require_http_url(url)
     try:
         # Fresh session per call so we don't send perplexity.ai cookies to a

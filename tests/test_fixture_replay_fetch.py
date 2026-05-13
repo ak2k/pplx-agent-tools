@@ -28,7 +28,7 @@ from typing import Any
 import pytest
 
 from pplx_agent_tools.verbs.fetch import _fetch_with_prompt
-from pplx_agent_tools.wire import Client
+from tests._doubles import _TestClientBase
 
 FIXTURES = Path(__file__).parent / "fixtures" / "fetch-url"
 SANITIZER_SCRIPT = Path(__file__).parent.parent / "scripts" / "re-sanitize-fetch-fixture.py"
@@ -49,7 +49,7 @@ EXPECTED_ANSWER = (
 )
 
 
-class FixtureClient(Client):
+class FixtureClient(_TestClientBase):
     """Yields canned SSE events from a sanitized .events.jsonl fixture.
 
     Each line in the fixture is the `data` payload of one SSE event; we wrap
@@ -57,10 +57,7 @@ class FixtureClient(Client):
     """
 
     def __init__(self, fixture_path: Path) -> None:
-        # Allocates a curl_cffi Session we never use, but the explicit
-        # super().__init__ keeps CodeQL's "missing super().__init__" rule
-        # happy and future-proofs us against Client gaining new __init__ state.
-        super().__init__({"fake": "cookie"})
+        super().__init__()
         self._events: list[dict[str, Any]] = [
             json.loads(line) for line in fixture_path.read_text().splitlines() if line.strip()
         ]

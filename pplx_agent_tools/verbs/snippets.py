@@ -155,11 +155,11 @@ def _fetch_all(urls: list[str]) -> list[tuple[str, str, str | None]]:
     """Concurrent-fetch + extract content. Returns one row per URL preserving
     input order: (url, content_or_empty, error_or_None).
     """
-    from ..verbs.fetch import _fetch_local
+    from ..verbs.fetch import fetch_page
 
     def one(url: str) -> tuple[str, str, str | None]:
         try:
-            result = _fetch_local(url, domain="", max_chars=None)
+            result = fetch_page(url, domain="", max_chars=None)
         except NetworkError as e:
             return (url, "", str(e))
         except Exception as e:
@@ -240,7 +240,8 @@ def _hybrid_retrieve(
 
     Returns [(paragraph_text, rrf_score, word_count), ...] ordered by score desc.
     """
-    # FTS5: text matching, scope to one URL via JOIN.
+    # FTS5: text matching, scope to one URL via JOIN. The LIMIT is applied
+    # after the URL filter, so we always get up to k URL-matching rows.
     bm25_rows = conn.execute(
         """
         SELECT p.id, p.text, p.words
@@ -252,17 +253,33 @@ def _hybrid_retrieve(
         (fts_query, url, k),
     ).fetchall()
 
-    # Vector KNN: scope to one URL via JOIN. sqlite-vec returns by ascending
-    # distance (smaller = closer).
-    vec_rows = conn.execute(
+    # Vector KNN: sqlite-vec MATCH is a GLOBAL top-K — it picks the k
+    # nearest rows in the whole corpus, THEN the JOIN filters by URL. If
+    # the URL is sparse (few rows) and those rows aren't in the global
+    # top-k, we'd silently get zero vector hits for this URL. Scale k by
+    # the ratio of total_rows / url_rows so the global KNN over-fetches
+    # enough to leave ~k URL-matching rows after the join.
+    total_rows, url_rows = conn.execute(
         """
-        SELECT p.id, p.text, p.words
-        FROM p_vec JOIN paragraphs p ON p_vec.rowid = p.id
-        WHERE p_vec.embedding MATCH ? AND p.url = ? AND k = ?
-        ORDER BY distance
+        SELECT
+            (SELECT COUNT(*) FROM paragraphs),
+            (SELECT COUNT(*) FROM paragraphs WHERE url = ?)
         """,
-        (query_blob, url, k),
-    ).fetchall()
+        (url,),
+    ).fetchone()
+    if url_rows == 0 or total_rows == 0:
+        vec_rows: list[tuple[int, str, int]] = []
+    else:
+        scaled_k = min(total_rows, k * max(1, total_rows // url_rows))
+        vec_rows = conn.execute(
+            """
+            SELECT p.id, p.text, p.words
+            FROM p_vec JOIN paragraphs p ON p_vec.rowid = p.id
+            WHERE p_vec.embedding MATCH ? AND p.url = ? AND k = ?
+            ORDER BY distance
+            """,
+            (query_blob, url, scaled_k),
+        ).fetchall()
 
     # RRF merge by row id. score(d) = sum(1/(RRF_K + rank_i(d)))
     rrf: dict[int, float] = {}
