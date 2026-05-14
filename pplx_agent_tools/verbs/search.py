@@ -121,7 +121,13 @@ def decode_search_response(raw: Any, *, query: str, limit: int) -> SearchResult:
     return SearchResult(query=query, hits=hits, total=len(hits))
 
 
-def _keep(hit: dict[str, Any]) -> bool:
+def _keep(hit: Any) -> bool:
+    """Filter a candidate web_result, dropping anything flagged as
+    widget/image/nav/etc. Accepts `Any` (not `dict[str, Any]`) so the
+    runtime isinstance check is meaningful — fuzz tests pass adversarial
+    inputs (None, lists, strings) and rely on this returning False
+    instead of crashing.
+    """
     if not isinstance(hit, dict):
         return False
     return not any(hit.get(flag) for flag in _DROP_FLAGS_WEB)
