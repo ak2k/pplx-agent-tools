@@ -107,13 +107,15 @@ def test_fetch_all_parallelizes_across_hosts() -> None:
     with patch("pplx_agent_tools.verbs.fetch.fetch_page", side_effect=stub):
         _fetch_all(urls)
 
-    # Total wall-clock must be roughly one stub-sleep (50ms), not 3x
-    # — proves the three calls happened in parallel.
+    # Total wall-clock must be much less than one-after-another (3x50ms=150ms),
+    # which proves the three calls happened in parallel rather than serially.
     earliest_start = min(s for _, s, _ in log)
     latest_end = max(e for _, _, e in log)
     span = latest_end - earliest_start
-    # Generous bound for CI slowness; serial would be >=150ms.
-    assert span < 0.12, f"hosts didn't parallelize (span={span:.3f}s)"
+    # Bound at 130ms: well below the 150ms serial floor, with enough CI-noise
+    # headroom that macOS runners (which previously tripped at 122ms vs 120ms)
+    # don't flake. Parallel runs typically land at 50-80ms; serial would be 150+.
+    assert span < 0.13, f"hosts didn't parallelize (span={span:.3f}s)"
 
 
 def test_fetch_all_preserves_input_order() -> None:
