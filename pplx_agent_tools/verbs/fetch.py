@@ -248,7 +248,7 @@ def fetch_page(
     domain: str,
     *,
     max_chars: int | None,
-    session: cf_requests.Session | None = None,
+    session: cf_requests.Session[cf_requests.Response] | None = None,
 ) -> FetchResult:
     """Public: fetch a URL via curl_cffi and extract content with trafilatura.
 

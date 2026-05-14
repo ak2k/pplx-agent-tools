@@ -182,7 +182,10 @@ def _fetch_all(urls: list[str]) -> list[tuple[str, str, str | None]]:
 
     from ..verbs.fetch import fetch_page
 
-    def one(url: str, session: cf_requests.Session | None = None) -> tuple[str, str, str | None]:
+    def one(
+        url: str,
+        session: cf_requests.Session[cf_requests.Response] | None = None,
+    ) -> tuple[str, str, str | None]:
         try:
             result = fetch_page(url, domain="", max_chars=None, session=session)
         except NetworkError as e:
