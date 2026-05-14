@@ -1,22 +1,21 @@
 """pplx-agent-tools: agent toolkit for Perplexity backed by web-session cookies.
 
-Version is derived from git tags via hatch-vcs at build time; the resolved
-string lives in the generated `_version.py` (gitignored, written by the
-build backend). Importing it lazily here keeps `__version__` a stable
-public attribute without forcing setuptools-scm into the runtime path.
+Version is derived from git tags via hatch-vcs at build time and baked into
+the package's wheel metadata. `importlib.metadata.version("pplx-agent-tools")`
+reads from that — works after any standard install (`pip`, `uv`, `nix`), no
+extra file-generation hook needed.
+
+If the package isn't installed (e.g. `python -c 'import pplx_agent_tools'`
+straight from a source tree without `pip install -e .`), falls back to a
+dev sentinel.
 """
 
 from __future__ import annotations
 
-try:
-    from ._version import __version__
-except ImportError:
-    # No build artifact yet (e.g. `python -c 'import pplx_agent_tools'`
-    # in a fresh source tree without `pip install -e .`). Fall back to
-    # installed-package metadata, then to a dev sentinel as last resort.
-    try:
-        from importlib.metadata import version as _v
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _v
 
-        __version__ = _v("pplx-agent-tools")
-    except Exception:
-        __version__ = "0.0.0+unknown"
+try:
+    __version__ = _v("pplx-agent-tools")
+except PackageNotFoundError:
+    __version__ = "0.0.0+unknown"
