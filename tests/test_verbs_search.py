@@ -103,7 +103,7 @@ def test_to_hit_meta_data_none_is_safe() -> None:
 
 
 def test_build_body_required_fields() -> None:
-    body = _build_body(["a query"], domains=None, excluded_domains=None, country="US")
+    body = _build_body(["a query"])
     assert isinstance(body["session_id"], str)
     assert body["queries"] == ["a query"]
     # session_id is uuid-shaped
@@ -112,31 +112,11 @@ def test_build_body_required_fields() -> None:
 
 
 def test_build_body_multi_query_native() -> None:
-    body = _build_body(["q1", "q2", "q3"], domains=None, excluded_domains=None, country="US")
+    body = _build_body(["q1", "q2", "q3"])
     assert body["queries"] == ["q1", "q2", "q3"]
 
 
-def test_build_body_omits_default_country() -> None:
-    body = _build_body(["q"], domains=None, excluded_domains=None, country="US")
-    assert "country" not in body
-
-
-def test_build_body_includes_non_default_country() -> None:
-    body = _build_body(["q"], domains=None, excluded_domains=None, country="de")
-    assert body["country"] == "DE"
-
-
-def test_build_body_includes_domain_filter() -> None:
-    body = _build_body(["q"], domains=["a.com", "b.org"], excluded_domains=None, country="US")
-    assert body["domain_filter"] == ["a.com", "b.org"]
-
-
-def test_build_body_includes_excluded_domains() -> None:
-    body = _build_body(["q"], domains=None, excluded_domains=["spam.io"], country="US")
-    assert body["excluded_domains"] == ["spam.io"]
-
-
 def test_build_body_fresh_uuid_each_call() -> None:
-    a = _build_body(["q"], domains=None, excluded_domains=None, country="US")
-    b = _build_body(["q"], domains=None, excluded_domains=None, country="US")
+    a = _build_body(["q"])
+    b = _build_body(["q"])
     assert a["session_id"] != b["session_id"]

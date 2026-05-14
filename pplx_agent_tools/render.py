@@ -50,7 +50,6 @@ def render_search_json(result: SearchResult) -> dict[str, Any]:
     out: dict[str, Any] = {
         "_pplx_tools_version": __version__,
         "query": result.query,
-        "type": result.type,
         "hits": [_hit_to_json(h) for h in result.hits],
         "total": result.total,
     }

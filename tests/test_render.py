@@ -34,14 +34,13 @@ def _hit(**overrides: object) -> Hit:
 
 
 def test_render_search_text_empty() -> None:
-    result = SearchResult(query="x", type="web", hits=[], total=0)
+    result = SearchResult(query="x", hits=[], total=0)
     assert render_search_text(result) == "(no results)"
 
 
 def test_render_search_text_three_lines_per_hit() -> None:
     result = SearchResult(
         query="q",
-        type="web",
         hits=[_hit(title="Title One", url="https://a/", snippet="aaa")],
         total=1,
     )
@@ -56,7 +55,6 @@ def test_render_search_text_collapses_snippet_newlines() -> None:
     # Reddit-style multi-line snippets must not break the 3-line-per-hit format
     result = SearchResult(
         query="q",
-        type="web",
         hits=[_hit(snippet="line one\n\nline two\n  line three")],
         total=1,
     )
@@ -70,7 +68,6 @@ def test_render_search_text_collapses_snippet_newlines() -> None:
 def test_render_search_json_shape() -> None:
     result = SearchResult(
         query="q",
-        type="web",
         hits=[_hit(summary="longer summary text", published_date="2026-05-12T00:00:00")],
         total=1,
         warnings=["test warning"],
@@ -78,7 +75,7 @@ def test_render_search_json_shape() -> None:
     js = render_search_json(result)
     assert js["_pplx_tools_version"] == __version__
     assert js["query"] == "q"
-    assert js["type"] == "web"
+    assert "type" not in js
     assert js["total"] == 1
     assert js["warnings"] == ["test warning"]
     hit = js["hits"][0]
@@ -89,7 +86,7 @@ def test_render_search_json_shape() -> None:
 
 
 def test_render_search_json_omits_optional_fields_when_none() -> None:
-    result = SearchResult(query="q", type="web", hits=[_hit()], total=1)
+    result = SearchResult(query="q", hits=[_hit()], total=1)
     hit = render_search_json(result)["hits"][0]
     assert "summary" not in hit
     assert "published_date" not in hit
@@ -97,7 +94,7 @@ def test_render_search_json_omits_optional_fields_when_none() -> None:
 
 
 def test_render_search_json_omits_warnings_when_empty() -> None:
-    result = SearchResult(query="q", type="web", hits=[], total=0)
+    result = SearchResult(query="q", hits=[], total=0)
     assert "warnings" not in render_search_json(result)
 
 

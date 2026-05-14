@@ -35,12 +35,22 @@ Required fields confirmed via 422 validation messages:
 - `queries[]` — array of strings. **Multi-query is native** — pass N strings
   to get one merged/deduped result list back
 
-Not yet probed against this endpoint (deliberately optimistic — may 422):
-- `country` — country-code filter
-- `domain_filter` / `excluded_domains` — domain include/exclude lists
+Probed and found **silently ignored** (2026-05-14, see
+`scripts/probe-search-filters.py`):
+- `country` — US and DE return identical hits on a German-news query (zero
+  `.de` domains in either set)
+- `domain_filter` — `domain_filter=["python.org"]` on an asyncio query
+  returned only `github.com` / `realpython.com`, zero python.org hits
+- `excluded_domains` — sibling param, very likely same fate (probe call hit
+  a Cloudflare 403 after rapid-fire requests so no direct evidence, but the
+  endpoint silently drops unknown keys rather than 422-ing)
 
-If any of these 422, our code path forwards them only when explicitly set, so
-the default-case call (no filters) is safe.
+These CLI flags (`--country`, `--domains`, `--excluded-domains`, plus `-t`
+which only ever supported `web`) were removed from `pplx search`. If we
+later add a verb that routes through `/rest/sse/perplexity_ask` (the ~30-
+param chat endpoint, also used by `pplx fetch --prompt`), country/domain
+filtering is the natural place to re-introduce them — the LLM-mediated path
+is more likely to honor richer constraints than this thin ranked-hit layer.
 
 ## Response
 
@@ -54,7 +64,8 @@ the default-case call (no filters) is safe.
 ```
 
 `media_items` is non-empty when the query has video/image results (e.g.
-"youtube travel videos"); see Step 9 for `-t images / videos` variants.
+"youtube travel videos"). We don't surface them today — `pplx search` is
+web-results only.
 
 ### Hit shape
 
@@ -87,7 +98,7 @@ nav suggestions, etc.):
 - `is_navigational` — URL-bar autosuggest
 - `is_widget` — embedded UI cards (weather, finance, ...)
 - `is_knowledge_card` — knowledge-graph panels
-- `is_image` / `is_video` / `is_audio` — non-web media (use `-t <type>`)
+- `is_image` / `is_video` / `is_audio` — non-web media (not surfaced today)
 - `is_map` — places preview
 - `is_memory` / `is_conversation_history` / `is_conversation_summary` — user's prior threads
 - `is_attachment` — user-uploaded files
