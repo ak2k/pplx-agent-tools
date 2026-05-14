@@ -1342,7 +1342,6 @@ wheels = [
 
 [[package]]
 name = "pplx-agent-tools"
-version = "0.3.2"
 source = { editable = "." }
 dependencies = [
     { name = "curl-cffi" },

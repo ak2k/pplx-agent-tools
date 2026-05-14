@@ -1,0 +1,6 @@
+# Substitute the $Format:...$ placeholders in .git_archival.txt at `git archive`
+# time. GitHub's tarball downloads ARE `git archive` invocations, so this
+# means flake-consumers like ak2k-skills (fetching github:ak2k/.../v0.x.y)
+# get a fully resolved ref-name in the tarball — hatch-vcs / setuptools-scm
+# then derives the version from that file alone, no .git history required.
+.git_archival.txt export-subst

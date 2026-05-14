@@ -9,12 +9,20 @@ on every new GitHub release matching `vX.Y.Z`.
 
 **Release recipe** (after merging a behaviour change to `main`):
 
-1. Bump the version in **both**:
-   - `pyproject.toml` — `version = "..."`
-   - `pplx_agent_tools/__init__.py` — `__version__ = "..."`
-   - `uv.lock` will auto-update on the next `uv sync` (or commit it directly via `uv lock --upgrade-package pplx-agent-tools`).
-2. Commit (`Release vX.Y.Z`) and push to `main`. Wait for CI green.
-3. `git tag -a vX.Y.Z -m "..." && git push origin vX.Y.Z`. Renovate picks up the new tag within an hour and opens a PR on `ak2k-skills`.
+```bash
+git tag -a vX.Y.Z -m "..." && git push origin vX.Y.Z
+```
+
+That's it — no source-file edits, no version strings to keep in sync.
+The tag IS the version: `hatch-vcs` derives it at build time from
+either git history (local dev) or the substituted `.git_archival.txt`
+(GitHub-fetched tarballs, which is how Nix flake-consumes us via
+`github:ak2k/pplx-agent-tools/vX.Y.Z`). Renovate picks up the new tag
+within an hour and opens a PR on `ak2k-skills`.
+
+Between tags, `pplx --version` reports a dev marker like
+`0.3.2.dev2+ga1b2c3d` — informative ("you're on a non-released build")
+without anyone editing a string.
 
 **When to tag:** any user-visible change to verbs / CLI / SKILL.md / wire
 behaviour. Skip for pure-internal refactors that don't change agent or
