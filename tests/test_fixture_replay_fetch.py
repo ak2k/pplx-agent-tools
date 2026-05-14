@@ -130,6 +130,39 @@ def test_fetch_with_prompt_truncates_real_stream(example_com_fixture: Path) -> N
     assert result.content == EXPECTED_ANSWER[:20]
 
 
+def test_no_completed_marker_returns_partial_with_flag() -> None:
+    """Fixture: 4 events with chunks, none of which carries COMPLETED.
+    Verb must return the accumulated chunks with stream_complete=False —
+    matches real-world "server cut the connection" recovery.
+    """
+    from pplx_agent_tools.verbs.fetch import _fetch_with_prompt
+
+    client = FixtureClient(FIXTURES / "no-completed-marker.events.jsonl")
+    result = _fetch_with_prompt(
+        client, "https://example.com", "summarize", "example.com", max_chars=None
+    )
+    assert result.content == "Partial answer before cut"
+    assert result.stream_complete is False
+    # Even without COMPLETED, the verb captured backend_uuid/read_write_token
+    # from the first event and will attempt thread cleanup.
+    assert client.deleted == [("fake-uuid-123", "fake-token-456")]
+
+
+def test_empty_stream_raises_schema_error() -> None:
+    """Fixture: zero SSE events. No content + no COMPLETED → SchemaError
+    because we have nothing to return and no signal that the stream
+    finished. Distinct from the deadline-trip case (StreamDeadlineError).
+    """
+    from pplx_agent_tools.errors import SchemaError
+    from pplx_agent_tools.verbs.fetch import _fetch_with_prompt
+
+    client = FixtureClient(FIXTURES / "empty-stream.events.jsonl")
+    with pytest.raises(SchemaError, match="no markdown_block content"):
+        _fetch_with_prompt(
+            client, "https://example.com", "summarize", "example.com", max_chars=None
+        )
+
+
 def test_sentinels_match_sanitizer_script() -> None:
     """Defensive: detect drift between the sanitizer's SENTINELS dict and
     the constants this test asserts against. If someone changes one without
