@@ -25,6 +25,42 @@ from .verbs.fetch import FetchResult
 from .verbs.search import Hit, SearchResult
 from .verbs.snippets import SnippetsResult
 
+# Reserved keys the envelope owns; payloads that try to set these are
+# refused loudly so contract violations don't slip through silently.
+_ENVELOPE_RESERVED_KEYS: tuple[str, ...] = ("_pplx_tools_version", "_verb", "warnings")
+
+
+def envelope(
+    verb: str,
+    payload: dict[str, Any],
+    warnings: list[str] | None = None,
+) -> dict[str, Any]:
+    """Wrap a verb's JSON payload with the agent-contract envelope.
+
+    Every CLI verb's `--json` output goes through this. Guarantees:
+
+    - `_pplx_tools_version` stamp is present (so agents can detect schema
+      changes against their pinned tool version)
+    - `_verb` discriminator is present (so a generic JSON consumer can
+      branch without inspecting payload keys)
+    - `warnings` lives under one consistent key when non-empty
+
+    Reserved keys in `payload` are rejected to keep the envelope's
+    invariants intact — a verb that wants to surface a `warnings` field
+    must pass it through the `warnings` parameter, not the payload.
+    """
+    collisions = [k for k in _ENVELOPE_RESERVED_KEYS if k in payload]
+    if collisions:
+        raise ValueError(f"envelope payload cannot contain reserved keys: {collisions}")
+    out: dict[str, Any] = {
+        "_pplx_tools_version": __version__,
+        "_verb": verb,
+        **payload,
+    }
+    if warnings:
+        out["warnings"] = list(warnings)
+    return out
+
 
 def render_search_text(result: SearchResult) -> str:
     """Numbered hit list, three lines per hit (title / URL / one-line snippet).
@@ -46,16 +82,16 @@ def render_search_text(result: SearchResult) -> str:
 
 
 def render_search_json(result: SearchResult) -> dict[str, Any]:
-    """Pass-through-ish shape: { hits, total, warnings?, _pplx_tools_version }."""
-    out: dict[str, Any] = {
-        "_pplx_tools_version": __version__,
-        "query": result.query,
-        "hits": [_hit_to_json(h) for h in result.hits],
-        "total": result.total,
-    }
-    if result.warnings:
-        out["warnings"] = list(result.warnings)
-    return out
+    """Pass-through-ish shape: envelope + { query, hits, total }."""
+    return envelope(
+        "search",
+        {
+            "query": result.query,
+            "hits": [_hit_to_json(h) for h in result.hits],
+            "total": result.total,
+        },
+        warnings=result.warnings,
+    )
 
 
 def render_snippets_text(result: SnippetsResult) -> str:
@@ -78,21 +114,24 @@ def render_snippets_text(result: SnippetsResult) -> str:
 
 
 def render_snippets_json(result: SnippetsResult) -> dict[str, Any]:
-    return {
-        "_pplx_tools_version": __version__,
-        "query": result.query,
-        "results": [
-            {
-                "url": ur.url,
-                **({"error": ur.error} if ur.error else {}),
-                "snippets": [
-                    {"text": s.text, "score": round(s.score, 5), "tokens": s.tokens}
-                    for s in ur.snippets
-                ],
-            }
-            for ur in result.results
-        ],
-    }
+    return envelope(
+        "snippets",
+        {
+            "query": result.query,
+            "results": [
+                {
+                    "url": ur.url,
+                    **({"error": ur.error} if ur.error else {}),
+                    "snippets": [
+                        {"text": s.text, "score": round(s.score, 5), "tokens": s.tokens}
+                        for s in ur.snippets
+                    ],
+                }
+                for ur in result.results
+            ],
+        },
+        warnings=result.warnings,
+    )
 
 
 def render_fetch_text(result: FetchResult) -> str:
@@ -116,8 +155,7 @@ def render_fetch_text(result: FetchResult) -> str:
 
 
 def render_fetch_json(result: FetchResult) -> dict[str, Any]:
-    out: dict[str, Any] = {
-        "_pplx_tools_version": __version__,
+    payload: dict[str, Any] = {
         "url": result.url,
         "domain": result.domain,
         "is_extracted": result.is_extracted,
@@ -126,10 +164,10 @@ def render_fetch_json(result: FetchResult) -> dict[str, Any]:
         "content": result.content,
     }
     if result.title is not None:
-        out["title"] = result.title
+        payload["title"] = result.title
     if result.published_date is not None:
-        out["published_date"] = result.published_date
-    return out
+        payload["published_date"] = result.published_date
+    return envelope("fetch", payload)
 
 
 def _hit_to_json(hit: Hit) -> dict[str, Any]:
