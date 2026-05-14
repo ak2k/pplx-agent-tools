@@ -6,7 +6,7 @@ from collections.abc import Sequence
 
 import pytest
 
-from pplx_agent_tools import cli
+from pplx_agent_tools import __version__, cli
 
 
 def _stub_verb_main(name: str, captured: list[tuple[str, list[str]]]) -> object:
@@ -86,3 +86,35 @@ def test_dispatch_empty_args_to_verb(stub_verbs: list[tuple[str, list[str]]]) ->
     # `pplx search` (no further args) should dispatch with empty argv
     cli.main(["search"])
     assert stub_verbs == [("search", [])]
+
+
+def test_version_flag_long(capsys: pytest.CaptureFixture, stub_verbs: list) -> None:
+    rc = cli.main(["--version"])
+    out = capsys.readouterr().out.strip()
+    assert rc == 0
+    assert out == f"pplx {__version__}"
+    # `--version` must not dispatch to any verb
+    assert stub_verbs == []
+
+
+def test_version_flag_short(capsys: pytest.CaptureFixture, stub_verbs: list) -> None:
+    rc = cli.main(["-V"])
+    out = capsys.readouterr().out.strip()
+    assert rc == 0
+    assert out == f"pplx {__version__}"
+
+
+def test_version_flag_takes_precedence_over_unknown_verb(
+    capsys: pytest.CaptureFixture, stub_verbs: list
+) -> None:
+    # `pplx --version not-a-verb` prints version, doesn't error
+    rc = cli.main(["--version", "not-a-verb"])
+    out = capsys.readouterr().out.strip()
+    assert rc == 0
+    assert out == f"pplx {__version__}"
+
+
+def test_help_mentions_version_flag(capsys: pytest.CaptureFixture, stub_verbs: list) -> None:
+    cli.main([])
+    out = capsys.readouterr().out
+    assert "--version" in out

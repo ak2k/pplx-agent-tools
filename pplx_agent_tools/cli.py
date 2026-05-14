@@ -10,7 +10,7 @@ from __future__ import annotations
 import sys
 from collections.abc import Callable, Sequence
 
-from . import cli_auth, cli_fetch, cli_search, cli_skill, cli_snippets
+from . import __version__, cli_auth, cli_fetch, cli_search, cli_skill, cli_snippets
 
 VERBS: dict[str, tuple[Callable[[Sequence[str] | None], int], str]] = {
     "search": (cli_search.main, "Search Perplexity for ranked web hits"),
@@ -33,6 +33,7 @@ def _top_level_help() -> str:
         lines.append(f"  {name:10s} {desc}")
     lines.append("")
     lines.append("Run `pplx <verb> --help` for details on each verb.")
+    lines.append("Run `pplx --version` (or `-V`) to print the installed version.")
     return "\n".join(lines)
 
 
@@ -41,6 +42,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         argv = sys.argv[1:]
     if not argv or argv[0] in ("-h", "--help"):
         print(_top_level_help())
+        return 0
+    if argv[0] in ("-V", "--version"):
+        print(f"pplx {__version__}")
         return 0
     cmd = argv[0]
     rest = list(argv[1:])
