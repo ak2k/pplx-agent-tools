@@ -8,15 +8,14 @@ one round-trip. See docs/wire/fetch-url.md for the rationale.
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import sys
 from collections.abc import Sequence
 
-from .errors import EXIT_OK, EXIT_PARTIAL, PplxError, exit_code
+from .cli_runner import run_verb
+from .errors import EXIT_OK, EXIT_PARTIAL
 from .render import render_fetch_json, render_fetch_text
-from .verbs.fetch import fetch
-from .wire import Client
+from .verbs.fetch import FetchResult, fetch
 
 _DEFAULT_PROMPT_TIMEOUT_SECONDS = 180.0
 
@@ -95,49 +94,18 @@ def _resolve_timeout(arg: float | None) -> float | None:
     return _DEFAULT_PROMPT_TIMEOUT_SECONDS
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+def _finalize(result: FetchResult, max_chars: int | None) -> int:
+    """Verb-specific stderr warnings + EXIT_PARTIAL for incomplete streams.
 
-    try:
-        client = Client.from_default_cookies(profile=args.profile)
-    except PplxError as e:
-        print(f"pplx fetch: {e}", file=sys.stderr)
-        return exit_code(e)
-
-    keep_thread = args.keep_thread or os.environ.get("PPLX_KEEP_THREADS") == "1"
-    progress = args.progress or os.environ.get("PPLX_PROGRESS") == "1"
-    timeout = _resolve_timeout(args.timeout) if args.prompt else None
-
-    try:
-        result = fetch(
-            client,
-            args.url,
-            prompt=args.prompt,
-            max_chars=args.max_chars,
-            keep_thread=keep_thread,
-            timeout=timeout,
-            progress=progress,
-        )
-    except PplxError as e:
-        print(f"pplx fetch: {e}", file=sys.stderr)
-        return exit_code(e)
-
-    if args.json:
-        print(json.dumps(render_fetch_json(result), indent=2))
-    else:
-        print(render_fetch_text(result))
-
+    Truncation and stream-incomplete go to stderr so machine consumers can
+    grep them without parsing the rendered header. Exit 6 (EXIT_PARTIAL) on
+    incomplete-stream lets scripts using `$?` detect a salvaged-but-partial
+    response distinct from a clean success — partial content is still on
+    stdout for callers that can use it.
+    """
     if result.truncated:
-        print(
-            f"warning: content truncated at {args.max_chars} chars",
-            file=sys.stderr,
-        )
+        print(f"warning: content truncated at {max_chars} chars", file=sys.stderr)
     if not result.stream_complete:
-        # Parallel to the truncated warning above: stderr lets scripts grep for
-        # incomplete responses without having to parse the rendered header.
-        # Exit 6 (not 0) so callers using `$?` detect the partial without
-        # having to parse stdout — partial is still on stdout for callers
-        # that can use it.
         print(
             "warning: stream did not reach COMPLETED (deadline or server cut); "
             "partial content returned (exit 6)",
@@ -145,6 +113,31 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return EXIT_PARTIAL
     return EXIT_OK
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    keep_thread = args.keep_thread or os.environ.get("PPLX_KEEP_THREADS") == "1"
+    progress = args.progress or os.environ.get("PPLX_PROGRESS") == "1"
+    timeout = _resolve_timeout(args.timeout) if args.prompt else None
+
+    return run_verb(
+        "fetch",
+        args,
+        requires_auth=True,
+        run=lambda client: fetch(
+            client,
+            args.url,
+            prompt=args.prompt,
+            max_chars=args.max_chars,
+            keep_thread=keep_thread,
+            timeout=timeout,
+            progress=progress,
+        ),
+        render_text=render_fetch_text,
+        render_json=render_fetch_json,
+        finalize=lambda result: _finalize(result, args.max_chars),
+    )
 
 
 if __name__ == "__main__":

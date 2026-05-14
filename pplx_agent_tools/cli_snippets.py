@@ -7,11 +7,9 @@ verbs/snippets.py and docs/wire/snippets.md for the rationale.
 from __future__ import annotations
 
 import argparse
-import json
-import sys
 from collections.abc import Sequence
 
-from .errors import PplxError, exit_code
+from .cli_runner import run_verb
 from .render import render_snippets_json, render_snippets_text
 from .verbs.snippets import (
     DEFAULT_EMBED_MODEL,
@@ -54,24 +52,20 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-
-    try:
-        result = snippets(
+    return run_verb(
+        "snippets",
+        args,
+        requires_auth=False,
+        run=lambda _client: snippets(
             args.query,
             list(args.url),
             max_tokens=args.max_tokens,
             max_tokens_per_page=args.max_tokens_per_page,
             embed_model=args.embed_model,
-        )
-    except PplxError as e:
-        print(f"pplx snippets: {e}", file=sys.stderr)
-        return exit_code(e)
-
-    if args.json:
-        print(json.dumps(render_snippets_json(result), indent=2))
-    else:
-        print(render_snippets_text(result))
-    return 0
+        ),
+        render_text=render_snippets_text,
+        render_json=render_snippets_json,
+    )
 
 
 if __name__ == "__main__":

@@ -9,14 +9,11 @@ dedupes results.
 from __future__ import annotations
 
 import argparse
-import json
-import sys
 from collections.abc import Sequence
 
-from .errors import PplxError, exit_code
+from .cli_runner import run_verb
 from .render import render_search_json, render_search_text
 from .verbs.search import search_many
-from .wire import Client
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -36,29 +33,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-
-    try:
-        client = Client.from_default_cookies(profile=args.profile)
-    except PplxError as e:
-        print(f"pplx search: {e}", file=sys.stderr)
-        return exit_code(e)
-
-    queries: list[str] = list(args.query)
-
-    try:
-        merged = search_many(client, queries, limit=args.limit)
-    except PplxError as e:
-        print(f"pplx search: {e}", file=sys.stderr)
-        return exit_code(e)
-
-    if args.json:
-        print(json.dumps(render_search_json(merged), indent=2))
-    else:
-        print(render_search_text(merged))
-
-    for w in merged.warnings:
-        print(f"warning: {w}", file=sys.stderr)
-    return 0
+    return run_verb(
+        "search",
+        args,
+        requires_auth=True,
+        run=lambda client: search_many(client, list(args.query), limit=args.limit),
+        render_text=render_search_text,
+        render_json=render_search_json,
+    )
 
 
 if __name__ == "__main__":
