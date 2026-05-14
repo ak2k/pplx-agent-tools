@@ -1,7 +1,9 @@
-"""Probe whether --country, --domains, --excluded-domains actually filter.
+"""Probe whether country / domain_filter / excluded_domains are honored by
+/rest/realtime/search-web.
 
-Each filter is tested by running a baseline query and a filtered variant,
-then comparing result domain mixes. Verdict per flag:
+Hits the endpoint directly (not via search_many) so we can pass arbitrary
+body keys and observe the raw effect. For each flag we run a baseline and
+a filtered variant, then compare result domain mixes. Verdict per flag:
 
   HONORED  — filtered result set clearly differs in the expected direction
   IGNORED  — filtered result set ~identical to baseline (server didn't filter)
@@ -15,37 +17,62 @@ from __future__ import annotations
 import sys
 import time
 from collections import Counter
+from typing import Any
+from uuid import uuid4
 
 from pplx_agent_tools.errors import PplxError
-from pplx_agent_tools.verbs.search import search_many
+from pplx_agent_tools.verbs.search import ENDPOINT
 from pplx_agent_tools.wire import Client
 
 
-def domain_mix(hits) -> Counter[str]:
-    return Counter((h.domain or "").lower() for h in hits)
+def call_raw(client: Client, queries: list[str], **extras: Any) -> list[dict[str, Any]]:
+    """POST directly to the search-web endpoint with arbitrary extra body keys.
+
+    Returns the raw `web_results` array — no dedup, no `is_*` filtering, so
+    we can see exactly what the server sent back rather than what our verb
+    chooses to surface.
+    """
+    body = {"session_id": str(uuid4()), "queries": list(queries), **extras}
+    raw = client.post_json(ENDPOINT, body)
+    if not isinstance(raw, dict):
+        return []
+    hits = raw.get("web_results") or []
+    return hits if isinstance(hits, list) else []
+
+
+def domain_mix(hits: list[dict[str, Any]]) -> Counter[str]:
+    return Counter((h.get("domain") or "").lower() for h in hits if h.get("domain"))
 
 
 def fmt_mix(c: Counter[str], top: int = 8) -> str:
-    return ", ".join(f"{d}×{n}" for d, n in c.most_common(top))
+    return ", ".join(f"{d} x{n}" for d, n in c.most_common(top))
+
+
+def domain_matches(domain: str, base: str) -> bool:
+    """True iff `domain` equals `base` or is a proper subdomain. Boundary-safe:
+    `evilpython.org` does NOT match base `python.org`.
+    """
+    d = (domain or "").lower().strip(".")
+    b = (base or "").lower().strip(".")
+    return bool(b) and (d == b or d.endswith("." + b))
 
 
 def probe_country(client: Client) -> None:
-    # A query whose top results tend to vary by locale.
     q = "tagesschau news today"
-    print(f"\n=== --country probe (query: {q!r}) ===")
-    base = search_many(client, [q], limit=10, country="US")
+    print(f"\n=== country probe (query: {q!r}) ===")
+    base = call_raw(client, [q])
     time.sleep(1.5)
-    de = search_many(client, [q], limit=10, country="DE")
+    de = call_raw(client, [q], country="DE")
 
-    base_mix = domain_mix(base.hits)
-    de_mix = domain_mix(de.hits)
-    print(f"  US: {fmt_mix(base_mix)}")
-    print(f"  DE: {fmt_mix(de_mix)}")
+    base_mix = domain_mix(base)
+    de_mix = domain_mix(de)
+    print(f"  US baseline: {fmt_mix(base_mix)}")
+    print(f"  DE override: {fmt_mix(de_mix)}")
 
-    base_urls = {h.url for h in base.hits}
-    de_urls = {h.url for h in de.hits}
+    base_urls = {h.get("url") for h in base}
+    de_urls = {h.get("url") for h in de}
     overlap = len(base_urls & de_urls)
-    total = max(len(base_urls), len(de_urls))
+    total = max(len(base_urls), len(de_urls), 1)
     de_tld = sum(n for d, n in de_mix.items() if d.endswith(".de"))
     base_tld = sum(n for d, n in base_mix.items() if d.endswith(".de"))
     print(f"  URL overlap: {overlap}/{total}   .de hits: US={base_tld} DE={de_tld}")
@@ -58,69 +85,65 @@ def probe_country(client: Client) -> None:
 
 
 def probe_domains(client: Client) -> None:
-    # Pick a generic query where python.org has plenty to return.
     q = "asyncio tutorial"
-    print(f"\n=== --domains probe (query: {q!r}, filter=['python.org']) ===")
-    base = search_many(client, [q], limit=10)
+    base_domain = "python.org"
+    print(f"\n=== domain_filter probe (query: {q!r}, filter=[{base_domain!r}]) ===")
+    base = call_raw(client, [q])
     time.sleep(1.5)
     try:
-        filt = search_many(client, [q], limit=10, domains=["python.org"])
+        filt = call_raw(client, [q], domain_filter=[base_domain])
     except PplxError as e:
         print(f"  VERDICT: ERRORED ({e})")
         return
 
-    base_mix = domain_mix(base.hits)
-    filt_mix = domain_mix(filt.hits)
-    print(f"  baseline:           {fmt_mix(base_mix)}")
-    print(f"  domains=python.org: {fmt_mix(filt_mix)}")
+    base_mix = domain_mix(base)
+    filt_mix = domain_mix(filt)
+    print(f"  baseline:        {fmt_mix(base_mix)}")
+    print(f"  filtered:        {fmt_mix(filt_mix)}")
 
     off_domain = [
-        h for h in filt.hits if h.domain and not h.domain.lower().endswith("python.org")
+        h for h in filt if h.get("domain") and not domain_matches(h["domain"], base_domain)
     ]
-    if not filt.hits:
+    if not filt:
         print("  VERDICT: AMBIGUOUS (filtered call returned 0 hits)")
     elif not off_domain:
-        print(f"  VERDICT: HONORED ({len(filt.hits)}/{len(filt.hits)} on python.org)")
-    elif len(off_domain) == len(filt.hits):
-        print("  VERDICT: IGNORED (no hits on python.org)")
+        print(f"  VERDICT: HONORED ({len(filt)}/{len(filt)} on {base_domain})")
+    elif len(off_domain) == len(filt):
+        print(f"  VERDICT: IGNORED (no hits on {base_domain})")
     else:
-        print(
-            f"  VERDICT: PARTIAL ({len(filt.hits) - len(off_domain)}/{len(filt.hits)} on-domain)"
-        )
+        on_domain = len(filt) - len(off_domain)
+        print(f"  VERDICT: PARTIAL ({on_domain}/{len(filt)} on-domain)")
 
 
 def probe_excluded(client: Client) -> None:
-    # Pick a query where wikipedia/reddit reliably dominate.
     q = "linux kernel"
-    excl = ["wikipedia.org", "en.wikipedia.org", "reddit.com"]
-    print(f"\n=== --excluded-domains probe (query: {q!r}, excl={excl}) ===")
-    base = search_many(client, [q], limit=10)
+    excl = ["wikipedia.org", "reddit.com"]
+    print(f"\n=== excluded_domains probe (query: {q!r}, excl={excl}) ===")
+    base = call_raw(client, [q])
     time.sleep(1.5)
     try:
-        filt = search_many(client, [q], limit=10, excluded_domains=excl)
+        filt = call_raw(client, [q], excluded_domains=excl)
     except PplxError as e:
         print(f"  VERDICT: ERRORED ({e})")
         return
 
-    base_mix = domain_mix(base.hits)
-    filt_mix = domain_mix(filt.hits)
+    base_mix = domain_mix(base)
+    filt_mix = domain_mix(filt)
     print(f"  baseline:        {fmt_mix(base_mix)}")
     print(f"  excluded:        {fmt_mix(filt_mix)}")
 
-    excl_lower = {e.lower() for e in excl}
-    base_excl_hits = sum(1 for h in base.hits if (h.domain or "").lower() in excl_lower)
-    filt_excl_hits = sum(1 for h in filt.hits if (h.domain or "").lower() in excl_lower)
-    print(
-        f"  excluded-domain hits: baseline={base_excl_hits} filtered={filt_excl_hits}"
-    )
+    def hits_in_excluded(hits: list[dict[str, Any]]) -> int:
+        return sum(1 for h in hits if any(domain_matches(h.get("domain") or "", e) for e in excl))
+
+    base_excl_hits = hits_in_excluded(base)
+    filt_excl_hits = hits_in_excluded(filt)
+    print(f"  excluded-domain hits: baseline={base_excl_hits} filtered={filt_excl_hits}")
     if base_excl_hits > 0 and filt_excl_hits == 0:
         print("  VERDICT: HONORED")
     elif filt_excl_hits == base_excl_hits and filt_excl_hits > 0:
         print("  VERDICT: IGNORED")
     elif base_excl_hits == 0:
-        print(
-            "  VERDICT: AMBIGUOUS (baseline had no excluded-domain hits to suppress)"
-        )
+        print("  VERDICT: AMBIGUOUS (baseline had no excluded-domain hits to suppress)")
     else:
         print("  VERDICT: PARTIAL")
 
