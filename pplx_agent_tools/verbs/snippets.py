@@ -163,12 +163,28 @@ def snippets(
 def _fetch_all(urls: list[str]) -> list[tuple[str, str, str | None]]:
     """Concurrent-fetch + extract content. Returns one row per URL preserving
     input order: (url, content_or_empty, error_or_None).
+
+    Concurrency model: parallelize *across hosts*, serialize *within* a host,
+    and reuse one curl_cffi Session per host so same-host URLs share a TCP
+    connection (and benefit from HTTP/2 multiplexing when the server supports
+    it). A naive `ThreadPoolExecutor(max_workers=6)` would fire 6 simultaneous
+    requests at the same origin when the caller passes 6 URLs from one
+    site — some hosts will rate-limit that, the user gets NetworkError per
+    URL, and the verb under-delivers on otherwise valid input. Grouping
+    by host lets us stay polite without losing cross-host parallelism, and
+    sharing a Session per group makes the polite path also fast: 6 same-host
+    URLs cost 1 handshake instead of 6.
     """
+    from collections import defaultdict
+    from urllib.parse import urlparse
+
+    from curl_cffi import requests as cf_requests
+
     from ..verbs.fetch import fetch_page
 
-    def one(url: str) -> tuple[str, str, str | None]:
+    def one(url: str, session: cf_requests.Session | None = None) -> tuple[str, str, str | None]:
         try:
-            result = fetch_page(url, domain="", max_chars=None)
+            result = fetch_page(url, domain="", max_chars=None, session=session)
         except NetworkError as e:
             return (url, "", str(e))
         except Exception as e:
@@ -176,15 +192,36 @@ def _fetch_all(urls: list[str]) -> list[tuple[str, str, str | None]]:
             return (url, "", f"fetch failed: {e}")
         return (url, result.content or "", None)
 
-    pool = ThreadPoolExecutor(max_workers=min(len(urls), 6))
+    # Group URLs by host, preserving each URL's original index so output
+    # order matches input order regardless of which host group finishes first.
+    by_host: dict[str, list[int]] = defaultdict(list)
+    for i, url in enumerate(urls):
+        host = urlparse(url).netloc.lower() or url
+        by_host[host].append(i)
+
+    results: list[tuple[str, str, str | None] | None] = [None] * len(urls)
+
+    def fetch_host_serially(indices: list[int]) -> None:
+        # One Session per host group: TCP reuse + HTTP/2 multiplexing when
+        # the server offers it. Session closes after the group completes.
+        with cf_requests.Session(impersonate="chrome") as session:
+            for i in indices:
+                results[i] = one(urls[i], session=session)
+
+    max_workers = min(len(by_host), 6)
+    pool = ThreadPoolExecutor(max_workers=max_workers)
     try:
-        # pool.map preserves order and raises only via the result iterator;
-        # `one` catches its own exceptions, so the iterator never raises.
-        return list(pool.map(one, urls))
+        # pool.map preserves group order; per-group serial means same-host
+        # URLs never overlap. Inner `one` swallows exceptions, so the
+        # iterator never raises.
+        list(pool.map(fetch_host_serially, by_host.values()))
     finally:
         # cancel_futures=True drops any unstarted work so Ctrl-C / outer
         # exceptions don't block on already-queued URLs.
         pool.shutdown(wait=True, cancel_futures=True)
+
+    # All indices were written by the host-serial pass; the cast is safe.
+    return [r for r in results if r is not None]
 
 
 def _split_paragraphs(content: str) -> list[str]:

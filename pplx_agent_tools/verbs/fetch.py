@@ -16,6 +16,7 @@ signals but keeps the agent-shape single-command primitive.
 
 from __future__ import annotations
 
+import random
 import sys
 import time
 from dataclasses import dataclass
@@ -49,6 +50,14 @@ _RATE_LIMIT_BACKOFF_CAP = 60.0
 # 10 events is roughly every 2-3 s, frequent enough to see liveness without
 # flooding stderr on a long stream.
 _PROGRESS_EVENT_STRIDE = 10
+
+# ±15% multiplicative jitter on rate-limit backoff. Without it, N parallel
+# `pplx fetch --prompt` processes honoring the same `retry-after` value all
+# wake up at the same instant and recreate the herd. Range is conservative:
+# enough to disperse the herd across ~1.5s, not so much that we exceed the
+# server's retry-after by a meaningful margin.
+_BACKOFF_JITTER_LOW = 0.85
+_BACKOFF_JITTER_HIGH = 1.15
 
 
 def _require_http_url(url: str) -> None:
@@ -178,9 +187,15 @@ def _consume_one_stream(
 
 
 def _rate_limit_backoff(err: RateLimitError, remaining: float | None) -> float:
-    """How long to sleep after a 429, bounded by the overall deadline."""
+    """How long to sleep after a 429, bounded by the overall deadline.
+
+    Multiplicative jitter (±15%) is applied AFTER the cap and BEFORE the
+    deadline clip — so the cap still bounds the worst case but parallel
+    callers honoring the same `retry-after` won't wake in lockstep.
+    """
     base = err.retry_after if err.retry_after is not None else _RATE_LIMIT_DEFAULT_BACKOFF
     sleep_s = min(base, _RATE_LIMIT_BACKOFF_CAP)
+    sleep_s *= random.uniform(_BACKOFF_JITTER_LOW, _BACKOFF_JITTER_HIGH)
     if remaining is not None:
         sleep_s = min(sleep_s, remaining)
     return max(0.0, sleep_s)
@@ -228,20 +243,37 @@ def fetch(
     )
 
 
-def fetch_page(url: str, domain: str, *, max_chars: int | None) -> FetchResult:
+def fetch_page(
+    url: str,
+    domain: str,
+    *,
+    max_chars: int | None,
+    session: cf_requests.Session | None = None,
+) -> FetchResult:
     """Public: fetch a URL via curl_cffi and extract content with trafilatura.
 
-    No auth: uses a fresh curl_cffi session so perplexity.ai cookies are not
-    leaked to third-party hosts. Used by `fetch()` (no-prompt mode) and by
-    `verbs/snippets._fetch_all` for the concurrent-fetch path.
+    No auth: uses a curl_cffi session without perplexity.ai cookies so they
+    are not leaked to third-party hosts. Used by `fetch()` (no-prompt mode)
+    and by `verbs/snippets._fetch_all` for the concurrent-fetch path.
+
+    `session` (optional): pass a pre-existing curl_cffi Session to reuse the
+    TCP connection across calls. The snippets verb uses this to share one
+    Session per host group — TCP reuse plus HTTP/2 multiplexing means 6
+    same-host URLs cost 1 handshake instead of 6, and one connection per
+    host is markedly less Cloudflare-antagonizing than rapid TCP setups.
+    When None (default), a fresh session is created and torn down per call.
     """
     _require_http_url(url)
     try:
-        # Fresh session per call so we don't send perplexity.ai cookies to a
-        # random third-party host. curl_cffi keeps the chrome TLS fingerprint
-        # which also handles Cloudflare-protected sources transparently.
-        with cf_requests.Session(impersonate="chrome") as sess:
-            resp = sess.get(url, timeout=30, allow_redirects=True)
+        if session is None:
+            # Standalone path: fresh session, torn down on exit. curl_cffi
+            # keeps the chrome TLS fingerprint which handles Cloudflare-
+            # protected sources transparently.
+            with cf_requests.Session(impersonate="chrome") as sess:
+                resp = sess.get(url, timeout=30, allow_redirects=True)
+        else:
+            # Caller owns the session lifecycle (typically one per host group).
+            resp = session.get(url, timeout=30, allow_redirects=True)
     except NetworkError:
         raise
     except Exception as e:
