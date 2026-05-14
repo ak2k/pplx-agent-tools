@@ -46,7 +46,7 @@ pplx auth refresh                   # add to cron / launchd for hands-off
 - **For your own subscription only**. Cookie pooling across users is an explicit anti-pattern.
 - **Session cookies expire**. Reimport from the browser when `pplx auth check` fails.
 - **No URL-fetch endpoint**: `pplx fetch` fetches locally (no Perplexity-backend paywall bypass / cache reuse). For LLM-extracted content, use `--prompt`.
-- **Variant searches deferred**: `-t academic/images/videos/shopping` are Phase 2 (no dedicated cookie-auth endpoints exist; the SPA renders those via chat-endpoint blocks).
+- **`pplx search` is web-results only.** Variant search modes (academic / images / videos / shopping) and filter knobs (country, domain include/exclude) aren't supported by the realtime/search-web endpoint this verb uses — probed 2026-05-14 and found silently ignored. If we add them later they'll route through the ask-SSE endpoint instead.
 
 ## License
 

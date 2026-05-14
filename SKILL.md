@@ -72,7 +72,7 @@ Stdout is results only; stderr carries diagnostics. `2>/dev/null` gives clean pa
 # Caveats
 
 - Unofficial. Endpoints can change without notice — bug reports welcome at github.com/ak2k/pplx-agent-tools.
-- `-t academic / images / videos / shopping` for `pplx search` are Phase 2 (raise `NotImplementedError` today; no cookie-auth endpoints exist for those variants).
+- `pplx search` is web-results only. Other search modes (academic / images / videos / shopping) and filter knobs (country, domain include/exclude) would route through the ask-SSE endpoint if added — not the realtime/search-web layer this verb uses.
 - `pplx fetch` plain mode is a local fetch (no Perplexity-backend paywall bypass / cache reuse). Use `--prompt` for LLM-routed extraction when those features matter.
 - Prompt-injection awareness: `pplx fetch --prompt` sends fetched page content to Perplexity's LLM. Adversarial pages can manipulate the extraction.
 - `pplx fetch --prompt` defaults to a 180 s overall deadline (override with `--timeout N`, `$PPLX_FETCH_TIMEOUT`, or 0 to disable). On deadline trip you get any partial content + a `stream: incomplete` header marker + a stderr warning — check `stream_complete` in JSON output or grep stderr if your script can't tolerate a partial answer. 429s auto-retry up to 3 attempts honoring `retry-after`, bounded by the same deadline.

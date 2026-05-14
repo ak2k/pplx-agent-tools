@@ -17,7 +17,6 @@ from ..errors import SchemaError
 from ..wire import Client
 
 ENDPOINT = "/rest/realtime/search-web"
-SEARCH_TYPES = ("web", "academic", "images", "videos", "shopping")
 
 # Drop hits flagged as anything other than a real web result. Same filter logic
 # as the SSE response — Perplexity uses the same is_* booleans across both.
@@ -52,7 +51,6 @@ class Hit:
 @dataclass
 class SearchResult:
     query: str
-    type: str
     hits: list[Hit]
     # Count of hits actually returned (post-dedup, post-limit). The
     # `/rest/realtime/search-web` endpoint does not return a server-side
@@ -66,59 +64,25 @@ def search(
     client: Client,
     query: str,
     *,
-    search_type: str = "web",
     limit: int = 10,
-    country: str = "US",
-    domains: list[str] | None = None,
-    excluded_domains: list[str] | None = None,
 ) -> SearchResult:
-    """Run a single search query against /rest/realtime/search-web.
-
-    `search_type` is currently only `"web"`. The other types (academic,
-    images, videos, shopping) don't have dedicated cookie-auth endpoints
-    (RE-confirmed). They're Phase 2 territory: would route through
-    /rest/sse/perplexity_ask with sources=["scholar"/"videos"/etc.] and
-    parse type-specific block shapes.
-    """
-    if search_type != "web":
-        raise NotImplementedError(
-            f"search_type={search_type!r} is Phase 2 — no dedicated endpoint "
-            f"for cookie auth. Track via plan-doc Step 9."
-        )
-
-    return search_many(
-        client,
-        [query],
-        search_type=search_type,
-        limit=limit,
-        country=country,
-        domains=domains,
-        excluded_domains=excluded_domains,
-    )
+    """Run a single search query against /rest/realtime/search-web."""
+    return search_many(client, [query], limit=limit)
 
 
 def search_many(
     client: Client,
     queries: list[str],
     *,
-    search_type: str = "web",
     limit: int = 10,
-    country: str = "US",
-    domains: list[str] | None = None,
-    excluded_domains: list[str] | None = None,
 ) -> SearchResult:
     """Run multiple queries in one round-trip. The endpoint takes queries[]
     natively and merges/dedupes server-side.
     """
     if not queries:
-        return SearchResult(query="", type=search_type, hits=[], total=0)
+        return SearchResult(query="", hits=[], total=0)
 
-    body = _build_body(
-        queries,
-        domains=domains,
-        excluded_domains=excluded_domains,
-        country=country,
-    )
+    body = _build_body(queries)
     raw = client.post_json(ENDPOINT, body)
     if not isinstance(raw, dict):
         raise SchemaError(f"unexpected response type from {ENDPOINT}: {type(raw).__name__}")
@@ -143,7 +107,6 @@ def search_many(
     hits = deduped[:limit]
     return SearchResult(
         query=" | ".join(queries),
-        type=search_type,
         hits=hits,
         total=len(hits),
     )
@@ -175,26 +138,11 @@ def _to_hit(raw: dict[str, Any]) -> Hit:
     )
 
 
-def _build_body(
-    queries: list[str],
-    *,
-    domains: list[str] | None,
-    excluded_domains: list[str] | None,
-    country: str,
-) -> dict[str, Any]:
+def _build_body(queries: list[str]) -> dict[str, Any]:
     """Minimal body — see docs/wire/search-web.md. session_id is just a
     per-call tracking UUID; the endpoint doesn't reuse state across calls.
     """
-    body: dict[str, Any] = {
+    return {
         "session_id": str(uuid4()),
         "queries": list(queries),
     }
-    # These params haven't been validated against this endpoint yet; the
-    # endpoint may silently ignore them or 422. Document if/when encountered.
-    if country and country.upper() != "US":
-        body["country"] = country.upper()
-    if domains:
-        body["domain_filter"] = list(domains)
-    if excluded_domains:
-        body["excluded_domains"] = list(excluded_domains)
-    return body
