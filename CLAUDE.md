@@ -29,12 +29,17 @@ preserve all shapes bump the **patch**.
 
 - Run tests: `uv run --extra dev pytest -q`
 - Lint + format check: `uv run --extra dev ruff check . && uv run --extra dev ruff format --check .`
-- Typecheck: `uv run --extra dev pyright pplx_agent_tools/`
+- Typecheck: `uv run --extra dev basedpyright pplx_agent_tools/`
 - Coverage: `uv run --extra dev pytest --cov` (gated at `fail_under = 60`)
 
-**CI runs all four** — `ruff check`, `ruff format --check`, `pyright`, and
-`pytest`. Running only `ruff check` locally misses the formatter; always
-run both before pushing.
+**CI runs all four** — `ruff check`, `ruff format --check`, `basedpyright`,
+and `pytest`. Running only `ruff check` locally misses the formatter;
+always run both before pushing.
+
+The `[tool.pyright]` table in `pyproject.toml` still configures the type
+checker — basedpyright reads the same config keys as pyright (it's a
+fork). Don't be confused by the `pyright` table name and `basedpyright`
+binary; they're intentionally compatible.
 
 ## Layout
 
