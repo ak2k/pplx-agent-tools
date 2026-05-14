@@ -95,6 +95,43 @@ class _StreamState:
     saw_completed: bool = False
 
 
+def extract_chunks_from_event(event: dict[str, Any]) -> list[str]:
+    """Pure: pull the streamed markdown chunks added by one SSE event.
+
+    Returns the list of text fragments to append to the accumulating answer.
+    Total function: never raises, returns `[]` for any event without the
+    expected `ask_text` markdown_block structure. Independently fuzzable.
+
+    Decision filter: we only consume `intended_usage == "ask_text"` blocks,
+    not the parallel `ask_text_0_markdown` blocks the server emits — they
+    carry the same chunks and reading both would double-count.
+    """
+    data = event.get("data")
+    if not isinstance(data, dict):
+        return []
+    out: list[str] = []
+    for block in data.get("blocks") or []:
+        if not isinstance(block, dict):
+            continue
+        if block.get("intended_usage") != "ask_text":
+            continue
+        mb = block.get("markdown_block")
+        if not isinstance(mb, dict):
+            continue
+        chunks = mb.get("chunks") or []
+        if isinstance(chunks, list):
+            out.extend(str(c) for c in chunks)
+    return out
+
+
+def event_marks_completed(event: dict[str, Any]) -> bool:
+    """Pure: True iff the SSE event signals the stream has finished."""
+    data = event.get("data")
+    if not isinstance(data, dict):
+        return False
+    return data.get("status") == "COMPLETED" or bool(data.get("text_completed"))
+
+
 def _consume_one_stream(
     client: Client,
     body: dict[str, Any],
@@ -108,6 +145,10 @@ def _consume_one_stream(
     Returns normally when the stream ends (COMPLETED or natural close).
     Propagates StreamDeadlineError and RateLimitError to the caller; the
     caller decides whether to retry or salvage.
+
+    Per-event logic is split into pure helpers (`extract_chunks_from_event`,
+    `event_marks_completed`) so the parsing rules can be fuzzed in isolation
+    from the wire orchestration.
     """
     event_count = 0
     try:
@@ -120,23 +161,13 @@ def _consume_one_stream(
             if progress and event_count % _PROGRESS_EVENT_STRIDE == 0:
                 print(".", end="", file=sys.stderr, flush=True)
             data = event.get("data")
-            if not isinstance(data, dict):
-                continue
-            if state.backend_uuid is None and isinstance(data.get("backend_uuid"), str):
-                state.backend_uuid = data["backend_uuid"]
-            if state.read_write_token is None and isinstance(data.get("read_write_token"), str):
-                state.read_write_token = data["read_write_token"]
-            for block in data.get("blocks") or []:
-                if not isinstance(block, dict):
-                    continue
-                if block.get("intended_usage") != "ask_text":
-                    continue
-                mb = block.get("markdown_block")
-                if isinstance(mb, dict):
-                    chunks = mb.get("chunks") or []
-                    if isinstance(chunks, list):
-                        state.chunks.extend(str(c) for c in chunks)
-            if data.get("status") == "COMPLETED" or data.get("text_completed"):
+            if isinstance(data, dict):
+                if state.backend_uuid is None and isinstance(data.get("backend_uuid"), str):
+                    state.backend_uuid = data["backend_uuid"]
+                if state.read_write_token is None and isinstance(data.get("read_write_token"), str):
+                    state.read_write_token = data["read_write_token"]
+            state.chunks.extend(extract_chunks_from_event(event))
+            if event_marks_completed(event):
                 state.saw_completed = True
                 return
     finally:

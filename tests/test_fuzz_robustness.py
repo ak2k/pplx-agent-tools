@@ -24,8 +24,17 @@ from hypothesis import strategies as st
 
 from pplx_agent_tools.auth import _normalize
 from pplx_agent_tools.errors import AuthError, SchemaError
-from pplx_agent_tools.verbs.fetch import _fetch_with_prompt
-from pplx_agent_tools.verbs.search import _keep, _to_hit, search_many
+from pplx_agent_tools.verbs.fetch import (
+    _fetch_with_prompt,
+    event_marks_completed,
+    extract_chunks_from_event,
+)
+from pplx_agent_tools.verbs.search import (
+    _keep,
+    _to_hit,
+    decode_search_response,
+    search_many,
+)
 from pplx_agent_tools.verbs.snippets import (
     _build_index,
     _fts5_escape,
@@ -93,22 +102,47 @@ class _CannedClient(_TestClientBase):
 
 
 @given(_json_value)
+def test_decode_search_response_returns_or_raises(payload: Any) -> None:
+    """Pure decoder contract: SearchResult or SchemaError for ANY input.
+
+    Tests the pure function directly (no wire setup) — faster than going
+    through search_many + a canned client, and exercises exactly the
+    parse logic. This is the trivially-fuzzable benefit of Move 3's
+    pure-decoder extraction.
+    """
+    try:
+        result = decode_search_response(payload, query="q", limit=10)
+    except SchemaError:
+        return
+    assert isinstance(result.hits, list)
+    assert result.total == len(result.hits)
+    urls = [h.url for h in result.hits]
+    assert len(urls) == len(set(urls))  # dedup invariant
+
+
+@given(_json_value, st.integers(min_value=0, max_value=100))
+def test_decode_search_response_respects_limit(payload: Any, limit: int) -> None:
+    """`limit` is the hard cap on returned hits regardless of input size."""
+    try:
+        result = decode_search_response(payload, query="q", limit=limit)
+    except SchemaError:
+        return
+    assert len(result.hits) <= limit
+
+
+@given(_json_value)
 @settings(suppress_health_check=[HealthCheck.too_slow])
 def test_search_many_degrades_or_raises_schema(payload: Any) -> None:
-    """`search_many` must return a SearchResult or raise SchemaError for any
-    JSON-shaped response from the endpoint — never crash with TypeError /
-    AttributeError / KeyError leaking from the parser internals.
+    """Integration variant: `search_many` (orchestrator over the pure decoder)
+    must also never leak unexpected exception types.
     """
     client = _CannedClient(payload)
     try:
         result = search_many(client, ["query"])
     except SchemaError:
         return
-    # On success: invariants. `total == len(hits)` is the real contract —
-    # search_many sets total = min(len(deduped), limit) and hits = deduped[:limit].
     assert isinstance(result.hits, list)
     assert result.total == len(result.hits)
-    # URLs must be unique (dedup invariant)
     urls = [h.url for h in result.hits]
     assert len(urls) == len(set(urls))
 
@@ -116,6 +150,74 @@ def test_search_many_degrades_or_raises_schema(payload: Any) -> None:
 # ====================================================================
 # 2. Fetch verb SSE-event robustness
 # ====================================================================
+
+
+@given(_json_dict)
+def test_extract_chunks_from_event_never_raises(event: dict[str, Any]) -> None:
+    """Pure decoder: returns list[str] for ANY event dict, never raises.
+
+    The chunk extractor runs once per SSE event in the fetch verb's hot
+    path — a single KeyError here would crash mid-stream. Total function
+    invariant: `list[str]` out, regardless of input.
+    """
+    chunks = extract_chunks_from_event(event)
+    assert isinstance(chunks, list)
+    for c in chunks:
+        assert isinstance(c, str)
+
+
+@given(_json_dict)
+def test_event_marks_completed_returns_bool(event: dict[str, Any]) -> None:
+    """Pure: returns bool for ANY event dict, never raises."""
+    assert isinstance(event_marks_completed(event), bool)
+
+
+def test_extract_chunks_known_shape() -> None:
+    """Sanity: real SPA event shape produces the expected chunks."""
+    event = {
+        "data": {
+            "blocks": [
+                {
+                    "intended_usage": "ask_text",
+                    "markdown_block": {"chunks": ["Hello, ", "world."]},
+                }
+            ]
+        }
+    }
+    assert extract_chunks_from_event(event) == ["Hello, ", "world."]
+
+
+def test_extract_chunks_ignores_non_ask_text_blocks() -> None:
+    """The parallel `ask_text_0_markdown` block carries the same chunks —
+    consuming both would double-count. The filter must keep only ask_text.
+    """
+    event = {
+        "data": {
+            "blocks": [
+                {
+                    "intended_usage": "ask_text",
+                    "markdown_block": {"chunks": ["A"]},
+                },
+                {
+                    "intended_usage": "ask_text_0_markdown",
+                    "markdown_block": {"chunks": ["A-dup"]},
+                },
+            ]
+        }
+    }
+    assert extract_chunks_from_event(event) == ["A"]
+
+
+def test_event_marks_completed_status_field() -> None:
+    assert event_marks_completed({"data": {"status": "COMPLETED"}}) is True
+
+
+def test_event_marks_completed_text_completed_field() -> None:
+    assert event_marks_completed({"data": {"text_completed": True}}) is True
+
+
+def test_event_marks_completed_neither_flag() -> None:
+    assert event_marks_completed({"data": {"status": "PENDING"}}) is False
 
 
 class _StreamClient(_TestClientBase):
