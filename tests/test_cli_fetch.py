@@ -10,20 +10,27 @@ from typing import Any
 
 import pytest
 
-from pplx_agent_tools import cli_fetch
+from pplx_agent_tools import cli_fetch, cli_runner
 from pplx_agent_tools.errors import EXIT_OK, EXIT_PARTIAL
 from pplx_agent_tools.verbs.fetch import FetchResult
 
 
 @pytest.fixture(autouse=True)
 def _stub_client(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Avoid loading real cookies — CLI tests should not depend on $HOME state."""
+    """Avoid loading real cookies — CLI tests should not depend on $HOME state.
+
+    Client is imported by cli_runner (the generic verb runner that handles
+    auth setup), so the patch target is cli_runner.Client rather than the
+    individual cli_X module that no longer references Client directly.
+    """
 
     class _DummyClient:
         pass
 
     monkeypatch.setattr(
-        cli_fetch.Client, "from_default_cookies", classmethod(lambda cls, **_: _DummyClient())
+        cli_runner.Client,
+        "from_default_cookies",
+        classmethod(lambda cls, **_: _DummyClient()),
     )
 
 

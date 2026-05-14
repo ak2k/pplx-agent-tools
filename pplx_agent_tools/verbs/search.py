@@ -78,12 +78,25 @@ def search_many(
 ) -> SearchResult:
     """Run multiple queries in one round-trip. The endpoint takes queries[]
     natively and merges/dedupes server-side.
+
+    Thin orchestrator: builds the body, calls the wire, hands the raw
+    response to `decode_search_response()`. The decode logic is pure and
+    independently fuzzable (see tests/test_fuzz_robustness.py).
     """
     if not queries:
         return SearchResult(query="", hits=[], total=0)
 
-    body = _build_body(queries)
-    raw = client.post_json(ENDPOINT, body)
+    raw = client.post_json(ENDPOINT, _build_body(queries))
+    return decode_search_response(raw, query=" | ".join(queries), limit=limit)
+
+
+def decode_search_response(raw: Any, *, query: str, limit: int) -> SearchResult:
+    """Pure decode: raw `/rest/realtime/search-web` response → SearchResult.
+
+    No I/O. Total function: returns a SearchResult or raises SchemaError on
+    any structural mismatch. Used by `search_many` (with real wire response)
+    and by fixture-replay + fuzz tests (with canned / adversarial dicts).
+    """
     if not isinstance(raw, dict):
         raise SchemaError(f"unexpected response type from {ENDPOINT}: {type(raw).__name__}")
 
@@ -105,14 +118,16 @@ def search_many(
     # `total` mirrors `len(hits)` deliberately — the endpoint doesn't ship
     # a server-side count, so a "true total" would just be misleading.
     hits = deduped[:limit]
-    return SearchResult(
-        query=" | ".join(queries),
-        hits=hits,
-        total=len(hits),
-    )
+    return SearchResult(query=query, hits=hits, total=len(hits))
 
 
-def _keep(hit: dict[str, Any]) -> bool:
+def _keep(hit: Any) -> bool:
+    """Filter a candidate web_result, dropping anything flagged as
+    widget/image/nav/etc. Accepts `Any` (not `dict[str, Any]`) so the
+    runtime isinstance check is meaningful — fuzz tests pass adversarial
+    inputs (None, lists, strings) and rely on this returning False
+    instead of crashing.
+    """
     if not isinstance(hit, dict):
         return False
     return not any(hit.get(flag) for flag in _DROP_FLAGS_WEB)

@@ -16,6 +16,7 @@ signals but keeps the agent-shape single-command primitive.
 
 from __future__ import annotations
 
+import random
 import sys
 import time
 from dataclasses import dataclass
@@ -49,6 +50,14 @@ _RATE_LIMIT_BACKOFF_CAP = 60.0
 # 10 events is roughly every 2-3 s, frequent enough to see liveness without
 # flooding stderr on a long stream.
 _PROGRESS_EVENT_STRIDE = 10
+
+# ±15% multiplicative jitter on rate-limit backoff. Without it, N parallel
+# `pplx fetch --prompt` processes honoring the same `retry-after` value all
+# wake up at the same instant and recreate the herd. Range is conservative:
+# enough to disperse the herd across ~1.5s, not so much that we exceed the
+# server's retry-after by a meaningful margin.
+_BACKOFF_JITTER_LOW = 0.85
+_BACKOFF_JITTER_HIGH = 1.15
 
 
 def _require_http_url(url: str) -> None:
@@ -95,6 +104,43 @@ class _StreamState:
     saw_completed: bool = False
 
 
+def extract_chunks_from_event(event: dict[str, Any]) -> list[str]:
+    """Pure: pull the streamed markdown chunks added by one SSE event.
+
+    Returns the list of text fragments to append to the accumulating answer.
+    Total function: never raises, returns `[]` for any event without the
+    expected `ask_text` markdown_block structure. Independently fuzzable.
+
+    Decision filter: we only consume `intended_usage == "ask_text"` blocks,
+    not the parallel `ask_text_0_markdown` blocks the server emits — they
+    carry the same chunks and reading both would double-count.
+    """
+    data = event.get("data")
+    if not isinstance(data, dict):
+        return []
+    out: list[str] = []
+    for block in data.get("blocks") or []:
+        if not isinstance(block, dict):
+            continue
+        if block.get("intended_usage") != "ask_text":
+            continue
+        mb = block.get("markdown_block")
+        if not isinstance(mb, dict):
+            continue
+        chunks = mb.get("chunks") or []
+        if isinstance(chunks, list):
+            out.extend(str(c) for c in chunks)
+    return out
+
+
+def event_marks_completed(event: dict[str, Any]) -> bool:
+    """Pure: True iff the SSE event signals the stream has finished."""
+    data = event.get("data")
+    if not isinstance(data, dict):
+        return False
+    return data.get("status") == "COMPLETED" or bool(data.get("text_completed"))
+
+
 def _consume_one_stream(
     client: Client,
     body: dict[str, Any],
@@ -108,6 +154,10 @@ def _consume_one_stream(
     Returns normally when the stream ends (COMPLETED or natural close).
     Propagates StreamDeadlineError and RateLimitError to the caller; the
     caller decides whether to retry or salvage.
+
+    Per-event logic is split into pure helpers (`extract_chunks_from_event`,
+    `event_marks_completed`) so the parsing rules can be fuzzed in isolation
+    from the wire orchestration.
     """
     event_count = 0
     try:
@@ -120,23 +170,13 @@ def _consume_one_stream(
             if progress and event_count % _PROGRESS_EVENT_STRIDE == 0:
                 print(".", end="", file=sys.stderr, flush=True)
             data = event.get("data")
-            if not isinstance(data, dict):
-                continue
-            if state.backend_uuid is None and isinstance(data.get("backend_uuid"), str):
-                state.backend_uuid = data["backend_uuid"]
-            if state.read_write_token is None and isinstance(data.get("read_write_token"), str):
-                state.read_write_token = data["read_write_token"]
-            for block in data.get("blocks") or []:
-                if not isinstance(block, dict):
-                    continue
-                if block.get("intended_usage") != "ask_text":
-                    continue
-                mb = block.get("markdown_block")
-                if isinstance(mb, dict):
-                    chunks = mb.get("chunks") or []
-                    if isinstance(chunks, list):
-                        state.chunks.extend(str(c) for c in chunks)
-            if data.get("status") == "COMPLETED" or data.get("text_completed"):
+            if isinstance(data, dict):
+                if state.backend_uuid is None and isinstance(data.get("backend_uuid"), str):
+                    state.backend_uuid = data["backend_uuid"]
+                if state.read_write_token is None and isinstance(data.get("read_write_token"), str):
+                    state.read_write_token = data["read_write_token"]
+            state.chunks.extend(extract_chunks_from_event(event))
+            if event_marks_completed(event):
                 state.saw_completed = True
                 return
     finally:
@@ -147,9 +187,15 @@ def _consume_one_stream(
 
 
 def _rate_limit_backoff(err: RateLimitError, remaining: float | None) -> float:
-    """How long to sleep after a 429, bounded by the overall deadline."""
+    """How long to sleep after a 429, bounded by the overall deadline.
+
+    Multiplicative jitter (±15%) is applied AFTER the cap and BEFORE the
+    deadline clip — so the cap still bounds the worst case but parallel
+    callers honoring the same `retry-after` won't wake in lockstep.
+    """
     base = err.retry_after if err.retry_after is not None else _RATE_LIMIT_DEFAULT_BACKOFF
     sleep_s = min(base, _RATE_LIMIT_BACKOFF_CAP)
+    sleep_s *= random.uniform(_BACKOFF_JITTER_LOW, _BACKOFF_JITTER_HIGH)
     if remaining is not None:
         sleep_s = min(sleep_s, remaining)
     return max(0.0, sleep_s)
@@ -197,20 +243,37 @@ def fetch(
     )
 
 
-def fetch_page(url: str, domain: str, *, max_chars: int | None) -> FetchResult:
+def fetch_page(
+    url: str,
+    domain: str,
+    *,
+    max_chars: int | None,
+    session: cf_requests.Session[cf_requests.Response] | None = None,
+) -> FetchResult:
     """Public: fetch a URL via curl_cffi and extract content with trafilatura.
 
-    No auth: uses a fresh curl_cffi session so perplexity.ai cookies are not
-    leaked to third-party hosts. Used by `fetch()` (no-prompt mode) and by
-    `verbs/snippets._fetch_all` for the concurrent-fetch path.
+    No auth: uses a curl_cffi session without perplexity.ai cookies so they
+    are not leaked to third-party hosts. Used by `fetch()` (no-prompt mode)
+    and by `verbs/snippets._fetch_all` for the concurrent-fetch path.
+
+    `session` (optional): pass a pre-existing curl_cffi Session to reuse the
+    TCP connection across calls. The snippets verb uses this to share one
+    Session per host group — TCP reuse plus HTTP/2 multiplexing means 6
+    same-host URLs cost 1 handshake instead of 6, and one connection per
+    host is markedly less Cloudflare-antagonizing than rapid TCP setups.
+    When None (default), a fresh session is created and torn down per call.
     """
     _require_http_url(url)
     try:
-        # Fresh session per call so we don't send perplexity.ai cookies to a
-        # random third-party host. curl_cffi keeps the chrome TLS fingerprint
-        # which also handles Cloudflare-protected sources transparently.
-        with cf_requests.Session(impersonate="chrome") as sess:
-            resp = sess.get(url, timeout=30, allow_redirects=True)
+        if session is None:
+            # Standalone path: fresh session, torn down on exit. curl_cffi
+            # keeps the chrome TLS fingerprint which handles Cloudflare-
+            # protected sources transparently.
+            with cf_requests.Session(impersonate="chrome") as sess:
+                resp = sess.get(url, timeout=30, allow_redirects=True)
+        else:
+            # Caller owns the session lifecycle (typically one per host group).
+            resp = session.get(url, timeout=30, allow_redirects=True)
     except NetworkError:
         raise
     except Exception as e:

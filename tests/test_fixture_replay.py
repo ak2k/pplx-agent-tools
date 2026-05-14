@@ -14,7 +14,7 @@ from typing import Any
 
 import pytest
 
-from pplx_agent_tools.verbs.search import search_many
+from pplx_agent_tools.verbs.search import decode_search_response, search_many
 from tests._doubles import _TestClientBase
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -125,3 +125,48 @@ def test_search_many_handles_missing_web_results_key() -> None:
     result = search_many(client, ["q"])
     assert result.hits == []
     assert result.total == 0
+
+
+# ---------- decoder-direct fixture replays ----------
+# These hit the pure `decode_search_response` rather than going through
+# `search_many` + FakeClient. Faster and exercises exactly the parse logic.
+
+
+def _load_search_fixture(name: str) -> dict[str, Any]:
+    return json.loads((FIXTURES / "search-web" / name).read_text())
+
+
+def test_decode_handles_empty_web_results() -> None:
+    """Empty server response → empty hits + total=0, no SchemaError."""
+    raw = _load_search_fixture("empty-web-results.json")
+    result = decode_search_response(raw, query="q", limit=10)
+    assert result.hits == []
+    assert result.total == 0
+
+
+def test_decode_filters_widget_image_nav_kc_hits() -> None:
+    """Fixture has 4 hits, ALL flagged with one of the filter is_* booleans.
+    Decoder must drop them all rather than surface widgets / images / nav
+    suggestions as "web results."
+    """
+    raw = _load_search_fixture("all-filtered-hits.json")
+    result = decode_search_response(raw, query="q", limit=10)
+    assert result.hits == []
+    assert result.total == 0
+
+
+def test_decode_accepts_minimal_hit() -> None:
+    """Only url + name is mandatory on a web_result; every other field is
+    optional. Decoder must not fail when domain/snippet/summary/timestamp
+    are absent — common for federated / private search sources.
+    """
+    raw = _load_search_fixture("minimal-hit.json")
+    result = decode_search_response(raw, query="q", limit=10)
+    assert len(result.hits) == 1
+    hit = result.hits[0]
+    assert hit.url == "https://example.com/page-1"
+    assert hit.title == "Example Page"
+    assert hit.domain is None
+    assert hit.snippet is None
+    assert hit.summary is None
+    assert hit.images == []

@@ -1,0 +1,30 @@
+{
+  "media_items": [],
+  "web_results": [
+    {
+      "url": "https://widget.example/weather",
+      "name": "Weather Widget",
+      "domain": "widget.example",
+      "snippet": "72°F sunny",
+      "is_widget": true
+    },
+    {
+      "url": "https://image.example/photo.jpg",
+      "name": "Image Result",
+      "domain": "image.example",
+      "is_image": true
+    },
+    {
+      "url": "https://nav.example/page",
+      "name": "Navigation Result",
+      "domain": "nav.example",
+      "is_navigational": true
+    },
+    {
+      "url": "https://kc.example/card",
+      "name": "Knowledge Card",
+      "domain": "kc.example",
+      "is_knowledge_card": true
+    }
+  ]
+}

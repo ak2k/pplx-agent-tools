@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pplx-agent-tools"
-version = "0.3.0"
+version = "0.3.1"
 description = "Agent toolkit for Perplexity, backed by your Pro subscription's web session cookies"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -37,7 +37,7 @@ dev = [
     "hypothesis>=6.100",
     "ruff>=0.6",
     "vulture>=2.10",
-    "pyright>=1.1.380",
+    "basedpyright>=1.39",
 ]
 
 [project.scripts]

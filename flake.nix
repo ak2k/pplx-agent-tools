@@ -127,7 +127,7 @@
         {
           default = mkPplx system;
           pplx-agent-tools = mkPplx system;
-          # Dev venv — includes pytest, ruff, pyright, vulture. Used by the
+          # Dev venv — includes pytest, ruff, basedpyright, vulture. Used by the
           # checks and devShell below; rarely useful as a `nix build` target.
           dev = s.pythonSet.mkVirtualEnv "pplx-agent-tools-env-dev" s.workspace.deps.all;
         }
@@ -163,15 +163,15 @@
             touch $out
           '';
 
-          # Use nixpkgs' pyright (which bundles its own node), not the
-          # Python `pyright` wrapper from the dev venv — that wrapper
-          # downloads node via nodeenv on first run, which fails in the
-          # Nix build sandbox (no network).
+          # Use nixpkgs' basedpyright (which bundles its own node), not
+          # the Python `basedpyright` wrapper from the dev venv — that
+          # wrapper downloads node via nodeenv on first run, which fails
+          # in the Nix build sandbox (no network).
           typecheck =
             pkgs.runCommand "pplx-agent-tools-typecheck"
               {
                 nativeBuildInputs = [
-                  pkgs.pyright
+                  pkgs.basedpyright
                   devEnv
                 ];
               }
@@ -179,9 +179,9 @@
                 cp -r ${./.}/. .
                 chmod -R u+w .
                 export HOME=$TMPDIR
-                # Point pyright at the dev venv so third-party imports resolve.
+                # Point basedpyright at the dev venv so third-party imports resolve.
                 export PYTHONPATH="${devEnv}/lib/python3.12/site-packages"
-                pyright --pythonpath ${devEnv}/bin/python pplx_agent_tools
+                basedpyright --pythonpath ${devEnv}/bin/python pplx_agent_tools
                 touch $out
               '';
 
