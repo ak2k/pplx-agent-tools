@@ -39,9 +39,13 @@ from pplx_agent_tools.verbs.fetch import (
 def _patch_fetch_page_with_timing() -> tuple[list[tuple[str, float, float]], Any]:
     """Returns (timings_log, patch_target) for monkey-patching fetch_page.
 
-    Each call records (url, start_time, end_time). Each call sleeps 50ms
+    Each call records (url, start_time, end_time). Each call sleeps 200ms
     so concurrent invocations on different hosts are distinguishable from
-    serialized invocations on the same host.
+    serialized invocations on the same host with a robust margin: parallel
+    span lands at ~200-300ms, serial would be 600ms+. Earlier 50ms sleeps
+    were too short — macOS CI runners regularly took 160-170ms wall-clock
+    for nominally-parallel 3-host runs because ThreadPool spinup added
+    enough latency to chew through the 'well below serial' headroom.
     """
     log: list[tuple[str, float, float]] = []
     log_lock = threading.Lock()
@@ -51,7 +55,7 @@ def _patch_fetch_page_with_timing() -> tuple[list[tuple[str, float, float]], Any
 
         del session  # ignored — Session-reuse correctness has its own test
         start = time.monotonic()
-        time.sleep(0.05)
+        time.sleep(0.2)
         end = time.monotonic()
         with log_lock:
             log.append((url, start, end))
@@ -107,15 +111,16 @@ def test_fetch_all_parallelizes_across_hosts() -> None:
     with patch("pplx_agent_tools.verbs.fetch.fetch_page", side_effect=stub):
         _fetch_all(urls)
 
-    # Total wall-clock must be much less than one-after-another (3x50ms=150ms),
+    # Total wall-clock must be much less than one-after-another (3x200ms=600ms),
     # which proves the three calls happened in parallel rather than serially.
     earliest_start = min(s for _, s, _ in log)
     latest_end = max(e for _, _, e in log)
     span = latest_end - earliest_start
-    # Bound at 130ms: well below the 150ms serial floor, with enough CI-noise
-    # headroom that macOS runners (which previously tripped at 122ms vs 120ms)
-    # don't flake. Parallel runs typically land at 50-80ms; serial would be 150+.
-    assert span < 0.13, f"hosts didn't parallelize (span={span:.3f}s)"
+    # Bound at 400ms: parallel runs typically land at 200-280ms; serial would
+    # be 600ms+. 400ms gives 100+ms headroom on both sides — bullet-proof
+    # against macOS CI's ~50-70ms ThreadPool-spinup overhead that previously
+    # tripped tighter bounds (122ms vs 120ms, then 168ms vs 130ms).
+    assert span < 0.4, f"hosts didn't parallelize (span={span:.3f}s)"
 
 
 def test_fetch_all_preserves_input_order() -> None:
