@@ -42,6 +42,24 @@
       ];
       forAllSystems = nixpkgs.lib.genAttrs systems;
 
+      # Version derived from .git_archival.txt at flake-eval time. The file is
+      # populated by GitHub when serving the tarball for a tagged ref (via
+      # `export-subst` in .gitattributes) and contains `describe-name: vX.Y.Z`.
+      # Without this, uv2nix sees `editable = "."` in uv.lock with no version
+      # field and hatch-vcs/setuptools-scm has no git history → falls back to
+      # "0.0.0". We extract the describe-name and pass it as
+      # SETUPTOOLS_SCM_PRETEND_VERSION so hatch-vcs uses it.
+      #
+      # Returns null when the substitution didn't run (local working-tree builds
+      # without a real tag), so consumers know to fall back.
+      versionFromArchival =
+        let
+          path = ./.git_archival.txt;
+          contents = if builtins.pathExists path then builtins.readFile path else "";
+          match = builtins.match ".*describe-name: (v?[0-9][^\n]*).*" contents;
+        in
+        if match == null then null else nixpkgs.lib.removePrefix "v" (builtins.head match);
+
       # Native overrides for wheels that ship bundled shared libs not on a
       # NixOS-style linker path. macOS wheels are relative-linked and need
       # nothing; Linux manylinux wheels need autoPatchelfHook + the libs
@@ -62,6 +80,15 @@
           onnxruntime = prev.onnxruntime.overrideAttrs (old: {
             nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ [ pkgs.autoPatchelfHook ];
             buildInputs = (old.buildInputs or [ ]) ++ [ pkgs.stdenv.cc.cc.lib ];
+          });
+        }
+        // nixpkgs.lib.optionalAttrs (versionFromArchival != null) {
+          # When we know the version (tagged release fetched as a tarball),
+          # force hatch-vcs to use it instead of falling back to 0.0.0.
+          pplx-agent-tools = prev.pplx-agent-tools.overrideAttrs (old: {
+            env = (old.env or { }) // {
+              SETUPTOOLS_SCM_PRETEND_VERSION = versionFromArchival;
+            };
           });
         };
 
