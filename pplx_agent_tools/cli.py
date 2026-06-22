@@ -16,6 +16,7 @@ from . import (
     cli_fetch,
     cli_models,
     cli_quota,
+    cli_research,
     cli_search,
     cli_skill,
     cli_snippets,
@@ -24,6 +25,7 @@ from . import (
 VERBS: dict[str, tuple[Callable[[Sequence[str] | None], int], str]] = {
     "search": (cli_search.main, "Search Perplexity for ranked web hits"),
     "fetch": (cli_fetch.main, "Fetch a URL (use --prompt for LLM extraction)"),
+    "research": (cli_research.main, "Deep research: multi-step, cited (research mode)"),
     "snippets": (cli_snippets.main, "Extract query-relevant excerpts from N URLs"),
     "quota": (cli_quota.main, "Show subscription rate-limit / availability"),
     "models": (cli_models.main, "List available models, modes, and per-mode defaults"),

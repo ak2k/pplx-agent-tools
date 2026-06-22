@@ -24,6 +24,7 @@ from . import __version__
 from .verbs.fetch import FetchResult
 from .verbs.models import ModelsResult
 from .verbs.quota import QuotaItem, QuotaResult
+from .verbs.research import ResearchResult
 from .verbs.search import Hit, SearchResult
 from .verbs.snippets import SnippetsResult
 
@@ -260,6 +261,45 @@ def render_models_json(result: ModelsResult) -> dict[str, Any]:
                 for m in result.modes
             ],
             "default_models": dict(result.default_models),
+        },
+        warnings=result.warnings,
+    )
+
+
+def render_research_text(result: ResearchResult) -> str:
+    """The cited report, then a numbered sources list. A stream-incomplete
+    marker is appended (and `cli_research` also emits a stderr warning + exit 6)
+    so a human doesn't mistake a deadline-clipped partial for a full report."""
+    parts: list[str] = [result.answer if result.answer else "(no answer)"]
+    if result.sources:
+        parts.append("")
+        parts.append(f"— sources ({len(result.sources)}) —")
+        for i, s in enumerate(result.sources, start=1):
+            parts.append(f"[{i}] {s.title or s.url}")
+            if s.title:
+                parts.append(f"    {s.url}")
+    if not result.stream_complete:
+        parts.append("")
+        parts.append("stream: incomplete (deadline or cut)")
+    return "\n".join(parts)
+
+
+def render_research_json(result: ResearchResult) -> dict[str, Any]:
+    return envelope(
+        "research",
+        {
+            "query": result.query,
+            "mode": result.mode,
+            "answer": result.answer,
+            "sources": [
+                {
+                    "url": s.url,
+                    **({"title": s.title} if s.title else {}),
+                    **({"snippet": s.snippet} if s.snippet else {}),
+                }
+                for s in result.sources
+            ],
+            "stream_complete": result.stream_complete,
         },
         warnings=result.warnings,
     )
