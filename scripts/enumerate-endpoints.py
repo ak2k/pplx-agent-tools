@@ -83,7 +83,7 @@ def get(s: requests.Session, url: str) -> str:
         try:
             r = s.get(url, timeout=40)
             return r.text if r.status_code == 200 else ""
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             if attempt == 2:
                 sys.stderr.write(f"  ! {url[:90]}: {e}\n")
                 return ""
@@ -93,7 +93,9 @@ def get(s: requests.Session, url: str) -> str:
 def seed_chunks(s: requests.Session) -> set[str]:
     html = get(s, SHELL_URL)
     sys.stderr.write(f"shell: {len(html)} bytes\n")
-    urls = set(re.findall(r"https://pplx-next-static-public\.perplexity\.ai/_spa/assets/[^\"']+\.js", html))
+    urls = set(
+        re.findall(r"https://pplx-next-static-public\.perplexity\.ai/_spa/assets/[^\"']+\.js", html)
+    )
     # also relative refs in the shell
     for m in CHUNK_REF.findall(html):
         urls.add(CDN_BASE + m.lstrip("./"))
@@ -108,7 +110,7 @@ def bfs(s: requests.Session, seeds: set[str], max_chunks: int) -> dict[str, str]
         batch = list(frontier)[: max_chunks - len(seen)]
         frontier = set()
         with cf.ThreadPoolExecutor(max_workers=12) as ex:
-            bodies = dict(zip(batch, ex.map(lambda u: get(s, u), batch)))
+            bodies = dict(zip(batch, ex.map(lambda u: get(s, u), batch), strict=False))
         for url, body in bodies.items():
             seen[url] = body
             for ref in CHUNK_REF.findall(body):
@@ -155,7 +157,7 @@ def main() -> int:
         return 1
     bodies = bfs(s, seeds, args.max_chunks)
     total_bytes = sum(len(b) for b in bodies.values())
-    sys.stderr.write(f"fetched {len(bodies)} chunks, {total_bytes//1024} KiB\n")
+    sys.stderr.write(f"fetched {len(bodies)} chunks, {total_bytes // 1024} KiB\n")
 
     eps = extract(bodies)
     by_ns: dict[str, list[str]] = defaultdict(list)
@@ -185,7 +187,7 @@ def main() -> int:
         f"# perplexity.ai endpoint inventory — {TS}",
         "",
         f"Source: Vite/Rolldown SPA bundle walk (`_spa/assets/`), {len(bodies)} chunks, "
-        f"{total_bytes//1024} KiB. CF-free; no browser.",
+        f"{total_bytes // 1024} KiB. CF-free; no browser.",
         "",
         f"- distinct endpoint literals: **{len(eps)}**",
         f"- already exposed/known: {sum(1 for p in eps if p in KNOWN)}",
@@ -215,7 +217,9 @@ def main() -> int:
             lines.append(f"- `{p}` [{meth}]")
     (OUTDIR / f"{TS}.md").write_text("\n".join(lines) + "\n")
 
-    sys.stderr.write(f"\n{len(eps)} endpoints ({len(new)} new). Inventory: {OUTDIR/(TS+'.md')}\n")
+    sys.stderr.write(
+        f"\n{len(eps)} endpoints ({len(new)} new). Inventory: {OUTDIR / (TS + '.md')}\n"
+    )
     print(OUTDIR / f"{TS}.md")
     return 0
 

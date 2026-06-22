@@ -109,9 +109,12 @@ def ab(*args: str, stdin: str | None = None, timeout: int = 90) -> str:
         capture_output=True,
         text=True,
         timeout=timeout,
+        check=False,  # returncode handled below
     )
     if p.returncode != 0:
-        sys.stderr.write(f"  ! agent-browser {args[0]} rc={p.returncode}: {p.stderr.strip()[:300]}\n")
+        sys.stderr.write(
+            f"  ! agent-browser {args[0]} rc={p.returncode}: {p.stderr.strip()[:300]}\n"
+        )
     return p.stdout
 
 
@@ -150,7 +153,7 @@ def fetch_bundles(js_urls: list[str], cookies: dict) -> dict[str, str]:
             r = s.get(url, timeout=30)
             if r.status_code == 200 and r.text:
                 bodies[url] = r.text
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             sys.stderr.write(f"  ! chunk {url[:80]}: {e}\n")
     return bodies
 
@@ -189,11 +192,20 @@ def parse_har(har_path: Path) -> dict[str, dict]:
                 obj = json.loads(post["text"])
                 if isinstance(obj, dict):
                     body_keys = sorted(obj.keys())
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
         status = ent.get("response", {}).get("status")
-        rec = fired.setdefault(key, {"host": host, "method": method, "path": path,
-                                      "body_keys": set(), "statuses": set(), "count": 0})
+        rec = fired.setdefault(
+            key,
+            {
+                "host": host,
+                "method": method,
+                "path": path,
+                "body_keys": set(),
+                "statuses": set(),
+                "count": 0,
+            },
+        )
         rec["body_keys"].update(body_keys)
         if status is not None:
             rec["statuses"].add(status)
@@ -218,12 +230,12 @@ def main() -> int:
     har_path = OUTDIR / "sweep.har"
 
     try:
-        print(f"[1] closing stale agent-browser sessions", file=sys.stderr)
+        print("[1] closing stale agent-browser sessions", file=sys.stderr)
         ab("close", "--all")
         print(f"[2] launching headed Chromium + injecting {n} cookies", file=sys.stderr)
         ab("--state", str(state_path), "open", SURFACES[0][1], timeout=120)
         ab("wait", "--load", "networkidle", timeout=60)
-        print(f"[3] HAR recording on", file=sys.stderr)
+        print("[3] HAR recording on", file=sys.stderr)
         ab("network", "har", "start")
 
         per_surface: dict[str, dict] = {}
@@ -236,13 +248,13 @@ def main() -> int:
             ab("screenshot", str(OUTDIR / f"{name}.png"))
             try:
                 cap = json.loads(ab_eval(CAP_RESOURCE_JS) or "{}")
-            except Exception:  # noqa: BLE001
+            except Exception:
                 cap = {}
             per_surface[name] = {"url": url, "rest": cap.get("rest", [])}
             all_js.update(cap.get("js", []))
 
         if not args.no_search:
-            print(f"[surface] search (interactive)", file=sys.stderr)
+            print("[surface] search (interactive)", file=sys.stderr)
             ab("open", "https://www.perplexity.ai/", timeout=90)
             ab("wait", "--load", "networkidle", timeout=45)
             # best-effort: focus the composer and submit a query
@@ -256,7 +268,7 @@ def main() -> int:
                 cap = json.loads(ab_eval(CAP_RESOURCE_JS) or "{}")
                 per_surface["search"] = {"url": "(typed query)", "rest": cap.get("rest", [])}
                 all_js.update(cap.get("js", []))
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
 
         print(f"[4] HAR recording off -> {har_path}", file=sys.stderr)
@@ -295,7 +307,7 @@ def main() -> int:
         f"# perplexity.ai endpoint inventory — {TS}",
         "",
         f"- JS chunks grepped: {len(bodies)}/{len(js_urls)}",
-        f"- distinct endpoints (fired ∪ referenced): {len(all_paths)}",
+        f"- distinct endpoints (fired + referenced): {len(all_paths)}",
         f"- fired this sweep: {len(fired_paths)} · referenced-only (not fired): {len(referenced - fired_paths)}",
         "",
         "## NEW (not exposed and not in the May plan)",
@@ -323,9 +335,11 @@ def main() -> int:
 
     if not args.keep_har:
         har_path.unlink(missing_ok=True)
-        print(f"[6] raw HAR discarded (--keep-har to retain)", file=sys.stderr)
+        print("[6] raw HAR discarded (--keep-har to retain)", file=sys.stderr)
 
-    print(f"\nDone. {len(all_paths)} endpoints. Inventory: {OUTDIR/'inventory.md'}", file=sys.stderr)
+    print(
+        f"\nDone. {len(all_paths)} endpoints. Inventory: {OUTDIR / 'inventory.md'}", file=sys.stderr
+    )
     print(OUTDIR / "inventory.md")
     return 0
 

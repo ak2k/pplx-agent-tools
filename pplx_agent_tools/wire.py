@@ -131,6 +131,18 @@ class Client:
         """
         return dict(self._cookies)
 
+    def get_json(self, path: str) -> Any:
+        """GET a path, return the parsed JSON response.
+
+        Same error mapping as `_get` / `post_json`: auth/rate-limit/network/CF.
+        Used by the read-only stateless verbs (quota, models).
+        """
+        resp = self._get(path)
+        try:
+            return resp.json()
+        except Exception as e:
+            raise SchemaError(f"non-JSON response from {path}") from e
+
     def post_json(self, path: str, body: dict[str, Any]) -> Any:
         """POST a JSON body, return the parsed JSON response.
 
