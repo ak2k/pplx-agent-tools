@@ -77,12 +77,17 @@ def session() -> requests.Session:
 
 
 def get(s: requests.Session, url: str) -> str:
-    try:
-        r = s.get(url, timeout=30)
-        return r.text if r.status_code == 200 else ""
-    except Exception as e:  # noqa: BLE001
-        sys.stderr.write(f"  ! {url[:90]}: {e}\n")
-        return ""
+    # one retry: the CDN occasionally drops a connection mid-walk (curl 35), and
+    # a silently-dropped chunk silently undercounts the surface.
+    for attempt in (1, 2):
+        try:
+            r = s.get(url, timeout=40)
+            return r.text if r.status_code == 200 else ""
+        except Exception as e:  # noqa: BLE001
+            if attempt == 2:
+                sys.stderr.write(f"  ! {url[:90]}: {e}\n")
+                return ""
+    return ""
 
 
 def seed_chunks(s: requests.Session) -> set[str]:

@@ -4,16 +4,45 @@ Re-audit of Perplexity's web API surface against what the CLI exposes. Prompted
 by "are there more capabilities than we've exposed?" — answer: **yes, a lot**,
 and several "doesn't exist" conclusions from the May-2026 plan are now wrong.
 
-Inventory artifacts: `docs/wire/endpoint-inventory/2026-06-22T15-32-48Z.{md,json}`.
+Inventory artifacts: `docs/wire/endpoint-inventory/2026-06-22T16-24-27Z.{md,json}`.
+Feature ⇄ endpoint map: `docs/wire/feature-map.md`.
 Re-runnable via `scripts/enumerate-endpoints.py`.
+
+## How complete is this? (read this before trusting the count)
+
+Completeness has three independent axes — we are NOT uniformly "done":
+
+1. **Breadth (literal enumeration): ~complete for the web frontend.** The chunk
+   BFS reaches closure (frontier → 0 at 1318 chunks; the 6 transient-fail chunks
+   add 0 endpoints on retry) → **726 `/rest/*` endpoints across ~80 namespaces**.
+   Caveat: this is only what *this web SPA* references. It does NOT include
+   endpoints exclusive to the mobile/Comet clients, server-internal routes,
+   deprecated paths, or anything built by opaque dynamic string construction
+   (9 `${...}` fragments remain partial). "Complete" = complete for the web
+   frontend's static literals, not "every endpoint Perplexity has."
+2. **Feature mapping: code-level only.** `docs/wire/feature-map.md` maps each
+   endpoint to the React component/hook symbol it appears in (e.g.
+   `FinancePortfolioPage` → 31 finance endpoints, `RestaurantBookingModal` →
+   travel booking). That's a strong label but NOT observed-runtime ("click X
+   fires Y") — which would need CDP, blocked by CF. The symbol is the best
+   available proxy.
+3. **Semantics (request/response shapes, auth-gating): shallow.** We have path +
+   inferred method for all 726, but verified payloads/responses for only ~6
+   probed endpoints, and we have NOT determined which are cookie-auth-callable vs
+   enterprise/org-gated (the 73 `enterprise` + 29 `organizations` + billing/stripe
+   are almost certainly gated or irrelevant to a single-user CLI).
+
+So: we know **what exists** (breadth) and **roughly where it lives** (feature
+map); we do not yet know **how to call most of it** (semantics). The per-verb
+depth pass closes axis 3 for the few endpoints we actually build on.
 
 ## TL;DR
 
-- **623 `/rest/*` endpoints across ~75 namespaces** referenced by the current
-  frontend. The CLI exposes **3 verbs** (`search`, `fetch`, `snippets`) hitting
-  2 endpoints. The May plan claimed "~120 endpoints / 30 namespaces" but never
-  committed that inventory; today's surface is ~5× larger or the old walk was
-  partial. Either way, there was no baseline to diff against — there is now.
+- **726 `/rest/*` endpoints across ~80 namespaces** referenced by the current
+  frontend (closure reached). The CLI exposes **3 verbs** (`search`, `fetch`,
+  `snippets`) hitting 2 endpoints. The May plan claimed "~120 endpoints / 30
+  namespaces" and never committed that inventory; the real web surface is ~6×
+  that. There was no baseline to diff against — there is now.
 - The biggest unlocks are **read-only GETs that need almost no RE**:
   `rate-limit/status` (quota), `models/config` + `models/modes` (model/mode
   catalog). All three return 200 today via the existing `curl_cffi` session

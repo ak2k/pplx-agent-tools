@@ -1,8 +1,8 @@
 {
-  "captured_at": "2026-06-22T15-32-48Z",
-  "chunks_fetched": 800,
-  "bytes": 33280758,
-  "endpoint_count": 644,
+  "captured_at": "2026-06-22T16-24-27Z",
+  "chunks_fetched": 1318,
+  "bytes": 36686781,
+  "endpoint_count": 726,
   "endpoints": {
     "/api/auth/add-account/complete": {
       "methods": [],
@@ -123,6 +123,7 @@
         "GET"
       ],
       "chunks": [
+        "WorkflowBridge",
         "details"
       ],
       "dynamic": false,
@@ -607,7 +608,9 @@
         "GET"
       ],
       "chunks": [
-        "ask"
+        "FinanceMarketOverviewSidebarSections",
+        "ask",
+        "getFinanceSuggestions"
       ],
       "dynamic": false,
       "known": null
@@ -638,6 +641,16 @@
       ],
       "chunks": [
         "ask"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/autosuggest/reformulate-query": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "useGenerativeRefinement"
       ],
       "dynamic": false,
       "known": null
@@ -684,8 +697,11 @@
       "known": null
     },
     "/rest/billing/braintree/paypal/client-token": {
-      "methods": [],
+      "methods": [
+        "GET"
+      ],
       "chunks": [
+        "ShoppingPaymentInner",
         "spa"
       ],
       "dynamic": false,
@@ -708,6 +724,36 @@
       "chunks": [
         "BraintreeSubscriptionModal",
         "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/billing/commerce/carts": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "ShoppingPaymentInner"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/billing/commerce/carts/{cart_id}/complete": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "ShoppingPaymentInner"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/billing/commerce/carts/{cart_id}/update": {
+      "methods": [
+        "PATCH"
+      ],
+      "chunks": [
+        "ShoppingPaymentInner"
       ],
       "dynamic": false,
       "known": null
@@ -755,9 +801,12 @@
       "known": null
     },
     "/rest/billing/credits/balance": {
-      "methods": [],
+      "methods": [
+        "GET"
+      ],
       "chunks": [
-        "spa"
+        "spa",
+        "useGetCreditsBalance"
       ],
       "dynamic": false,
       "known": null
@@ -815,10 +864,23 @@
       "dynamic": false,
       "known": null
     },
-    "/rest/billing/credits/thread-usage": {
-      "methods": [],
+    "/rest/billing/credits/spending-limit": {
+      "methods": [
+        "POST"
+      ],
       "chunks": [
-        "spa"
+        "AutoRefillForm"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/billing/credits/thread-usage": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "spa",
+        "useGetThreadUsage"
       ],
       "dynamic": false,
       "known": null
@@ -835,8 +897,11 @@
       "known": null
     },
     "/rest/billing/credits/topup-context": {
-      "methods": [],
+      "methods": [
+        "GET"
+      ],
       "chunks": [
+        "AutoRefillForm",
         "spa"
       ],
       "dynamic": false,
@@ -858,6 +923,16 @@
       ],
       "chunks": [
         "PaymentModal"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/billing/get-customer-portal": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "getCustomerPortal"
       ],
       "dynamic": false,
       "known": null
@@ -902,6 +977,16 @@
       ],
       "chunks": [
         "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/billing/organization/credits/request": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "useRequestMoreCreditsMutation"
       ],
       "dynamic": false,
       "known": null
@@ -1008,6 +1093,26 @@
       "dynamic": false,
       "known": null
     },
+    "/rest/collections/batch_move_threads": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "batchCollectionThreadActions"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/collections/batch_remove_collection_threads": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "batchCollectionThreadActions"
+      ],
+      "dynamic": false,
+      "known": null
+    },
     "/rest/collections/create_collection": {
       "methods": [
         "POST"
@@ -1038,6 +1143,17 @@
       "dynamic": false,
       "known": null
     },
+    "/rest/collections/focused_web_config/links": {
+      "methods": [
+        "DELETE",
+        "POST"
+      ],
+      "chunks": [
+        "useAddLink"
+      ],
+      "dynamic": false,
+      "known": null
+    },
     "/rest/collections/get_collection": {
       "methods": [
         "GET"
@@ -1062,6 +1178,14 @@
       ],
       "chunks": [
         "SpaceSharingPanel"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/collections/list_bookmarks": {
+      "methods": [],
+      "chunks": [
+        "useBookmarksQuery"
       ],
       "dynamic": false,
       "known": null
@@ -1102,6 +1226,7 @@
         "GET"
       ],
       "chunks": [
+        "SpaceSelectModal",
         "spa",
         "useCollectionsQuery"
       ],
@@ -1169,6 +1294,46 @@
       "dynamic": false,
       "known": null
     },
+    "/rest/collections/{collection_uuid}/connector_settings": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "useConnectorSharedSettings"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/collections/{collection_uuid}/connector_settings/connections": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "useConnectorSharedSettings"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/collections/{collection_uuid}/connector_settings/connections/sources/{source_id}": {
+      "methods": [
+        "PUT"
+      ],
+      "chunks": [
+        "useConnectorSharedSettings"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/collections/{collection_uuid}/connector_settings/sources/{source_id}": {
+      "methods": [
+        "PUT"
+      ],
+      "chunks": [
+        "useConnectorSharedSettings"
+      ],
+      "dynamic": false,
+      "known": null
+    },
     "/rest/collections/{collection_uuid}/join-as-viewer": {
       "methods": [
         "POST"
@@ -1215,6 +1380,76 @@
       ],
       "chunks": [
         "SpaceSharingPanel"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/collections/{collection_uuid}/project_files/content": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "restricted"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/collections/{collection_uuid}/project_files/download_url": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "restricted"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/collections/{collection_uuid}/project_files/file": {
+      "methods": [
+        "DELETE"
+      ],
+      "chunks": [
+        "restricted"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/collections/{collection_uuid}/project_files/render": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "restricted"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/collections/{collection_uuid}/project_files/tree": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "restricted"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/collections/{collection_uuid}/project_files/upload_sessions": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "restricted"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/collections/{collection_uuid}/project_files/upload_sessions/complete": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "restricted"
       ],
       "dynamic": false,
       "known": null
@@ -1287,6 +1522,36 @@
       "dynamic": false,
       "known": null
     },
+    "/rest/computer/files/{context_uuid}": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "restricted"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/computer/files/{context_uuid}/directory": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "restricted"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/computer/files/{context_uuid}/export": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "restricted"
+      ],
+      "dynamic": false,
+      "known": null
+    },
     "/rest/computer/menu": {
       "methods": [],
       "chunks": [
@@ -1302,6 +1567,16 @@
       "chunks": [
         "spa",
         "widgets"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/computer/task/cancel_subagent": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "WorkflowBridge"
       ],
       "dynamic": false,
       "known": null
@@ -1636,6 +1911,7 @@
         "POST"
       ],
       "chunks": [
+        "client",
         "useListCustomCredentials"
       ],
       "dynamic": false,
@@ -1677,6 +1953,16 @@
       ],
       "chunks": [
         "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/deeper-research/export-all-assets": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "utils"
       ],
       "dynamic": false,
       "known": null
@@ -1769,9 +2055,22 @@
       "known": null
     },
     "/rest/email_assistant/calendars": {
-      "methods": [],
+      "methods": [
+        "GET"
+      ],
       "chunks": [
+        "CalendarSelectionModal",
         "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/email_assistant/calendars/selected": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "CalendarSelectionModal"
       ],
       "dynamic": false,
       "known": null
@@ -1804,6 +2103,16 @@
       ],
       "chunks": [
         "assistant"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/enterprise/cancel-subscription": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "SubscriptionDetailsModal"
       ],
       "dynamic": false,
       "known": null
@@ -2218,6 +2527,16 @@
       "dynamic": false,
       "known": null
     },
+    "/rest/enterprise/organization/user/{org_user_uuid}/remove-preview": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "RemoveMemberConfirmModal"
+      ],
+      "dynamic": false,
+      "known": null
+    },
     "/rest/enterprise/organization/{org_uuid}": {
       "methods": [
         "PATCH"
@@ -2534,6 +2853,16 @@
       "dynamic": false,
       "known": null
     },
+    "/rest/entry/convert-to-report/{entry_uuid}": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "miscMutations"
+      ],
+      "dynamic": false,
+      "known": null
+    },
     "/rest/entry/delete-ask-entry/{entry_uuid}": {
       "methods": [
         "DELETE"
@@ -2559,8 +2888,30 @@
         "POST"
       ],
       "chunks": [
+        "WorkflowBridge",
         "realtimeVoiceCore",
         "useAssetPublishControl"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/entry/label-entry/{entry_uuid}": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "ThreadItemFeedback"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/entry/map/search-map-locations": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "MapsMode",
+        "PerplexityMap"
       ],
       "dynamic": false,
       "known": null
@@ -2790,6 +3141,16 @@
       ],
       "chunks": [
         "sub"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/currency-exchange": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "ThreadEntryPanel"
       ],
       "dynamic": false,
       "known": null
@@ -3303,9 +3664,11 @@
     "/rest/finance/personal/profile": {
       "methods": [
         "DELETE",
-        "GET"
+        "GET",
+        "PUT"
       ],
       "chunks": [
+        "FinanceOnboardingModal",
         "queries"
       ],
       "dynamic": false,
@@ -3516,6 +3879,7 @@
         "GET"
       ],
       "chunks": [
+        "getQuote",
         "spa",
         "sub"
       ],
@@ -3927,11 +4291,14 @@
     },
     "/rest/homepage-widgets/watchlist/subscription": {
       "methods": [
+        "DELETE",
         "GET",
-        "PATCH"
+        "PATCH",
+        "PUT"
       ],
       "chunks": [
         "WatchlistModal",
+        "useRemoveWatchlistSubscription",
         "useWatchlistQuery"
       ],
       "dynamic": false,
@@ -3962,6 +4329,27 @@
       ],
       "chunks": [
         "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/jobs/filters": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "JobsMode",
+        "utilityKeys"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/jobs/search": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "JobsMode"
       ],
       "dynamic": false,
       "known": null
@@ -4028,6 +4416,16 @@
       "dynamic": false,
       "known": null
     },
+    "/rest/media/search-videos-for-entry": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "useMediaSearch"
+      ],
+      "dynamic": false,
+      "known": null
+    },
     "/rest/meeting_assistant/events/{event_id}/bot": {
       "methods": [
         "DELETE",
@@ -4055,7 +4453,8 @@
         "DELETE"
       ],
       "chunks": [
-        "useComputerMemoryInteractive"
+        "useComputerMemoryInteractive",
+        "useDeleteMemory"
       ],
       "dynamic": false,
       "known": null
@@ -4066,6 +4465,16 @@
       ],
       "chunks": [
         "DeleteAllMemoriesModal"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/memories/delete-health-attributes": {
+      "methods": [
+        "DELETE"
+      ],
+      "chunks": [
+        "useHealthAttributes"
       ],
       "dynamic": false,
       "known": null
@@ -4081,17 +4490,23 @@
       "known": null
     },
     "/rest/memories/get-health-attributes": {
-      "methods": [],
+      "methods": [
+        "GET"
+      ],
       "chunks": [
-        "healthKeys"
+        "healthKeys",
+        "useHealthAttributes"
       ],
       "dynamic": false,
       "known": null
     },
     "/rest/memories/get-health-attributes-config": {
-      "methods": [],
+      "methods": [
+        "GET"
+      ],
       "chunks": [
-        "healthKeys"
+        "healthKeys",
+        "useHealthAttributes"
       ],
       "dynamic": false,
       "known": null
@@ -4101,7 +4516,37 @@
         "GET"
       ],
       "chunks": [
+        "memoryKeys",
         "useGetMemories"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/memories/space/config": {
+      "methods": [],
+      "chunks": [
+        "memoryKeys"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/memories/space/{space_uuid}/config": {
+      "methods": [
+        "GET",
+        "PUT"
+      ],
+      "chunks": [
+        "SpaceMemoryListModal"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/memories/write-health-attributes": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "useHealthAttributes"
       ],
       "dynamic": false,
       "known": null
@@ -4118,6 +4563,16 @@
       "methods": [],
       "chunks": [
         "computer"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/mock-thoughts/generate": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "WorkflowBridge"
       ],
       "dynamic": false,
       "known": null
@@ -4305,9 +4760,22 @@
       "known": null
     },
     "/rest/ntp/upsell/": {
-      "methods": [],
+      "methods": [
+        "GET"
+      ],
       "chunks": [
-        "spa"
+        "spa",
+        "useNtpUpsellsQuery"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/ntp/upsell/interacted": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "useNtpUpsellsQuery"
       ],
       "dynamic": false,
       "known": null
@@ -4323,8 +4791,11 @@
       "known": null
     },
     "/rest/onboarding/computer": {
-      "methods": [],
+      "methods": [
+        "GET"
+      ],
       "chunks": [
+        "getComputerOnboarding",
         "onboardingKeys"
       ],
       "dynamic": false,
@@ -4443,8 +4914,11 @@
       "known": null
     },
     "/rest/organizations/{organization_id}/credit-limits/{credit_limit_id}/available-groups": {
-      "methods": [],
+      "methods": [
+        "GET"
+      ],
       "chunks": [
+        "AddSharedLimitGroupsModal",
         "spa"
       ],
       "dynamic": false,
@@ -4468,6 +4942,16 @@
       "chunks": [
         "credits",
         "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/organizations/{organization_id}/credit-limits/{credit_limit_id}/groups:batchAdd": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "AddSharedLimitGroupsModal"
       ],
       "dynamic": false,
       "known": null
@@ -4936,6 +5420,16 @@
       "dynamic": false,
       "known": null
     },
+    "/rest/shopping/generate-shopping-try-on": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "useShoppingTryOn"
+      ],
+      "dynamic": false,
+      "known": null
+    },
     "/rest/shopping/retrieve-customer-shopping-info": {
       "methods": [
         "GET"
@@ -4946,10 +5440,53 @@
       "dynamic": false,
       "known": null
     },
-    "/rest/shopping/try-on-photo/get": {
-      "methods": [],
+    "/rest/shopping/search-shopping-for-entry": {
+      "methods": [
+        "POST"
+      ],
       "chunks": [
-        "layout"
+        "ShoppingMode"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/shopping/try-on-photo/delete": {
+      "methods": [
+        "DELETE"
+      ],
+      "chunks": [
+        "useShoppingTryOn"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/shopping/try-on-photo/generate-avatar": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "useShoppingTryOn"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/shopping/try-on-photo/get": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "layout",
+        "useGetUserTryOnPhoto"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/shopping/try-on-photo/save": {
+      "methods": [
+        "PUT"
+      ],
+      "chunks": [
+        "useShoppingTryOn"
       ],
       "dynamic": false,
       "known": null
@@ -4971,9 +5508,18 @@
       ],
       "chunks": [
         "spa",
+        "useReplaceSkillFile",
         "useSkills"
       ],
       "dynamic": false,
+      "known": null
+    },
+    "/rest/skills/${e}": {
+      "methods": [],
+      "chunks": [
+        "useReplaceSkillFile"
+      ],
+      "dynamic": true,
       "known": null
     },
     "/rest/skills/grants": {
@@ -5007,9 +5553,11 @@
     },
     "/rest/skills/{skill_id}": {
       "methods": [
+        "DELETE",
         "GET"
       ],
       "chunks": [
+        "SkillDeleteModal",
         "spa"
       ],
       "dynamic": false,
@@ -5023,6 +5571,16 @@
       ],
       "chunks": [
         "SkillDetailModal"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/skills/{skill_id}/ownership": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "SkillTransferToOrgModal"
       ],
       "dynamic": false,
       "known": null
@@ -5074,6 +5632,17 @@
       ],
       "chunks": [
         "ComputerConnectorsPage"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/sources/search": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "SourcesMode",
+        "utilityKeys"
       ],
       "dynamic": false,
       "known": null
@@ -5214,6 +5783,26 @@
       "dynamic": false,
       "known": null
     },
+    "/rest/spaces/{space_uuid}/ms-teams-bindings": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "useSpaceTeamsBindingsQuery"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/spaces/{space_uuid}/ms-teams-bindings/unbind": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "useSpaceTeamsBindingsQuery"
+      ],
+      "dynamic": false,
+      "known": null
+    },
     "/rest/spaces/{space_uuid}/pins/batch_pin": {
       "methods": [],
       "chunks": [
@@ -5255,6 +5844,56 @@
       "chunks": [
         "layout",
         "spaces"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/spaces/{space_uuid}/slack-bindings": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "useSpaceSlackBindingsQuery"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/spaces/{space_uuid}/slack-bindings/bind": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "useSpaceSlackBindingsQuery"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/spaces/{space_uuid}/slack-bindings/channels": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "useSpaceSlackBindingsQuery"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/spaces/{space_uuid}/slack-bindings/confirm": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "useSpaceSlackBindingsQuery"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/spaces/{space_uuid}/slack-bindings/unbind": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "useSpaceSlackBindingsQuery"
       ],
       "dynamic": false,
       "known": null
@@ -5342,6 +5981,14 @@
       ],
       "chunks": [
         "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/sse/check-sources": {
+      "methods": [],
+      "chunks": [
+        "ThreadContentResponse"
       ],
       "dynamic": false,
       "known": null
@@ -5475,6 +6122,7 @@
         "POST"
       ],
       "chunks": [
+        "InContextFollowupStateProvider",
         "ThreadInput"
       ],
       "dynamic": false,
@@ -5496,6 +6144,14 @@
       ],
       "chunks": [
         "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/sse/places_review_summary_bulk": {
+      "methods": [],
+      "chunks": [
+        "PlaceInlineCard"
       ],
       "dynamic": false,
       "known": null
@@ -5528,6 +6184,15 @@
       "dynamic": false,
       "known": null
     },
+    "/rest/sse/shopping_review_summary": {
+      "methods": [],
+      "chunks": [
+        "ShoppingMode",
+        "useGenerateShoppingReviewSummary"
+      ],
+      "dynamic": false,
+      "known": null
+    },
     "/rest/sse/subscribe/entry/{entity_id}": {
       "methods": [],
       "chunks": [
@@ -5536,9 +6201,32 @@
       "dynamic": false,
       "known": null
     },
-    "/rest/stripe/cancellation-config": {
-      "methods": [],
+    "/rest/stripe/cancel-downgrade-subscription": {
+      "methods": [
+        "POST"
+      ],
       "chunks": [
+        "useCancelDowngrade"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/stripe/cancel-subscription": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "SubscriptionDetailsModal"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/stripe/cancellation-config": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "SubscriptionDetailsModal",
         "spa"
       ],
       "dynamic": false,
@@ -5554,6 +6242,16 @@
       "dynamic": false,
       "known": null
     },
+    "/rest/stripe/claim-retention-offer": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "SubscriptionDetailsModal"
+      ],
+      "dynamic": false,
+      "known": null
+    },
     "/rest/stripe/create-setup-intent-and-customer-session": {
       "methods": [
         "POST"
@@ -5565,9 +6263,32 @@
       "known": null
     },
     "/rest/stripe/customer-invoices": {
-      "methods": [],
+      "methods": [
+        "GET"
+      ],
       "chunks": [
+        "SubscriptionDetailsModal",
         "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/stripe/downgrade-subscription": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "useGetDowngradeSubscriptionPreview"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/stripe/downgrade-subscription-preview": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "useGetDowngradeSubscriptionPreview"
       ],
       "dynamic": false,
       "known": null
@@ -5662,6 +6383,16 @@
       ],
       "chunks": [
         "PaymentModal"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/stripe/update-customer-shipping-address": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "ShoppingPaymentInner"
       ],
       "dynamic": false,
       "known": null
@@ -5857,6 +6588,16 @@
       "dynamic": false,
       "known": null
     },
+    "/rest/thread/invite_to_thread": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "ThreadShareButton"
+      ],
+      "dynamic": false,
+      "known": null
+    },
     "/rest/thread/list_ask_threads": {
       "methods": [
         "POST"
@@ -5944,7 +6685,18 @@
       ],
       "chunks": [
         "ComputerRecurringTasksMenu",
+        "components",
         "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/thread/remove_thread_member": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "ThreadShareButton"
       ],
       "dynamic": false,
       "known": null
@@ -6010,6 +6762,16 @@
       "dynamic": false,
       "known": null
     },
+    "/rest/thread/update_thread_sensitive_claims_visibility": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "components"
+      ],
+      "dynamic": false,
+      "known": null
+    },
     "/rest/thread/{backend_uuid}/members": {
       "methods": [],
       "chunks": [
@@ -6056,6 +6818,46 @@
       "chunks": [
         "removeThreadExpiry",
         "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/thread/{entry_uuid_or_slug}/share_slug": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "ThreadShareButton"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/thread/{thread_uuid}/members": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "useSharePopoverDeeplinkOpen"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/translation/detect-languages/{entry_uuid}": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "constants"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/translation/phrase_info": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "constants"
       ],
       "dynamic": false,
       "known": null
@@ -6116,6 +6918,56 @@
       ],
       "chunks": [
         "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/travel/restaurants/info": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "RestaurantBookingModal"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/travel/restaurants/reservations": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "RestaurantBookingModal"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/travel/restaurants/search": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "RestaurantBookingModal"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/travel/restaurants/slots/delete": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "RestaurantBookingModal"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/travel/restaurants/slots/lock": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "RestaurantBookingModal"
       ],
       "dynamic": false,
       "known": null
@@ -6189,6 +7041,16 @@
       "dynamic": false,
       "known": null
     },
+    "/rest/user/delete-account": {
+      "methods": [
+        "DELETE"
+      ],
+      "chunks": [
+        "miscMutations"
+      ],
+      "dynamic": false,
+      "known": null
+    },
     "/rest/user/get_all_active_perks": {
       "methods": [
         "GET"
@@ -6237,6 +7099,16 @@
       ],
       "chunks": [
         "IncentiveProModal"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/user/previous-subscription": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "useUserPreviousSubscriptionQuery"
       ],
       "dynamic": false,
       "known": null
