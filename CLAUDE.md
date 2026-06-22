@@ -60,6 +60,41 @@ binary; they're intentionally compatible.
   impersonation, status-code branching to typed exceptions).
 - `pplx_agent_tools/auth.py` — cookie loading + perms enforcement.
 
+## Endpoint selection principle (stateless-first)
+
+**Prefer the realtime / GET endpoints; treat ask-family endpoints as the
+exception that requires the delete-thread cleanup discipline.**
+
+Perplexity's surface splits into two classes:
+
+- **Stateless** — create nothing server-side, leave no trace in the user's
+  Library. `/rest/realtime/*` (`search-web`, `search-youtube`, `query-video`)
+  and read-only `GET`s (`rate-limit/status`, `models/config`). `search-web`'s
+  `session_id` is a throwaway UUID per call. Plain `fetch` + `snippets` are fully
+  local. **This is the default class for new verbs** — verified to create zero
+  threads (before/after `GET /rest/thread/list_recent`).
+- **Ask-family / session-creating** — `/rest/sse/perplexity_ask` and anything
+  scoped to an `entry_uuid`. These create a thread ("entry") in the user's
+  history. Only `fetch --prompt` uses this today.
+
+Discipline for the ask-family exception:
+
+- Set `params.is_incognito: true` in the ask body. Verified: an incognito ask
+  **never appears in `list_recent`**, whereas `is_incognito: false` does. This is
+  strictly better than the legacy create-then-delete (no history pollution even
+  if cleanup fails). The `backend_uuid` is still deletable by UUID as
+  belt-and-suspenders, but deletion stops being load-bearing.
+- Keep `delete_thread` cleanup as the secondary guard (`keep_thread=False`).
+
+Gotcha — **the image/video/news "variant search" endpoints are NOT stateless.**
+`/rest/media/search-images-and-videos` requires `{query, entry_uuid,
+read_write_token}` and `/rest/sources/search/news` requires `{entry_uuid, limit,
+page}` (both 422 without it). They are SERP tabs that enrich an *existing* answer
+thread — i.e. downstream of an ask entry, not standalone searches. There is no
+stateless multi-result image/video/news search. `realtime/query-video` is
+"analyze a specific `video_url`", not a search. See
+`docs/wire/endpoint-gap-analysis.md`.
+
 ## Adding a new verb
 
 A verb lives in three files. Adding `pplx widget` means:

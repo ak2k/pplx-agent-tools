@@ -53,12 +53,25 @@ do not hold against the current surface:
 
 | May conclusion | Reality now |
 |---|---|
-| "images/videos have no dedicated cookie-auth endpoints" | `POST /rest/media/search-images-and-videos`, `/rest/media/search-images-for-entry`, `/rest/realtime/query-video` exist |
-| "variant searches route only through the chat SSE; no dedicated endpoints" | `POST /rest/sources/search/news` (news), plus `models/config.default_models` exposes modes `research / agentic_research / study / document_review` selectable on the ask endpoint |
 | "no rate-limit visibility" (daemon trigger was "hitting 429s blind") | `GET /rest/rate-limit/status` returns per-mode + per-source quota — **validated 200 today** |
+| "variant searches route only through the chat SSE; no dedicated endpoints" | `models/config.default_models` exposes modes `research / agentic_research / study / document_review` selectable on the ask endpoint — deep/variant *modes* are reachable (but via the ask/session flow, not statelessly) |
 | variant search was "Phase 2, needs SSE block parsing" | `/rest/sse` has **23** endpoints incl. resume/terminate (`perplexity_ask/reconnect/{uuid}`, `perplexity_terminate`) — directly relevant to the `pplx fetch --prompt` partial-stream problem (exit 6) |
 
-## Validated live (read-only GET, 200 today)
+**Correction (verified 2026-06-22, supersedes an earlier draft of this doc):**
+the image/video/news "variant search" endpoints are **NOT** stateless standalone
+searches. `POST /rest/media/search-images-and-videos` requires `{query,
+entry_uuid, read_write_token}` and `POST /rest/sources/search/news` requires
+`{entry_uuid, limit, page}` — both return `422` without an `entry_uuid`. They are
+SERP tabs that enrich an *existing* answer thread (downstream of an ask entry).
+There is **no stateless multi-result image/video/news search**.
+`/rest/realtime/query-video` takes a `{video_url}` ("analyze this video"), not a
+search query. The only stateless search remains `/rest/realtime/search-web`
+(+ single-best-match `search-youtube`). This kills the "stateless variant search"
+verb idea below — offering images/videos/news means adopting the ask/entry flow.
+
+## Validated live (2026-06-22)
+
+Read-only GETs (stateless, 200):
 
 ```
 GET /rest/rate-limit/status  -> modes{pro_search,research,agentic_research,labs} + per-source availability
@@ -67,6 +80,16 @@ GET /rest/models/config      -> models{turbo,pplx_pro,gpt5,gpt51_thinking,...},
                                  default_models{search,research,agentic_research,study,
                                                 document_review,browser_agent,asi}
 ```
+
+Statelessness probes (before/after `GET /rest/thread/list_recent`):
+
+- `POST /rest/sources/search/news` and `POST /rest/media/search-images-and-videos`
+  → **422, `entry_uuid` required** → entry-scoped, NOT stateless.
+- `POST /rest/realtime/{search-web,query-video}` → no thread created (delta 0).
+- `POST /rest/sse/perplexity_ask` with `params.is_incognito: true` → backend_uuid
+  returned but **does not appear in `list_recent`**; with `is_incognito: false` it
+  does. → incognito is the clean way to run the ask-family without history
+  pollution (deletion becomes optional rather than load-bearing).
 
 ## Prioritized new-verb candidates
 
@@ -78,14 +101,13 @@ Tier 1 — cheap, read-only, high agent value, minimal RE:
 | `pplx models` | `/rest/models/config`, `/rest/models/modes` | GET | model + mode catalog; feeds a `--model`/`--mode` flag. Validated. |
 | `pplx suggest` | `/rest/autosuggest/list-autosuggest` | POST | query completion/expansion. |
 
-Tier 2 — the deferred variant/deep searches, now reachable:
+Tier 2 — ask-family (session-creating; must use `is_incognito: true` + cleanup):
 
 | Verb idea | Endpoint(s) | Method | Notes |
 |---|---|---|---|
-| `pplx search -t images/videos` | `/rest/media/search-images-and-videos` | POST | overturns May "deferred". Body shape needs a depth pass. |
-| `pplx search -t news` | `/rest/sources/search/news` | POST | dedicated news mode. |
-| `pplx research` (deep) | `/rest/sse/perplexity_ask` + `mode=research`/`agentic_research`; `/rest/deeper-research/export-asset` | SSE/POST | Pro/deep-research mode of the ask endpoint; far stronger than `search`. |
+| `pplx research` (deep) | `/rest/sse/perplexity_ask` + `mode=research`/`agentic_research`; `/rest/deeper-research/export-asset` | SSE/POST | Pro/deep-research mode of the ask endpoint; far stronger than `search`. Heaviest: `agentic_research` may also spawn tasks/assets, not just a thread. |
 | `pplx fetch --prompt` resume | `/rest/sse/perplexity_ask/reconnect/{uuid}`, `/rest/sse/perplexity_terminate` | GET/POST | fixes the exit-6 partial-stream blind-retry — resume instead. |
+| ~~`pplx search -t images/videos/news`~~ | `/rest/media/*`, `/rest/sources/search/news` | POST | **Dropped as stateless** — verified entry-scoped (422 without `entry_uuid`). Only viable atop an ask entry; revisit only if `research` lands and we want its SERP tabs. |
 
 Tier 3 — deep verticals / agentic (bigger RE, judge by real need):
 
