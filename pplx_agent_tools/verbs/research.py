@@ -73,6 +73,7 @@ class _StreamState:
     backend_uuid: str | None = None
     read_write_token: str | None = None
     saw_completed: bool = False
+    failed: bool = False  # server emitted status=FAILED (e.g. model incompatible with mode)
 
 
 def research(
@@ -126,6 +127,12 @@ def research(
                     file=sys.stderr,
                 )
                 time.sleep(sleep_s)
+
+    if state.failed:
+        raise SchemaError(
+            f"research request on {ENDPOINT} returned status=FAILED; mode {mode!r} may "
+            f"reject model_preference — check model↔mode compatibility via `pplx models`"
+        )
 
     if state.latest_text is None:
         if deadline_tripped:
@@ -262,6 +269,13 @@ def _consume_stream(
                 state.read_write_token = data["read_write_token"]
             if isinstance(data.get("text"), str):
                 state.latest_text = data["text"]
+            # A FAILED frame still carries a `text` field, so check it before the
+            # completion/parse path — otherwise we'd treat a server-side failure
+            # as an empty partial answer. Seen when model_preference is a model
+            # that isn't valid for `mode` (server drops mode to CONCISE + FAILED).
+            if data.get("status") == "FAILED":
+                state.failed = True
+                return
             if event_marks_completed(event):
                 state.saw_completed = True
                 return

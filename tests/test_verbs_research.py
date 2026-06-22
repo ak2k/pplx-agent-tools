@@ -244,6 +244,17 @@ def test_research_completed_without_text_raises_schema() -> None:
         research(client, "q")
 
 
+def test_research_failed_status_raises_clear_error() -> None:
+    # Real shape when model_preference is incompatible with the mode: a single
+    # frame with text present but status=FAILED + mode dropped to CONCISE.
+    client = _FakeClient(
+        [{"data": {"text": "{}", "status": "FAILED", "mode": "CONCISE", "text_completed": False}}]
+    )
+    with pytest.raises(SchemaError, match="FAILED"):
+        research(client, "q", mode="research")
+    assert client.deleted == []  # no thread to clean up on a failed request
+
+
 def test_research_passes_mode_into_body() -> None:
     captured: dict[str, Any] = {}
 
