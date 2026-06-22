@@ -1,14 +1,65 @@
-"""Unit tests for verbs/research.py — schematized block decode + render."""
+"""Unit tests for verbs/research.py — schematized block decode + render + orchestration."""
 
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
+from typing import Any
 
 import pytest
 
-from pplx_agent_tools.errors import SchemaError
+from pplx_agent_tools.errors import SchemaError, StreamDeadlineError
 from pplx_agent_tools.render import render_research_json, render_research_text
-from pplx_agent_tools.verbs.research import ResearchResult, ResearchSource, decode_research_text
+from pplx_agent_tools.verbs.research import (
+    ResearchResult,
+    ResearchSource,
+    decode_research_text,
+    research,
+)
+
+from ._doubles import _TestClientBase
+
+
+def _snapshot(answer: str = "QUIC is a protocol. [1]") -> str:
+    """A research `text` snapshot: block list with a JSON-wrapped FINAL answer."""
+    blocks = [
+        {"step_type": "INITIAL_QUERY", "content": {"query": "q"}},
+        {
+            "step_type": "SEARCH_RESULTS",
+            "content": {"web_results": [{"url": "https://mid", "name": "mid"}]},
+        },
+        {
+            "step_type": "FINAL",
+            "content": {
+                "answer": json.dumps(
+                    {"answer": answer, "web_results": [{"url": "https://cited", "name": "Cited"}]}
+                )
+            },
+        },
+    ]
+    return json.dumps(blocks)
+
+
+class _FakeClient(_TestClientBase):
+    """Yields canned research SSE events; records delete_thread calls."""
+
+    def __init__(self, events: list[dict[str, Any]], *, raise_deadline: bool = False) -> None:
+        super().__init__()
+        self._events = events
+        self._raise_deadline = raise_deadline
+        self.deleted: list[tuple[str, str]] = []
+
+    def sse_post(  # type: ignore[override]
+        self, path: str, body: dict[str, Any], *, max_total_seconds: float | None = None
+    ) -> Iterator[dict[str, Any]]:
+        yield from self._events
+        if self._raise_deadline:
+            raise StreamDeadlineError("simulated deadline")
+
+    def delete_thread(self, entry_uuid: str, read_write_token: str) -> bool:  # type: ignore[override]
+        self.deleted.append((entry_uuid, read_write_token))
+        return True
+
 
 BLOCKS = [
     {"step_type": "INITIAL_QUERY", "content": {"goal_id": None, "query": "q"}, "uuid": "1"},
@@ -141,3 +192,68 @@ def test_render_json_envelope() -> None:
     assert j["answer"] == "A"
     assert j["sources"][0] == {"url": "https://a", "title": "A", "snippet": "snip"}
     assert j["stream_complete"] is True
+
+
+# ---------- orchestration (research()) with a fake SSE client ----------
+
+
+def _complete_events() -> list[dict[str, Any]]:
+    return [
+        {"data": {"backend_uuid": "BU", "read_write_token": "RW", "text": _snapshot()}},
+        {"data": {"text": _snapshot(), "status": "COMPLETED"}},
+    ]
+
+
+def test_research_completes_parses_and_cleans_up() -> None:
+    client = _FakeClient(_complete_events())
+    result = research(client, "what is quic")
+    assert result.stream_complete is True
+    assert result.answer == "QUIC is a protocol. [1]"  # unwrapped markdown
+    assert [s.url for s in result.sources] == ["https://cited"]  # FINAL cited set
+    assert result.mode == "research"
+    assert client.deleted == [("BU", "RW")]  # incognito thread cleaned up by default
+
+
+def test_research_keep_thread_skips_cleanup() -> None:
+    client = _FakeClient(_complete_events())
+    research(client, "q", keep_thread=True)
+    assert client.deleted == []
+
+
+def test_research_partial_on_deadline_returns_incomplete() -> None:
+    # One snapshot arrives, then the stream trips the overall deadline.
+    client = _FakeClient(
+        [{"data": {"backend_uuid": "BU", "read_write_token": "RW", "text": _snapshot()}}],
+        raise_deadline=True,
+    )
+    result = research(client, "q", timeout=30)
+    assert result.stream_complete is False  # never saw COMPLETED
+    assert result.answer == "QUIC is a protocol. [1]"  # partial answer still returned
+    assert client.deleted == [("BU", "RW")]
+
+
+def test_research_deadline_before_any_content_raises() -> None:
+    client = _FakeClient([], raise_deadline=True)
+    with pytest.raises(StreamDeadlineError):
+        research(client, "q", timeout=30)
+
+
+def test_research_completed_without_text_raises_schema() -> None:
+    client = _FakeClient([{"data": {"status": "COMPLETED"}}])
+    with pytest.raises(SchemaError):
+        research(client, "q")
+
+
+def test_research_passes_mode_into_body() -> None:
+    captured: dict[str, Any] = {}
+
+    class _BodyCapture(_FakeClient):
+        def sse_post(self, path: str, body: dict[str, Any], *, max_total_seconds=None):  # type: ignore[override]
+            captured["mode"] = body["params"]["mode"]
+            captured["is_incognito"] = body["params"]["is_incognito"]
+            return iter(self._events)
+
+    client = _BodyCapture(_complete_events())
+    research(client, "q", mode="agentic_research")
+    assert captured["mode"] == "agentic_research"
+    assert captured["is_incognito"] is True
