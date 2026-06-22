@@ -1,8 +1,9 @@
 """pplx research verb: Perplexity deep research via /rest/sse/perplexity_ask.
 
 The flagship differentiated capability — multi-step, cited research, far beyond
-`search`'s ranked hits. Same endpoint as `fetch --prompt` but `mode="research"`
-(see docs/wire/perplexity-ask-research.md), with two important differences:
+`search`'s ranked hits. Same endpoint as `fetch --prompt`, but the deep behaviour
+is selected by `model_preference` (NOT `params.mode` — see `_MODE_MODEL` and
+docs/wire/perplexity-ask-research.md), with two important differences:
 
   1. Session-creating. Research is an ask-family verb, so it creates a thread.
      We send `is_incognito: true` (the thread never enters the user's history;
@@ -14,8 +15,9 @@ The flagship differentiated capability — multi-step, cited research, far beyon
      block's `content.answer`; sources accumulate across SEARCH_RESULTS blocks'
      `content.web_results`. We keep the latest snapshot and decode it once.
 
-Deep research takes ~10-60s; the verb supports the same `--timeout` →
-partial-result (exit 6) contract as `fetch --prompt`, with bounded 429 retry.
+Deep research takes ~90-120s (multi-round, ~40+ sources); the verb supports the
+same `--timeout` → partial-result (exit 6) contract as `fetch --prompt`, with
+bounded 429 retry.
 """
 
 from __future__ import annotations
@@ -34,6 +36,28 @@ from .fetch import event_marks_completed
 
 ENDPOINT = "/rest/sse/perplexity_ask"
 DEFAULT_MODE = "research"
+
+# Verified 2026-06-22: Perplexity selects deep-research behaviour by
+# `model_preference`, NOT by `params.mode`. Sending params.mode="research" with
+# model_preference="turbo" yields a plain copilot answer (1 search round); it's
+# model_preference="pplx_alpha" that triggers real Deep Research (LOAD_SKILL +
+# multiple SEARCH_WEB rounds + THOUGHT steps + far more sources). So we map the
+# user-facing --mode to the model id that actually drives it, and keep
+# params.mode coarse ("copilot"). Model ids here are the stable internal
+# constants (ALPHA / AGENTIC_RESEARCH); the per-mode default_models can drift,
+# but these identifiers have held across builds.
+_MODE_MODEL = {
+    "research": "pplx_alpha",  # Deep Research: multi-round + reasoning
+    "agentic_research": "pplx_agentic_research",  # Model Council: multi-model
+    "council": "pplx_agentic_research",  # friendly alias for agentic_research
+}
+
+
+def _model_for_mode(mode: str) -> str:
+    """Map a user-facing --mode to its driving model_preference. An unknown value
+    falls through as a literal model_preference so power users can pass a model id."""
+    return _MODE_MODEL.get(mode, mode)
+
 
 # 429 retry policy — mirrors fetch's tight bound (the agent contract documents
 # exit-3 for callers wanting their own backoff). Research is rarer than fetch so
@@ -295,8 +319,9 @@ def _rate_limit_backoff(err: RateLimitError, remaining: float | None) -> float:
 
 
 def _build_research_body(query: str, mode: str) -> dict[str, Any]:
-    """Ask-endpoint body for research mode. Same shape as fetch's copilot body
-    (docs/wire/perplexity-ask-research.md) but `mode` is caller-set and
+    """Ask-endpoint body for research. `model_preference` (derived from `mode`)
+    is what selects Deep Research vs Model Council — see `_MODE_MODEL`. `params.mode`
+    stays "copilot" (coarse; the server derives the real mode from the model).
     `is_incognito` is True so the created thread stays out of history."""
     frontend_uuid = str(uuid4())
     return {
@@ -310,8 +335,8 @@ def _build_research_body(query: str, mode: str) -> dict[str, Any]:
             "timezone": "UTC",
             "search_focus": "internet",
             "sources": ["web"],
-            "mode": mode,
-            "model_preference": "turbo",
+            "mode": "copilot",
+            "model_preference": _model_for_mode(mode),
             "frontend_uuid": frontend_uuid,
             "frontend_context_uuid": str(uuid4()),
             "client_search_results_cache_key": frontend_uuid,

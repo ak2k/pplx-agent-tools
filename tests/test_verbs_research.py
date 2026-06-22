@@ -13,6 +13,8 @@ from pplx_agent_tools.render import render_research_json, render_research_text
 from pplx_agent_tools.verbs.research import (
     ResearchResult,
     ResearchSource,
+    _build_research_body,
+    _model_for_mode,
     decode_research_text,
     research,
 )
@@ -255,16 +257,35 @@ def test_research_failed_status_raises_clear_error() -> None:
     assert client.deleted == []  # no thread to clean up on a failed request
 
 
-def test_research_passes_mode_into_body() -> None:
+def test_model_for_mode_maps_to_driving_model() -> None:
+    # model_preference (not params.mode) is the real selector.
+    assert _model_for_mode("research") == "pplx_alpha"
+    assert _model_for_mode("agentic_research") == "pplx_agentic_research"
+    assert _model_for_mode("council") == "pplx_agentic_research"  # friendly alias
+    assert _model_for_mode("pplx_asi") == "pplx_asi"  # unknown → literal passthrough
+
+
+def test_build_body_drives_via_model_preference() -> None:
+    body = _build_research_body("q", "research")
+    assert body["params"]["model_preference"] == "pplx_alpha"  # the deep-research model
+    assert body["params"]["mode"] == "copilot"  # coarse; server derives mode from the model
+    assert body["params"]["is_incognito"] is True
+    assert (
+        _build_research_body("q", "council")["params"]["model_preference"]
+        == "pplx_agentic_research"
+    )
+
+
+def test_research_passes_model_preference_into_body() -> None:
     captured: dict[str, Any] = {}
 
     class _BodyCapture(_FakeClient):
         def sse_post(self, path: str, body: dict[str, Any], *, max_total_seconds=None):  # type: ignore[override]
-            captured["mode"] = body["params"]["mode"]
+            captured["model_preference"] = body["params"]["model_preference"]
             captured["is_incognito"] = body["params"]["is_incognito"]
             return iter(self._events)
 
     client = _BodyCapture(_complete_events())
     research(client, "q", mode="agentic_research")
-    assert captured["mode"] == "agentic_research"
+    assert captured["model_preference"] == "pplx_agentic_research"
     assert captured["is_incognito"] is True

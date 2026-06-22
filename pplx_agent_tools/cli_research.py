@@ -31,8 +31,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--mode",
         default=DEFAULT_MODE,
         help=(
-            f"ask mode (default: {DEFAULT_MODE}). 'agentic_research' (Model "
-            "Council) is heavier/slower and experimental; see `pplx models`."
+            f"research depth (default: {DEFAULT_MODE} = Perplexity Deep Research). "
+            "'council' (aka 'agentic_research') = Model Council: multiple frontier "
+            "models cross-checked — higher rigor, much slower/heavier, experimental. "
+            "An unknown value is passed through as a raw model_preference."
         ),
     )
     parser.add_argument("-j", "--json", action="store_true", help="output JSON")

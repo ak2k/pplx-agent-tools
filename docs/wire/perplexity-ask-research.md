@@ -1,28 +1,36 @@
 # /rest/sse/perplexity_ask — research mode (depth-pass for `pplx research`)
 
-Live-probed 2026-06-22 to de-risk the flagship deep-research verb. Same endpoint
-as `fetch --prompt`, different `mode` + response shape.
+Live-probed 2026-06-22 (re-verified after the mechanism was corrected). Same
+endpoint as `fetch --prompt`; the mode is selected by **`model_preference`**.
 
-## Mode taxonomy (from the SPA bundle)
+## How the mode is actually selected — `model_preference`, NOT `params.mode`
 
-The UI mode enum maps to internal `mode` strings:
+The decisive finding (verified by sending each value and observing behavior):
+**`params.mode` does not switch deep modes; `params.model_preference` does.**
+Sending `params.mode="research"` with `model_preference="turbo"` yields a plain
+copilot answer (1 search round, ~15 sources). It's the *model* that triggers the
+behavior:
 
-| UI mode | `params.mode` value | notes |
-|---|---|---|
-| Search | `search` | |
-| Pro Search | `copilot` | what `fetch --prompt` sends today |
-| Research | `research` | **deep research — the target** |
-| Agentic Research | `model-council` | Model Council (parallel GPT/Claude/Gemini); heavier/slower |
-| Study | `learn-files-and-apps` | |
-| Browser Agent | `control-browser` | Comet agent |
-| ASI | `computer` | Comet "Computer" |
+| Behavior | `model_preference` | observed | `params.mode` |
+|---|---|---|---|
+| Pro Search (copilot) | `turbo` | 1 SEARCH_WEB round, ~15 sources, ~20s | `copilot` |
+| **Deep Research** | **`pplx_alpha`** | LOAD_SKILL + **3 SEARCH_WEB rounds** + THOUGHT steps, **~43 sources**, ~90–115s | `copilot` |
+| **Model Council** | **`pplx_agentic_research`** | `COUNCIL_RESEARCH` block (GPT-5.5-thinking + Claude-Opus-4.8-thinking + Gemini-3.1-Pro), 165s+ | `copilot` |
+| Computer / ASI | `pplx_asi` | echoes mode `ASI`; separate runtime (needs `/rest/realtime/v2/computer/session`) | `copilot` |
+
+So `pplx research` keeps `params.mode = "copilot"` (coarse; the server derives the
+real mode from the model) and maps its user-facing `--mode` to the driving model
+(`research`→`pplx_alpha`, `agentic_research`/`council`→`pplx_agentic_research`).
+See `verbs/research.py:_MODE_MODEL`. (The SPA's `Xe`/`Ze` enum-map of UI mode →
+`search`/`research`/`model-council`/`computer` is a *route/label* slug, not the
+ask-body field — an earlier draft of this doc wrongly assumed it was `params.mode`.)
 
 ## Request
 
 `POST /rest/sse/perplexity_ask`, body identical to the `copilot` chat body
 (`pplx_agent_tools/verbs/fetch.py:_build_chat_body`) except:
 
-- `params.mode = "research"`
+- `params.model_preference = "pplx_alpha"` (Deep Research) / `"pplx_agentic_research"` (Council)
 - `params.is_incognito = true` — **required discipline**: an incognito ask never
   enters `list_recent`/history (verified); deletion becomes belt-and-suspenders
   rather than load-bearing. See `CLAUDE.md` → "Endpoint selection principle".
@@ -39,12 +47,19 @@ message_mode, answer_modes, reconnectable, cursor, search_mode
 ```
 
 - `text` is a **JSON string** → decodes to a **list of blocks**, each
-  `{step_type, content, uuid}`. The verb parser must `json.loads(text)` and walk
-  blocks by `step_type` (final answer + sources/citations live in `content`;
-  exact `step_type` taxonomy to be catalogued at implementation — only a couple
-  of probes run so far). This differs from the non-schematized `markdown_block`
-  chunks `fetch --prompt` consumes today, so `research` needs its own parser, not
-  a flag on the existing path.
+  `{step_type, content, uuid}`. Observed `step_type`s for Deep Research:
+  `INITIAL_QUERY`, `LOAD_SKILL`, `LOAD_SKILL_RESPONSE`, `SEARCH_WEB` (×N rounds),
+  `SEARCH_RESULTS` (×N), `THOUGHT` (×N reasoning steps), `FINAL`. Model Council
+  emits a `COUNCIL_RESEARCH` block instead. The verb walks blocks by `step_type`:
+  the **`FINAL` block's `content.answer` is itself a JSON string** wrapping
+  `{answer: <markdown>, web_results: [<cited>], chunks, structured_answer}` — so
+  decode unwraps that and prefers `FINAL.web_results` over the intermediate
+  `SEARCH_RESULTS` rounds. (Deep Research answers sometimes carry a short
+  thinking preamble like "Now I have comprehensive data… Let me compose…" at the
+  head — it's the reasoning model's output, not a parse artifact.) A `FAILED`
+  frame (incompatible model↔mode) still carries `text`, so check `status` first.
+  This differs from the non-schematized `markdown_block` chunks `fetch --prompt`
+  consumes, so `research` has its own parser.
 - `text_completed: true` + a final `status: "COMPLETED"` frame mark the end.
 - `reconnectable: true` + `cursor` tie into
   `GET /rest/sse/perplexity_ask/reconnect/{resume_entry_uuid}` — the basis for
