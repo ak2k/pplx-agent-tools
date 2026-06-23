@@ -60,16 +60,6 @@ class SearchResult:
     warnings: list[str] = field(default_factory=list)
 
 
-def search(
-    client: Client,
-    query: str,
-    *,
-    limit: int = 10,
-) -> SearchResult:
-    """Run a single search query against /rest/realtime/search-web."""
-    return search_many(client, [query], limit=limit)
-
-
 def search_many(
     client: Client,
     queries: list[str],
