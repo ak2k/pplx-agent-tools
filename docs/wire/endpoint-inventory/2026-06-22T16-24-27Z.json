@@ -1,0 +1,7283 @@
+{
+  "captured_at": "2026-06-22T16-24-27Z",
+  "chunks_fetched": 1318,
+  "bytes": 36686781,
+  "endpoint_count": 726,
+  "endpoints": {
+    "/api/auth/add-account/complete": {
+      "methods": [],
+      "chunks": [
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/api/auth/callback/{provider}": {
+      "methods": [],
+      "chunks": [
+        "platform"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/api/auth/csrf": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "platform"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/api/auth/linked-accounts": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/api/auth/phone-verification/status": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "bootstrap"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/api/auth/providers": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "platform"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/api/auth/session": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "platform"
+      ],
+      "dynamic": false,
+      "known": "auth keepalive (EXPOSED via `pplx auth`)"
+    },
+    "/api/auth/signin/{provider}": {
+      "methods": [],
+      "chunks": [
+        "platform"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/api/auth/signout": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "platform"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/api/auth/signout-account": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/api/auth/totp/disable": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "TOTPDisableModal"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/api/auth/totp/enroll": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "TOTPSetupModal"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/api/auth/totp/status": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "WorkflowBridge",
+        "details"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/api/auth/totp/verify": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "TOTPSetupModal"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/api/decagon/user-auth": {
+      "methods": [],
+      "chunks": [
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/api/intercom": {
+      "methods": [],
+      "chunks": [
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/api/org": {
+      "methods": [
+        "PUT"
+      ],
+      "chunks": [
+        "details"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/api/subscription/config": {
+      "methods": [],
+      "chunks": [
+        "PartnerBanner"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/api/user": {
+      "methods": [
+        "PUT"
+      ],
+      "chunks": [
+        "OrgInviteModal",
+        "details",
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/api/v2/${t}": {
+      "methods": [],
+      "chunks": [
+        "vendors"
+      ],
+      "dynamic": true,
+      "known": null
+    },
+    "/api/version": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/academic/check-edu-institution": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/analytics/computer/usage": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "spa",
+        "usage"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/analytics/computer/usage/members": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "spa",
+        "usage"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/article/reorder/{article_slug}": {
+      "methods": [
+        "PUT"
+      ],
+      "chunks": [
+        "useUpdateArticleSectionImage"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/article/section/add/media_item/{section_uuid}": {
+      "methods": [
+        "PUT"
+      ],
+      "chunks": [
+        "useUpdateArticleSectionImage"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/article/section/hero_offset/{section_uuid}": {
+      "methods": [
+        "PUT"
+      ],
+      "chunks": [
+        "useUpdateArticleSectionImage"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/article/section/image/{section_uuid}": {
+      "methods": [
+        "PUT"
+      ],
+      "chunks": [
+        "useUpdateArticleSectionImage"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/article/section/media/remove/{section_uuid}": {
+      "methods": [
+        "PUT"
+      ],
+      "chunks": [
+        "useUpdateArticleSectionImage"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/article/section/title/{section_uuid}": {
+      "methods": [
+        "PUT"
+      ],
+      "chunks": [
+        "useUpdateArticleSectionImage"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/article/section/upload_image/{section_uuid}": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "useUpdateArticleSectionImage"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/article/section/{section_uuid}": {
+      "methods": [
+        "DELETE"
+      ],
+      "chunks": [
+        "useUpdateArticleSectionImage"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/article/sections/layout": {
+      "methods": [
+        "PUT"
+      ],
+      "chunks": [
+        "useUpdateArticleSectionImage"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/article/{article_uuid_or_slug}": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/assets/": {
+      "methods": [],
+      "chunks": [
+        "ArtifactsPage"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/assets/pins": {
+      "methods": [
+        "GET",
+        "POST"
+      ],
+      "chunks": [
+        "layout",
+        "usePinFile"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/assets/pins/{asset_id}": {
+      "methods": [
+        "DELETE"
+      ],
+      "chunks": [
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/assets/shared-with-me": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "ArtifactsPage",
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/assets/shared-with-me/{asset_id}": {
+      "methods": [
+        "DELETE"
+      ],
+      "chunks": [
+        "ArtifactsPage"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/assets/signed-url/{asset_id}": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "ArtifactsPage"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/assets/sites/validate-subdomain/{subdomain}": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "useAssetPublishControl"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/assets/sites/{site_id}/publish-info": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "spa",
+        "useAssetPublishControl"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/assets/{asset_id}": {
+      "methods": [
+        "DELETE"
+      ],
+      "chunks": [
+        "ArtifactsPage"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/assets/{asset_id}/access": {
+      "methods": [
+        "PATCH"
+      ],
+      "chunks": [
+        "useAssetPublishControl"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/assets/{asset_id}/data": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "spa",
+        "useAssetPinButtonData"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/assets/{asset_id}/invite": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "useAssetPublishControl"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/assets/{asset_id}/members": {
+      "methods": [
+        "DELETE",
+        "GET"
+      ],
+      "chunks": [
+        "spa",
+        "useAssetPublishControl"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/assets/{asset_id}/published-access": {
+      "methods": [
+        "GET",
+        "PUT"
+      ],
+      "chunks": [
+        "spa",
+        "useAssetPublishControl"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/assets/{asset_id}/published-invite": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "useAssetPublishControl"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/assets/{asset_id}/published-members": {
+      "methods": [
+        "DELETE"
+      ],
+      "chunks": [
+        "useAssetPublishControl"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/assets/{asset_id}/request-access": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "RequestAccessModal"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/assets/{asset_id}/request-access-info": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "RequestAccessModal",
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/attribution/comet/1mo-promo/mark-eligible": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "handleCometDownload1moProIncentive"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/attribution/comet/event/{event_name}": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/attribution/comet/session": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/attribution/dub/lead": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/auth/get_special_profile": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/automations/{automation_id}": {
+      "methods": [
+        "PATCH"
+      ],
+      "chunks": [
+        "thread"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/autosuggest/academic/list-autosuggest": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "academic"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/autosuggest/contacts/list-autosuggest": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "CalendarEventLarge"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/autosuggest/finance/list-autosuggest": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "FinanceMarketOverviewSidebarSections",
+        "ask",
+        "getFinanceSuggestions"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/autosuggest/finance/tasks-autosuggest": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "usePriceAlertMutations"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/autosuggest/health/list-autosuggest": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "ask"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/autosuggest/list-autosuggest": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "ask"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/autosuggest/reformulate-query": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "useGenerativeRefinement"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/autosuggest/track-query-clicked": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "ask"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/billing/account-promo-message": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "ComputerProviders",
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/billing/asi-access-decision": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/billing/braintree/cancel-subscription": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "BraintreeSubscriptionModal"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/billing/braintree/paypal/client-token": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "ShoppingPaymentInner",
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/billing/braintree/renew-subscription": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "BraintreeSubscriptionModal"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/billing/braintree/subscription-details": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "BraintreeSubscriptionModal",
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/billing/commerce/carts": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "ShoppingPaymentInner"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/billing/commerce/carts/{cart_id}/complete": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "ShoppingPaymentInner"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/billing/commerce/carts/{cart_id}/update": {
+      "methods": [
+        "PATCH"
+      ],
+      "chunks": [
+        "ShoppingPaymentInner"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/billing/computer-trial-offer-eligibility": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "ComputerUpgradeModalChooser",
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/billing/create-government-subscription": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/billing/credits": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "spa",
+        "useUsageBasedBillingDataV3"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/billing/credits/auto-topup": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "useUpdateAutoTopupMutation"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/billing/credits/balance": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "spa",
+        "useGetCreditsBalance"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/billing/credits/check": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "ComputerProviders"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/billing/credits/computer-submit-gate": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "ask",
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/billing/credits/open-invoice": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "MapsPreview",
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/billing/credits/purchase": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/billing/credits/purchase-preview": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "layout",
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/billing/credits/spending-limit": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "AutoRefillForm"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/billing/credits/thread-usage": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "spa",
+        "useGetThreadUsage"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/billing/credits/thread-usages": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "credits",
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/billing/credits/topup-context": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "AutoRefillForm",
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/billing/credits/unblock": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "MapsPreview"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/billing/get-coupon-metadata": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "PaymentModal"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/billing/get-customer-portal": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "getCustomerPortal"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/billing/limited-free-tier-trial-eligibility": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "LimitedFreeTierGateModal"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/billing/organization/credits": {
+      "methods": [
+        "GET",
+        "POST"
+      ],
+      "chunks": [
+        "SetupUBBModal",
+        "credits",
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/billing/organization/credits/members": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "credits",
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/billing/organization/credits/purchase": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/billing/organization/credits/request": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "useRequestMoreCreditsMutation"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/billing/personalization/status": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "personalize",
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/billing/personalization/update": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "ThirdPartyPersonalizationModal"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/billing/subscription-transfer/execute": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "SubscriptionTransferModal"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/billing/subscription-transfer/initiate": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "SubscriptionTransferModal"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/billing/ubb-config": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "layout",
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/browser/classify": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "experimentation"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/browser/client_payload": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "experimentation"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/browser/personalization/sidecar-recommended-queries": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "ask"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/browser/tool_failure": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "experimentation"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/browser/tool_result": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "experimentation"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/collections/batch_move_threads": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "batchCollectionThreadActions"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/collections/batch_remove_collection_threads": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "batchCollectionThreadActions"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/collections/create_collection": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/collections/delete_collection/{collection_uuid}": {
+      "methods": [
+        "DELETE"
+      ],
+      "chunks": [
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/collections/edit_collection/{collection_uuid}": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/collections/focused_web_config/links": {
+      "methods": [
+        "DELETE",
+        "POST"
+      ],
+      "chunks": [
+        "useAddLink"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/collections/get_collection": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/collections/invitations": {
+      "methods": [],
+      "chunks": [
+        "SpaceSharingPanel"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/collections/invite_to_collection": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "SpaceSharingPanel"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/collections/list_bookmarks": {
+      "methods": [],
+      "chunks": [
+        "useBookmarksQuery"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/collections/list_collection_threads": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "layout",
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/collections/list_recent": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/collections/list_space_templates": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "templates"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/collections/list_user_collections": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "SpaceSelectModal",
+        "spa",
+        "useCollectionsQuery"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/collections/remove_collection_thread": {
+      "methods": [
+        "DELETE"
+      ],
+      "chunks": [
+        "ThreadInput"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/collections/respond_to_invitation/{collection_uuid}": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "SpaceSharingPanel"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/collections/upsert_thread_collection": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/collections/{collection_uuid_or_slug}/request-access": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "spaces"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/collections/{collection_uuid_or_slug}/request-access-info": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "spa",
+        "spaces"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/collections/{collection_uuid}/access": {
+      "methods": [
+        "PUT"
+      ],
+      "chunks": [
+        "SpaceSharingPanel"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/collections/{collection_uuid}/connector_settings": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "useConnectorSharedSettings"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/collections/{collection_uuid}/connector_settings/connections": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "useConnectorSharedSettings"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/collections/{collection_uuid}/connector_settings/connections/sources/{source_id}": {
+      "methods": [
+        "PUT"
+      ],
+      "chunks": [
+        "useConnectorSharedSettings"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/collections/{collection_uuid}/connector_settings/sources/{source_id}": {
+      "methods": [
+        "PUT"
+      ],
+      "chunks": [
+        "useConnectorSharedSettings"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/collections/{collection_uuid}/join-as-viewer": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "spaces"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/collections/{collection_uuid}/join-request/approve": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "SpaceSharingPanel"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/collections/{collection_uuid}/join-request/cancel": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "SpaceSharingPanel"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/collections/{collection_uuid}/join-request/deny": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "SpaceSharingPanel"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/collections/{collection_uuid}/join-requests": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "SpaceSharingPanel"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/collections/{collection_uuid}/project_files/content": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "restricted"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/collections/{collection_uuid}/project_files/download_url": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "restricted"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/collections/{collection_uuid}/project_files/file": {
+      "methods": [
+        "DELETE"
+      ],
+      "chunks": [
+        "restricted"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/collections/{collection_uuid}/project_files/render": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "restricted"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/collections/{collection_uuid}/project_files/tree": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "restricted"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/collections/{collection_uuid}/project_files/upload_sessions": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "restricted"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/collections/{collection_uuid}/project_files/upload_sessions/complete": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "restricted"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/collections/{collection_uuid}/remove_user": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "removeUserFromCollection"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/collections/{collection_uuid}/request-join": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "SpaceSharingPanel"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/collections/{collection_uuid}/update_contributor_permission": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "SpaceSharingPanel"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/commands/available": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "ask"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/computer-feedback/": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "ComputerHomeControls"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/computer/asset": {
+      "methods": [],
+      "chunks": [
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/computer/attachments/duplicate": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "handleRunInComputer"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/computer/files/{context_uuid}": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "restricted"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/computer/files/{context_uuid}/directory": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "restricted"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/computer/files/{context_uuid}/export": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "restricted"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/computer/menu": {
+      "methods": [],
+      "chunks": [
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/computer/onboarding_cards": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "spa",
+        "widgets"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/computer/task/cancel_subagent": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "WorkflowBridge"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/connections/connect": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "getConnectionUrl",
+        "useOrgSourceAuth"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/connections/oauth_callback_merge": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "handleOAuthCallbackMerge"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/connections/sources/{source_id}/tool_permissions": {
+      "methods": [
+        "PATCH"
+      ],
+      "chunks": [
+        "CopyConnectorLinkButton"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/connections/sources/{source_id}/tool_permissions/by_classification": {
+      "methods": [
+        "PATCH"
+      ],
+      "chunks": [
+        "CopyConnectorLinkButton"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/connections/{uuid}/delete": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/connections/{uuid}/nickname": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/connections/{uuid}/set_default": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/connections/{uuid}/update": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/connector-service/connectors/{source_id}/settings-config": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "CopyConnectorLinkButton"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/connector-service/connectors/{source_id}/tools": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "CopyConnectorLinkButton"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/connector-service/connectors/{source_id}/tools/{tool_name}/execute": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "migration"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/connector-service/sources/{source_id}/tool-permissions": {
+      "methods": [
+        "PATCH"
+      ],
+      "chunks": [
+        "connectors"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/connector-service/sources/{source_id}/tool-permissions/{tool_name}": {
+      "methods": [
+        "PATCH"
+      ],
+      "chunks": [
+        "connectors"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/connector-service/usage": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "analytics",
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/connector-service/usage/user/{user_uuid}": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "analytics"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/connector-service/warm-cache": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "ComputerProviders"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/connectors/${e}/connect": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "layout"
+      ],
+      "dynamic": true,
+      "known": null
+    },
+    "/rest/connectors/${e}/files": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "layout"
+      ],
+      "dynamic": true,
+      "known": null
+    },
+    "/rest/connectors/attachments/upload": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/connectors/box/files": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/connectors/box/picker": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/connectors/medical_records/connect": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "healthMutations"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/connectors/medical_records/terms-of-service": {
+      "methods": [
+        "GET",
+        "POST"
+      ],
+      "chunks": [
+        "client",
+        "healthMutations"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/connectors/medical_records/user-profile": {
+      "methods": [
+        "GET",
+        "PUT"
+      ],
+      "chunks": [
+        "client",
+        "healthMutations"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/connectors/save-file": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "useDownloadableAsset"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/connectors/sharepoint/files": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/connectors/sharepoint/sites": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "SharepointSiteSelector",
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/connectors/wearables/connect": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "healthMutations"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/connectors/wiley/": {
+      "methods": [],
+      "chunks": [
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/connectors/{connector_id}/check-email-assistant-impact": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "OAuthConnectors"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/connectors/{connector_id}/disconnect": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/credentials/create": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "CustomCredentialFormModal"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/credentials/list": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "client",
+        "useListCustomCredentials"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/credentials/revoke/{credential_uuid}": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "CredentialRevokeConfirmModal"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/debug/threads/thread_result": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "restricted"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/debug/threads/thread_result/{thread_result_uuid}": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "restricted"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/deeper-research/download-asset": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/deeper-research/export-all-assets": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "utils"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/deeper-research/export-asset": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "useDownloadableAsset"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/discord/connect": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "details"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/discord/status": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "details"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/discover/feed": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "DiscoverItem",
+        "getDiscoverListFeed",
+        "page"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/discover/feed-items/{context_uuid}/feedback/dislike": {
+      "methods": [
+        "DELETE",
+        "PUT"
+      ],
+      "chunks": [
+        "DiscoverItem"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/discover/feed-items/{context_uuid}/feedback/like": {
+      "methods": [
+        "DELETE",
+        "PUT"
+      ],
+      "chunks": [
+        "DiscoverItem"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/discover/topics": {
+      "methods": [
+        "GET",
+        "PUT"
+      ],
+      "chunks": [
+        "DiscoverItem",
+        "discover"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/discover/use-cases/feed": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "DiscoverItem",
+        "discover"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/email_assistant/calendars": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "CalendarSelectionModal",
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/email_assistant/calendars/selected": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "CalendarSelectionModal"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/email_assistant/config": {
+      "methods": [
+        "DELETE",
+        "GET",
+        "POST"
+      ],
+      "chunks": [
+        "assistant",
+        "layout",
+        "saveEmailAssistantConfig"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/email_assistant/scope-status": {
+      "methods": [],
+      "chunks": [
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/email_assistant/trial/status": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "assistant"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/enterprise/cancel-subscription": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "SubscriptionDetailsModal"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/enterprise/checkout-session": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "useOrgBilling"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/enterprise/comet/policy": {
+      "methods": [
+        "GET",
+        "PATCH",
+        "POST"
+      ],
+      "chunks": [
+        "comet"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/enterprise/comet/policy/regenerate-token": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "comet"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/enterprise/customer-portal": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "useOrgBilling"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/enterprise/domain/{domain_uuid}/force-sso": {
+      "methods": [
+        "PUT"
+      ],
+      "chunks": [
+        "identity"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/enterprise/onboarding/draft": {
+      "methods": [
+        "GET",
+        "POST"
+      ],
+      "chunks": [
+        "fetchOrCreateDraft"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/enterprise/onboarding/draft/{draft_uuid}": {
+      "methods": [
+        "PATCH"
+      ],
+      "chunks": [
+        "fetchOrCreateDraft"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/enterprise/organization": {
+      "methods": [
+        "DELETE"
+      ],
+      "chunks": [
+        "details"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/enterprise/organization/${e}/comet-telemetry/embed-url": {
+      "methods": [],
+      "chunks": [
+        "comet"
+      ],
+      "dynamic": true,
+      "known": null
+    },
+    "/rest/enterprise/organization/${e}/comet/metrics": {
+      "methods": [],
+      "chunks": [
+        "comet"
+      ],
+      "dynamic": true,
+      "known": null
+    },
+    "/rest/enterprise/organization/${e}/insights/embed-url": {
+      "methods": [],
+      "chunks": [
+        "analytics"
+      ],
+      "dynamic": true,
+      "known": null
+    },
+    "/rest/enterprise/organization/bulk-delete-memories": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "EnterpriseMemorySettings"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/enterprise/organization/comet/metrics": {
+      "methods": [],
+      "chunks": [
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/enterprise/organization/domains/{domain_uuid}/jit-provisioning": {
+      "methods": [
+        "PUT"
+      ],
+      "chunks": [
+        "identity"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/enterprise/organization/domains/{domain_uuid}/join-requests": {
+      "methods": [
+        "PUT"
+      ],
+      "chunks": [
+        "identity"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/enterprise/organization/encryption/root-keys": {
+      "methods": [],
+      "chunks": [
+        "encryption"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/enterprise/organization/encryption/root-keys/{root_key_id}/make-primary": {
+      "methods": [],
+      "chunks": [
+        "encryption"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/enterprise/organization/invite/{org_invite_uuid}": {
+      "methods": [
+        "DELETE",
+        "GET"
+      ],
+      "chunks": [
+        "OrgInviteModal",
+        "useOrganizationMembers"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/enterprise/organization/invite/{org_invite_uuid}/accept": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "OrgInviteModal"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/enterprise/organization/invite/{org_invite_uuid}/decline": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "OrgInviteModal"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/enterprise/organization/invite/{org_invite_uuid}/resend": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "useOrganizationMembers"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/enterprise/organization/join-request": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "useGetOrgSuggestions"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/enterprise/organization/join-requests": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "OrgInviteLink",
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/enterprise/organization/join-requests/{request_uuid}/approve": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "OrgInviteLink"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/enterprise/organization/join-requests/{request_uuid}/deny": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "OrgInviteLink"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/enterprise/organization/login/details": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "platform"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/enterprise/organization/premium-secure-billing-update": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "useOrgPremiumSecureFeatures"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/enterprise/organization/premium-secure-eligibility": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "spa",
+        "useOrgPremiumSecureFeatures"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/enterprise/organization/shareable-invite/join/{open_invite_link_uuid}": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "OrgInviteModal"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/enterprise/organization/shareable-invite/regenerate": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "useOrgShareableInviteLink"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/enterprise/organization/shareable-invite/{open_invite_link_uuid}": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "OrgInviteModal"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/enterprise/organization/sso/enable": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "identity"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/enterprise/organization/sso/generate-${t}-setup-portal-link": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "identity"
+      ],
+      "dynamic": true,
+      "known": null
+    },
+    "/rest/enterprise/organization/sso/refresh": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "identity"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/enterprise/organization/subscription-info": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "layout",
+        "useGetSubscriptionBillingInfo",
+        "useOrgPremiumSecureFeatures"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/enterprise/organization/subscription/refresh": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "page"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/enterprise/organization/user/subscription-tier-update": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/enterprise/organization/user/subscription-tier-update-preview": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/enterprise/organization/user/{org_user_uuid}": {
+      "methods": [
+        "DELETE",
+        "PATCH"
+      ],
+      "chunks": [
+        "OrgInviteLink",
+        "layout",
+        "useOrganizationMembers"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/enterprise/organization/user/{org_user_uuid}/make-admin": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "useOrganizationMembers"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/enterprise/organization/user/{org_user_uuid}/make-member": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "useOrganizationMembers"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/enterprise/organization/user/{org_user_uuid}/remove-preview": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "RemoveMemberConfirmModal"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/enterprise/organization/{org_uuid}": {
+      "methods": [
+        "PATCH"
+      ],
+      "chunks": [
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/enterprise/organization/{org_uuid}/comet-telemetry/embed-url": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "comet"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/enterprise/organization/{org_uuid}/comet/metrics": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "comet"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/enterprise/organization/{org_uuid}/insights/embed-url": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "analytics"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/enterprise/organization/{org_uuid}/invite": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/enterprise/organization/{org_uuid}/invite-url": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/enterprise/previous-subscription": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "details"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/enterprise/resubscribe": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "useGetSubscriptionBillingInfo"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/enterprise/subscription": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "useOrgBilling"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/enterprise/trial/invite": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/enterprise/trial/update/{org_user_uuid}/{update_type}": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "useOrganizationMembers"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/enterprise/user/organization": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "experimentation",
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/enterprise/user/organization/members": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "useOrganizationMembers"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/enterprise/user/organization/seat-info": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "layout",
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/enterprise/user/organization/semantic-layer/exists": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "SupplementaryContextEditor",
+        "useSemanticLayerExists"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/enterprise/user/organization/semantic-layer/file-content": {
+      "methods": [],
+      "chunks": [
+        "data"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/enterprise/user/organization/semantic-layer/files": {
+      "methods": [],
+      "chunks": [
+        "data"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/enterprise/user/organization/semantic-layer/generate": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "SupplementaryContextEditor"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/enterprise/user/organization/semantic-layer/status/{task_id}": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "SupplementaryContextEditor"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/enterprise/user/organization/semantic-layer/supplementary-files": {
+      "methods": [
+        "GET",
+        "POST"
+      ],
+      "chunks": [
+        "SupplementaryContextEditor"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/enterprise/user/organization/semantic-layer/supplementary-files/{file_id}": {
+      "methods": [
+        "DELETE"
+      ],
+      "chunks": [
+        "SupplementaryContextEditor"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/enterprise/user/organization/semantic-layer/supplementary-files/{file_id}/content": {
+      "methods": [],
+      "chunks": [
+        "SupplementaryContextEditor"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/enterprise/user/organization/semantic-layer/updates": {
+      "methods": [],
+      "chunks": [
+        "data"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/enterprise/user/organization/semantic-layer/updates/wal-compaction": {
+      "methods": [],
+      "chunks": [
+        "data"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/enterprise/user/organization/sources": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "spa",
+        "useOrgConnectorCounts"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/enterprise/user/organization/sources/batch-permission": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "connectors"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/enterprise/user/organization/sources/{source_id}/disconnect": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "useOrgSourceAuth"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/enterprise/user/organization/sources/{source_id}/permission": {
+      "methods": [
+        "PATCH"
+      ],
+      "chunks": [
+        "connectors",
+        "useOrgSourceAuth"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/enterprise/user/organization/sources/{source_id}/tools": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "connectors"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/enterprise/user/organization/users": {
+      "methods": [],
+      "chunks": [
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/enterprise/user/pending-invitation": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "layout",
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/enterprise/v2/user/org-suggestions": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "onboardingKeys",
+        "useGetOrgSuggestions"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/entry/convert-to-report/{entry_uuid}": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "miscMutations"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/entry/delete-ask-entry/{entry_uuid}": {
+      "methods": [
+        "DELETE"
+      ],
+      "chunks": [
+        "ThreadEntryFooter"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/entry/export": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "ThreadEntryFooter"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/entry/handle-user-answers": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "WorkflowBridge",
+        "realtimeVoiceCore",
+        "useAssetPublishControl"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/entry/label-entry/{entry_uuid}": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "ThreadItemFeedback"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/entry/map/search-map-locations": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "MapsMode",
+        "PerplexityMap"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/entry/set-entry-selection/{entry_uuid}": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/entry/unpublish-website": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "useAssetPublishControl"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/entry/validate-user-questions-field": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "Workflow"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/event/analytics": {
+      "methods": [],
+      "chunks": [
+        "experimentation"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/experiments/attributes": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "page"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/experiments/sbs-config": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/file-repository/delete-files": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/file-repository/download": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/file-repository/download-attachment": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/file-repository/get-file-upload-urls": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/file-repository/list-files": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/file-repository/list-files-infinite": {
+      "methods": [],
+      "chunks": [
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/file-repository/move-attachment-to-persistent-file-path": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/file-repository/patents/": {
+      "methods": [],
+      "chunks": [
+        "platform"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/file-repository/uploads": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/files/delete": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "connectors"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/files/has-uploaded": {
+      "methods": [],
+      "chunks": [
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/files/list": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "spa",
+        "useDeleteConnectorFiles"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/files/list-errors": {
+      "methods": [],
+      "chunks": [
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/files/list-infinite": {
+      "methods": [],
+      "chunks": [
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/files/resync": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "LinksSourceSection"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/analyst-ratings/{market_identifier}": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "sub"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/analyst-ratings/{market_identifier}/summary": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "sub"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/bulls-vs-bears-summary/{market_identifier}": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "sub"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/currency-exchange": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "ThreadEntryPanel"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/documents/download/{document_id}": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "sub"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/documents/{market_identifier}": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "FinancePortfolioPage"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/earnings": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "sub"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/earnings/schedule": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "sub"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/earnings/schedule/{symbol}": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "sub"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/earnings/{market_identifier}": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "FinancePortfolioPage"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/earnings/{market_identifier}/analysis/{event_id}": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "sub"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/earnings/{market_identifier}/documents/{event_id}": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "sub"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/earnings/{market_identifier}/transcript/{event_id}": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "sub"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/equity-sectors": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "sub"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/financial-news/documents": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "sub"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/financial-news/documents/{document_id}": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/financials/v2/{market_identifier}": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "FinancePortfolioPage"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/financials/v3/{market_identifier}": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "FinancePortfolioPage"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/financials/{market_identifier}": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "FinancePortfolioPage"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/financials/{market_identifier}/analysis": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "sub"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/fixed-income": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "sub"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/history/COIN50USD": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "sub"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/history/{market_identifier}/csv": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "sub"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/holders/{market_identifier}/insiders/uw": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "sub"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/holders/{market_identifier}/insiders/uw/roster": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "sub"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/holders/{market_identifier}/insiders/uw/statistics": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "sub"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/holders/{market_identifier}/institutional": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "sub"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/holders/{market_identifier}/politicians/holdings": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "sub"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/holdings/{market_identifier}": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "sub"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/leaderboard/crypto": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "sub"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/lists/preset": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "sub"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/lists/preset/news": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "sub"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/lists/preset/summary": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "sub"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/market-movers": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "sub"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/market-sentiment/{market_type}": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "sub"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/market-status/{market_identifier}": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "FinancePortfolioPage"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/market-summary/{market_type}": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "sub"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/news/{market_identifier}": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "sub"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/peers/{market_identifier}": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "FinanceStockHistory"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/personal": {
+      "methods": [],
+      "chunks": [
+        "useVezgoConnect"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/personal/liabilities": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "FinancePortfolioPage"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/personal/overview": {
+      "methods": [],
+      "chunks": [
+        "FinancePortfolioPage"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/personal/plaid/complete-reauth": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "FinancePortfolioPage"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/personal/plaid/complete-upgrade": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "FinancePortfolioPage"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/personal/plaid/connections": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "useVezgoConnect"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/personal/plaid/connections/{item_id}": {
+      "methods": [
+        "DELETE"
+      ],
+      "chunks": [
+        "FinancePortfolioPage"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/personal/plaid/link-session-status": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "FinancePortfolioPage"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/personal/plaid/link-token": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "FinancePortfolioPage"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/personal/plaid/reauth-link-token": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "FinancePortfolioPage"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/personal/plaid/recurring-streams": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "FinancePortfolioPage"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/personal/plaid/upgrade-link-token": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "FinancePortfolioPage"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/personal/portfolio/items": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "FinancePortfolioPage"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/personal/portfolio/news": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "FinancePortfolioPage"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/personal/portfolio/risk-factors": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "FinancePortfolioPage"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/personal/portfolio/summary": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "FinancePortfolioPage"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/personal/profile": {
+      "methods": [
+        "DELETE",
+        "GET",
+        "PUT"
+      ],
+      "chunks": [
+        "FinanceOnboardingModal",
+        "queries"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/personal/sync": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "FinancePortfolioPage"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/personal/transactions": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "FinancePortfolioPage"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/personal/transactions/aggregates": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "FinancePortfolioPage"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/personal/transactions/filters": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "FinancePortfolioPage"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/personal/transactions/list": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "FinancePortfolioPage"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/personal/vezgo/accounts": {
+      "methods": [],
+      "chunks": [
+        "FinancePortfolioPage"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/personal/vezgo/accounts/register": {
+      "methods": [],
+      "chunks": [
+        "useVezgoConnect"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/personal/vezgo/accounts/{vezgo_account_id}": {
+      "methods": [
+        "DELETE"
+      ],
+      "chunks": [
+        "FinancePortfolioPage"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/personal/vezgo/connect-url": {
+      "methods": [],
+      "chunks": [
+        "useVezgoConnect"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/personal/vezgo/holdings": {
+      "methods": [],
+      "chunks": [
+        "FinancePortfolioPage"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/plaid/connections": {
+      "methods": [],
+      "chunks": [
+        "useConnectorConnection"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/politicians": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/politicians/transactions": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "sub"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/politicians/{politician_id}/holdings": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "sub"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/prediction-markets/quote/{event_id}": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/prediction-markets/search": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/prediction-markets/tag/{tag}": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/prediction-markets/{market_identifier}/trending-ticker": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/profile/{market_identifier}": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "FinancePortfolioPage"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/profile/{market_identifier}/description": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "sub"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/publisher-news/{market_identifier}": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "sub"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/quote/{market_identifier}": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "getQuote",
+        "spa",
+        "sub"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/related-questions/{surface}": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "sub"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/screener": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "sub"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/screener/result/{result_id}": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "sub"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/settings": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "FinancePortfolioPage"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/significant-movement-summary/{market_identifier}": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "sub"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/timeline/{market_identifier}/entries": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "FinancePortfolioPage"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/timeline/{market_identifier}/most-recent": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "sub"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/top-indices/quote/{market_identifier}": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "FinanceKeyTickersGroup"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/top-indices/{group_id}": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "FinanceKeyTickersGroup"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/top-movers/{market_type}": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "sub"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/top-z-scores/{market_type}": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "sub"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/watchlist": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "sub"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/watchlist/news": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "sub"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/watchlist/quotes": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "sub"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/finance/watchlist/summary": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "sub"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/health-assistant/lab-results/upload": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "HealthPageWrapper"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/health-assistant/lab-results/upload/status": {
+      "methods": [],
+      "chunks": [
+        "healthKeys"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/health-assistant/lab-results/upload/{upload_id}": {
+      "methods": [
+        "DELETE"
+      ],
+      "chunks": [
+        "HealthPageWrapper"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/health-assistant/lab-results/upload/{upload_id}/status": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "HealthPageWrapper"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/health-assistant/lab-results/uploads": {
+      "methods": [],
+      "chunks": [
+        "HealthPageWrapper",
+        "healthKeys"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/health-assistant/landing-page/activity-logs": {
+      "methods": [],
+      "chunks": [
+        "client"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/health-assistant/landing-page/biomarkers": {
+      "methods": [],
+      "chunks": [
+        "client",
+        "healthKeys"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/health-assistant/landing-page/dashboard": {
+      "methods": [],
+      "chunks": [
+        "client"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/health-assistant/landing-page/explore-next": {
+      "methods": [],
+      "chunks": [
+        "client"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/health-assistant/landing-page/explore-topic-suggestions": {
+      "methods": [],
+      "chunks": [
+        "client"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/health-assistant/landing-page/fitness": {
+      "methods": [],
+      "chunks": [
+        "client"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/health-assistant/landing-page/insights": {
+      "methods": [],
+      "chunks": [
+        "client"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/health-assistant/landing-page/onboarding-status": {
+      "methods": [
+        "GET",
+        "POST"
+      ],
+      "chunks": [
+        "client",
+        "healthMutations"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/health-assistant/provider-connections": {
+      "methods": [],
+      "chunks": [
+        "client"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/health-assistant/provider-connections/search": {
+      "methods": [],
+      "chunks": [
+        "client"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/health-assistant/provider-connections/{health_provider_type}/{connection_id}/connect": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "healthMutations"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/health-assistant/provider-connections/{health_provider_type}/{connection_id}/disconnect": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "healthMutations"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/health-feedback/": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "HealthPageWrapper"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/health-feedback/waitlist": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "HealthPageWrapper"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/homepage-widgets": {
+      "methods": [],
+      "chunks": [
+        "constants"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/homepage-widgets/cities-autosuggests": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "page"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/homepage-widgets/clock/current-location": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "page"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/homepage-widgets/upsell": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "layout",
+        "onboarding",
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/homepage-widgets/upsell/add-to-cohort": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/homepage-widgets/upsell/interacted": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/homepage-widgets/watchlist/categories": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "WatchlistModal"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/homepage-widgets/watchlist/list-autosuggest": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "getWatchlistAutosuggestions",
+        "page"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/homepage-widgets/watchlist/subscription": {
+      "methods": [
+        "DELETE",
+        "GET",
+        "PATCH",
+        "PUT"
+      ],
+      "chunks": [
+        "WatchlistModal",
+        "useRemoveWatchlistSubscription",
+        "useWatchlistQuery"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/homepage-widgets/weather": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "discover",
+        "page"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/homepage/weather": {
+      "methods": [],
+      "chunks": [
+        "constants"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/incentives/comet-activation": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/jobs/filters": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "JobsMode",
+        "utilityKeys"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/jobs/search": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "JobsMode"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/landing-page/academic/primer-queries": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "academic",
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/landing-page/academic/tile-data": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "academic",
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/media/create-image-for-entry": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "useUpdateArticleSectionImage"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/media/get-image-gen-subject": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "useUpdateArticleSectionImage"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/media/search-images-and-videos": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "useUpdateArticleSectionImage"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/media/search-images-for-entry": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "getImagesSearchResults"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/media/search-videos-for-entry": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "useMediaSearch"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/meeting_assistant/events/{event_id}/bot": {
+      "methods": [
+        "DELETE",
+        "POST"
+      ],
+      "chunks": [
+        "restricted"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/meeting_assistant/schedule": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "layout",
+        "restricted"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/memories/delete": {
+      "methods": [
+        "DELETE"
+      ],
+      "chunks": [
+        "useComputerMemoryInteractive",
+        "useDeleteMemory"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/memories/delete-all": {
+      "methods": [
+        "DELETE"
+      ],
+      "chunks": [
+        "DeleteAllMemoriesModal"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/memories/delete-health-attributes": {
+      "methods": [
+        "DELETE"
+      ],
+      "chunks": [
+        "useHealthAttributes"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/memories/get": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "MemoryDetailModal"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/memories/get-health-attributes": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "healthKeys",
+        "useHealthAttributes"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/memories/get-health-attributes-config": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "healthKeys",
+        "useHealthAttributes"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/memories/list": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "memoryKeys",
+        "useGetMemories"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/memories/space/config": {
+      "methods": [],
+      "chunks": [
+        "memoryKeys"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/memories/space/{space_uuid}/config": {
+      "methods": [
+        "GET",
+        "PUT"
+      ],
+      "chunks": [
+        "SpaceMemoryListModal"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/memories/write-health-attributes": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "useHealthAttributes"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/memory/digest-personalization": {
+      "methods": [],
+      "chunks": [
+        "useDigestTimelineNavigation"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/memory/digest-personalization/prompt": {
+      "methods": [],
+      "chunks": [
+        "computer"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/mock-thoughts/generate": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "WorkflowBridge"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/models/config": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/models/modes": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "ask"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/notifications/in-app": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/notifications/in-app/bulk-delete": {
+      "methods": [
+        "DELETE"
+      ],
+      "chunks": [
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/notifications/in-app/bulk-read": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/notifications/in-app/read": {
+      "methods": [
+        "DELETE"
+      ],
+      "chunks": [
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/notifications/in-app/unread-count": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/notifications/in-app/{notification_id}/read": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/notifications/paired-devices": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "device",
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/notifications/paired-devices/{device_id}": {
+      "methods": [
+        "DELETE"
+      ],
+      "chunks": [
+        "devices"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/notifications/preferences": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "NotificationSection",
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/notifications/sms/send-app-download-link": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "FloatingAppDownload"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/notifications/subscribe/{notification_type}": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/notifications/unsubscribe/{notification_type}": {
+      "methods": [
+        "DELETE"
+      ],
+      "chunks": [
+        "NotificationSection"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/notifications/web-push/public-key": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/notifications/web-push/subscribe": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/notifications/web-push/test": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/notifications/web-push/unsubscribe": {
+      "methods": [
+        "DELETE"
+      ],
+      "chunks": [
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/ntp/upsell/": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "spa",
+        "useNtpUpsellsQuery"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/ntp/upsell/interacted": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "useNtpUpsellsQuery"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/onboarding/checklist/progress": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/onboarding/computer": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "getComputerOnboarding",
+        "onboardingKeys"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/onboarding/computer-v2": {
+      "methods": [],
+      "chunks": [
+        "page"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/onboarding/computer-v2/answer": {
+      "methods": [],
+      "chunks": [
+        "page"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/onboarding/computer/answer": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "onboarding"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/onboarding/computer/company-suggestions": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "onboarding",
+        "onboardingKeys"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/onboarding/computer/job-title-suggestions": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "onboarding",
+        "onboardingKeys"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/onboarding/computer/tasks": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "onboarding",
+        "onboardingKeys"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/organizations/{organization_id}/credit-limits": {
+      "methods": [
+        "GET",
+        "POST"
+      ],
+      "chunks": [
+        "SetSharedLimitModal",
+        "credits",
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/organizations/{organization_id}/credit-limits/default": {
+      "methods": [
+        "GET",
+        "PUT"
+      ],
+      "chunks": [
+        "SetDefaultLimitModal",
+        "credits",
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/organizations/{organization_id}/credit-limits/personal/{org_user_uuid}": {
+      "methods": [
+        "DELETE",
+        "PUT"
+      ],
+      "chunks": [
+        "RemoveCustomLimitConfirmation",
+        "SetCustomLimitModal"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/organizations/{organization_id}/credit-limits/{credit_limit_id}": {
+      "methods": [
+        "DELETE",
+        "GET",
+        "PATCH"
+      ],
+      "chunks": [
+        "RemoveSharedLimitConfirmation",
+        "SetSharedLimitModal",
+        "credits",
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/organizations/{organization_id}/credit-limits/{credit_limit_id}/available-groups": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "AddSharedLimitGroupsModal",
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/organizations/{organization_id}/credit-limits/{credit_limit_id}/available-users": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "AddSharedLimitMembersModal",
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/organizations/{organization_id}/credit-limits/{credit_limit_id}/groups": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "credits",
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/organizations/{organization_id}/credit-limits/{credit_limit_id}/groups:batchAdd": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "AddSharedLimitGroupsModal"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/organizations/{organization_id}/credit-limits/{credit_limit_id}/groups:batchRemove": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "RemoveSharedLimitGroupConfirmModal"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/organizations/{organization_id}/credit-limits/{credit_limit_id}/users": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "credits",
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/organizations/{organization_id}/credit-limits/{credit_limit_id}/users:batchAdd": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "AddSharedLimitMembersModal"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/organizations/{organization_id}/credit-limits/{credit_limit_id}/users:batchRemove": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "RemoveSharedLimitMemberConfirmModal"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/organizations/{organization_id}/groups": {
+      "methods": [
+        "GET",
+        "POST"
+      ],
+      "chunks": [
+        "CreateGroupModal",
+        "refreshRbacCachesAfterMutation"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/organizations/{organization_id}/groups/{group_id}": {
+      "methods": [
+        "DELETE",
+        "GET"
+      ],
+      "chunks": [
+        "DeleteGroupConfirmModal",
+        "refreshRbacCachesAfterMutation"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/organizations/{organization_id}/groups/{group_id}/available-users": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "refreshRbacCachesAfterMutation"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/organizations/{organization_id}/groups/{group_id}/users": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "refreshRbacCachesAfterMutation"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/organizations/{organization_id}/groups/{group_id}/users:batchAdd": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "AddGroupMembersModal"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/organizations/{organization_id}/groups/{group_id}/users:batchRemove": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "GroupMemberDeleteConfirmModal"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/organizations/{organization_id}/permissions": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "rbac"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/organizations/{organization_id}/permissions/{user_id}/effective": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "bootstrap"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/organizations/{organization_id}/roles": {
+      "methods": [
+        "GET",
+        "POST"
+      ],
+      "chunks": [
+        "rbac",
+        "refreshRbacCachesAfterMutation"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/organizations/{organization_id}/roles/{role_id}": {
+      "methods": [
+        "DELETE",
+        "GET",
+        "PATCH"
+      ],
+      "chunks": [
+        "DeleteRoleConfirmModal",
+        "putRole",
+        "refreshRbacCachesAfterMutation"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/organizations/{organization_id}/roles/{role_id}/available-groups": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "refreshRbacCachesAfterMutation"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/organizations/{organization_id}/roles/{role_id}/available-users": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "refreshRbacCachesAfterMutation"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/organizations/{organization_id}/roles/{role_id}/groups": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "refreshRbacCachesAfterMutation"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/organizations/{organization_id}/roles/{role_id}/groups:batchAdd": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "AddRoleGroupsModal"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/organizations/{organization_id}/roles/{role_id}/groups:batchRemove": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "RemoveRoleGroupConfirmModal"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/organizations/{organization_id}/roles/{role_id}/users": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "refreshRbacCachesAfterMutation"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/organizations/{organization_id}/roles/{role_id}/users:batchAdd": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "AddRoleMembersModal"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/organizations/{organization_id}/roles/{role_id}/users:batchRemove": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "RoleMemberDeleteConfirmModal"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/page/get_related_pages": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "slug"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/page/section/media/add/{section_uuid}": {
+      "methods": [
+        "PUT"
+      ],
+      "chunks": [
+        "useUpdateArticleSectionImage"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/perplexify-me/guestbook": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "perplexify_me"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/perplexity_ask/graphql": {
+      "methods": [],
+      "chunks": [
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/perplexity_ask/graphql/ws": {
+      "methods": [],
+      "chunks": [
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/ping": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/pipedream/accounts": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/pplx-api/v2/enterprise-api-org": {
+      "methods": [
+        "DELETE",
+        "GET",
+        "POST"
+      ],
+      "chunks": [
+        "spa",
+        "usage"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/pplx-api/v2/enterprise-api-org/api-key": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "usage"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/pplx-api/v2/enterprise-api-org/api-keys": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "usage"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/prompt": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "restricted"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/rate-limit/all": {
+      "methods": [],
+      "chunks": [
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/rate-limit/status": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/rbac/groups": {
+      "methods": [],
+      "chunks": [
+        "refreshRbacCachesAfterMutation"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/rbac/roles": {
+      "methods": [],
+      "chunks": [
+        "refreshRbacCachesAfterMutation"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/realtime/create-entry": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "ask"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/realtime/query-video": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "ask"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/realtime/search-web": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "ask"
+      ],
+      "dynamic": false,
+      "known": "web search (EXPOSED via `pplx search`)"
+    },
+    "/rest/realtime/search-youtube": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "ask"
+      ],
+      "dynamic": false,
+      "known": "single-best-match video nav (RE'd, deferred)"
+    },
+    "/rest/realtime/v1/transcription/soniox-api-key": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "ask"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/realtime/v2/check-control-browser-eligibility": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "ask"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/realtime/v2/computer/session": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "ask"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/realtime/v2/language-learning/session": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "ask"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/realtime/v2/session": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "ask"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/shopping/generate-shopping-try-on": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "useShoppingTryOn"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/shopping/retrieve-customer-shopping-info": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/shopping/search-shopping-for-entry": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "ShoppingMode"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/shopping/try-on-photo/delete": {
+      "methods": [
+        "DELETE"
+      ],
+      "chunks": [
+        "useShoppingTryOn"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/shopping/try-on-photo/generate-avatar": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "useShoppingTryOn"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/shopping/try-on-photo/get": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "layout",
+        "useGetUserTryOnPhoto"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/shopping/try-on-photo/save": {
+      "methods": [
+        "PUT"
+      ],
+      "chunks": [
+        "useShoppingTryOn"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/sidebar/upsell/": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "layout",
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/skills": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "spa",
+        "useReplaceSkillFile",
+        "useSkills"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/skills/${e}": {
+      "methods": [],
+      "chunks": [
+        "useReplaceSkillFile"
+      ],
+      "dynamic": true,
+      "known": null
+    },
+    "/rest/skills/grants": {
+      "methods": [],
+      "chunks": [
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/skills/selectable": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "ask",
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/skills/settings/{skill_id}": {
+      "methods": [
+        "PATCH"
+      ],
+      "chunks": [
+        "SkillsList"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/skills/{skill_id}": {
+      "methods": [
+        "DELETE",
+        "GET"
+      ],
+      "chunks": [
+        "SkillDeleteModal",
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/skills/{skill_id}/grants": {
+      "methods": [
+        "DELETE",
+        "GET",
+        "POST"
+      ],
+      "chunks": [
+        "SkillDetailModal"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/skills/{skill_id}/ownership": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "SkillTransferToOrgModal"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/sources": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/sources/catalog": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "useFilteredConnectorsV2"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/sources/custom": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "remoteMcpMutations"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/sources/custom/{source_id}": {
+      "methods": [
+        "DELETE",
+        "PATCH"
+      ],
+      "chunks": [
+        "remoteMcpMutations"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/sources/discover": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "ComputerConnectorsPage"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/sources/search": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "SourcesMode",
+        "utilityKeys"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/sources/search/news": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "NewsMode"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/sources/templates/{template_id}/instantiate": {
+      "methods": [],
+      "chunks": [
+        "useInstantiateTemplate"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/sources/{source_id}": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "ask"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/sources/{source_id}/setup-config": {
+      "methods": [],
+      "chunks": [
+        "ConnectorManageSetupSection"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/sources/{source_id}/setup-config/{owner_scope}/{setup_config_id}": {
+      "methods": [],
+      "chunks": [
+        "ConnectorManageSetupSection"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/spaces": {
+      "methods": [],
+      "chunks": [
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/spaces/landing": {
+      "methods": [],
+      "chunks": [
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/spaces/landing/v2": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "layout",
+        "spaces"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/spaces/mentions": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "ask",
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/spaces/org/pins": {
+      "methods": [
+        "GET",
+        "POST"
+      ],
+      "chunks": [
+        "SpaceSharingPanel",
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/spaces/org/pins/{pin_uuid}": {
+      "methods": [
+        "DELETE"
+      ],
+      "chunks": [
+        "SpaceSharingPanel"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/spaces/user-pins": {
+      "methods": [
+        "GET",
+        "POST"
+      ],
+      "chunks": [
+        "layout",
+        "spaces"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/spaces/user-pins/{space_uuid}": {
+      "methods": [
+        "DELETE"
+      ],
+      "chunks": [
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/spaces/writable": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "useAutomationConfiguration"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/spaces/{space_uuid}/ms-teams-bindings": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "useSpaceTeamsBindingsQuery"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/spaces/{space_uuid}/ms-teams-bindings/unbind": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "useSpaceTeamsBindingsQuery"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/spaces/{space_uuid}/pins/batch_pin": {
+      "methods": [],
+      "chunks": [
+        "thread"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/spaces/{space_uuid}/pins/batch_unpin": {
+      "methods": [],
+      "chunks": [
+        "thread"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/spaces/{space_uuid}/pins/threads": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/spaces/{space_uuid}/recurring_tasks": {
+      "methods": [],
+      "chunks": [
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/spaces/{space_uuid}/scheduled_threads": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "layout",
+        "spaces"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/spaces/{space_uuid}/slack-bindings": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "useSpaceSlackBindingsQuery"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/spaces/{space_uuid}/slack-bindings/bind": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "useSpaceSlackBindingsQuery"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/spaces/{space_uuid}/slack-bindings/channels": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "useSpaceSlackBindingsQuery"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/spaces/{space_uuid}/slack-bindings/confirm": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "useSpaceSlackBindingsQuery"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/spaces/{space_uuid}/slack-bindings/unbind": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "useSpaceSlackBindingsQuery"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/spaces/{space_uuid}/tasks": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "spa",
+        "spaces"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/sports/${t}/events/{event_id}": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "spa"
+      ],
+      "dynamic": true,
+      "known": null
+    },
+    "/rest/sports/f1/": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "f1"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/sports/f1/live_racer": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/sports/{league}": {
+      "methods": [],
+      "chunks": [
+        "f1"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/sports/{league}/events/{event_id}/hype": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/sports/{league}/hype": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "f1"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/sse/attachment_processing/subscribe": {
+      "methods": [],
+      "chunks": [
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/sse/blocking_event_response": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/sse/check-sources": {
+      "methods": [],
+      "chunks": [
+        "ThreadContentResponse"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/sse/computer/memory/digest-settings": {
+      "methods": [],
+      "chunks": [
+        "computer"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/sse/computer/memory/digest-settings/run-now": {
+      "methods": [],
+      "chunks": [
+        "computer"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/sse/computer/memory/dream-instructions": {
+      "methods": [
+        "GET",
+        "POST"
+      ],
+      "chunks": [
+        "useComputerMemoryInteractive"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/sse/computer/memory/dream-settings": {
+      "methods": [],
+      "chunks": [
+        "useComputerMemoryInteractive"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/sse/computer/memory/dream-settings/enabled-flags": {
+      "methods": [],
+      "chunks": [
+        "useComputerMemoryInteractive"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/sse/computer/memory/wiki-pages/delete": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "useComputerMemoryInteractive"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/sse/discover_screener": {
+      "methods": [],
+      "chunks": [
+        "DiscoverItem",
+        "useDiscoverScreenerItems"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/sse/entry_creation_events": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "ComputerProviders"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/sse/handle_perplexity_research_clarifying_answers": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "Workflow"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/sse/health_summary": {
+      "methods": [],
+      "chunks": [
+        "HealthPageWrapper"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/sse/index_files": {
+      "methods": [],
+      "chunks": [
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/sse/inline_nav_summary": {
+      "methods": [],
+      "chunks": [
+        "InlineNavSideSheet"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/sse/perplexity_ask": {
+      "methods": [],
+      "chunks": [
+        "pplx"
+      ],
+      "dynamic": false,
+      "known": "ask/chat SSE (EXPOSED via `pplx fetch --prompt`)"
+    },
+    "/rest/sse/perplexity_ask/reconnect/{resume_entry_uuid}": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "pplx"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/sse/perplexity_clarifying_answer": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "InContextFollowupStateProvider",
+        "ThreadInput"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/sse/perplexity_connector_auth_response": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/sse/perplexity_terminate": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/sse/places_review_summary_bulk": {
+      "methods": [],
+      "chunks": [
+        "PlaceInlineCard"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/sse/pro_search_step_result": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "Workflow"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/sse/recent_thread_updates": {
+      "methods": [],
+      "chunks": [
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/sse/related-queries/{entry_uuid}": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/sse/shopping_review_summary": {
+      "methods": [],
+      "chunks": [
+        "ShoppingMode",
+        "useGenerateShoppingReviewSummary"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/sse/subscribe/entry/{entity_id}": {
+      "methods": [],
+      "chunks": [
+        "pplx"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/stripe/cancel-downgrade-subscription": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "useCancelDowngrade"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/stripe/cancel-subscription": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "SubscriptionDetailsModal"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/stripe/cancellation-config": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "SubscriptionDetailsModal",
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/stripe/checkout-session": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/stripe/claim-retention-offer": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "SubscriptionDetailsModal"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/stripe/create-setup-intent-and-customer-session": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "react"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/stripe/customer-invoices": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "SubscriptionDetailsModal",
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/stripe/downgrade-subscription": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "useGetDowngradeSubscriptionPreview"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/stripe/downgrade-subscription-preview": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "useGetDowngradeSubscriptionPreview"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/stripe/get-customer-billing-info": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "HotelRoomBookingPage",
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/stripe/prices": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "useGetPrices"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/stripe/resubscribe": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "useGetSubscriptionBillingInfo"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/stripe/subscription-billing-info": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "spa",
+        "useGetSubscriptionBillingInfo"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/stripe/subscription-changes": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "spa",
+        "useGetSubscriptionChanges"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/stripe/switch-billing-interval": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "SwitchIntervalModal"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/stripe/switch-billing-interval-preview": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "SwitchIntervalModal",
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/stripe/testing/create-subscription": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "restricted"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/stripe/update-checkout-interval": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "PaymentModal"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/stripe/update-customer-shipping-address": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "ShoppingPaymentInner"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/stripe/upgrade-subscription": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "UpgradeModal"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/stripe/upgrade-subscription-preview": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "UpgradeModal",
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/tasks/": {
+      "methods": [
+        "GET",
+        "POST"
+      ],
+      "chunks": [
+        "notifications",
+        "spa",
+        "useScheduledTaskMutations"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/tasks/finance": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "usePriceAlertMutations"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/tasks/finance/tickers/{ticker}": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "FinanceStockHistoryCurrentPrice"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/tasks/finance/{task_id}": {
+      "methods": [
+        "PATCH"
+      ],
+      "chunks": [
+        "usePriceAlertMutations"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/tasks/shortcuts/mentions": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "ask",
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/tasks/shortcuts/paste/{copy_token}": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/tasks/suggest": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "notifications"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/tasks/{task_id}": {
+      "methods": [
+        "DELETE",
+        "GET",
+        "PATCH"
+      ],
+      "chunks": [
+        "deleteUserTask",
+        "layout",
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/thread": {
+      "methods": [
+        "DELETE"
+      ],
+      "chunks": [
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/thread/batch_archive_threads": {
+      "methods": [],
+      "chunks": [
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/thread/batch_pin_threads": {
+      "methods": [],
+      "chunks": [
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/thread/batch_unarchive_threads": {
+      "methods": [],
+      "chunks": [
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/thread/batch_unpin_threads": {
+      "methods": [],
+      "chunks": [
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/thread/delete_thread_by_entry_uuid": {
+      "methods": [
+        "DELETE"
+      ],
+      "chunks": [
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/thread/entry/remove_widget": {
+      "methods": [
+        "PUT"
+      ],
+      "chunks": [
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/thread/export": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/thread/generate_space_metadata": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "SpaceFormFields"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/thread/invite_to_thread": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "ThreadShareButton"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/thread/list_ask_threads": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "spa",
+        "useThreadsQuery"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/thread/list_computer_tasks": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "computer"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/thread/list_gallery_threads": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "useGalleryItems"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/thread/list_pinned_ask_threads": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "layout",
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/thread/list_recent": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "layout",
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/thread/list_scheduled_computer_tasks": {
+      "methods": [],
+      "chunks": [
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/thread/mark_unread": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/thread/mark_viewed": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/thread/recurring_tasks": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "ComputerRecurringTasksMenu",
+        "components",
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/thread/remove_thread_member": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "ThreadShareButton"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/thread/reply/simulated": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/thread/request-access-info/{entry_uuid_or_slug}": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "RequestAccessModal",
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/thread/request-access/{entry_uuid_or_slug}": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "RequestAccessModal"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/thread/set_thread_title": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/thread/unpin_thread/{context_uuid}": {
+      "methods": [
+        "DELETE"
+      ],
+      "chunks": [
+        "layout"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/thread/update_thread_access": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "useSetThreadAccess"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/thread/update_thread_sensitive_claims_visibility": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "components"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/thread/{backend_uuid}/members": {
+      "methods": [],
+      "chunks": [
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/thread/{context_uuid}/cancel_cron/{cron_id}": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "scheduledThreadUtils"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/thread/{context_uuid}/cancel_crons": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "scheduledThreadUtils"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/thread/{context_uuid}/crons/state": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "thread"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/thread/{entry_uuid_or_slug}": {
+      "methods": [
+        "GET",
+        "PUT"
+      ],
+      "chunks": [
+        "removeThreadExpiry",
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/thread/{entry_uuid_or_slug}/share_slug": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "ThreadShareButton"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/thread/{thread_uuid}/members": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "useSharePopoverDeeplinkOpen"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/translation/detect-languages/{entry_uuid}": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "constants"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/translation/phrase_info": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "constants"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/translation/translate": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "Reviews"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/travel/hotels/rate-verification": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "HotelRoomBookingPage"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/travel/hotels/reservations": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "HotelRoomBookingPage"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/travel/hotels/search-availability": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "HotelBookingStateProvider"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/travel/hotels/user/discount-offer": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "HotelRoomBookingPage"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/travel/hotels/{slug}": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/travel/restaurants/info": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "RestaurantBookingModal"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/travel/restaurants/reservations": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "RestaurantBookingModal"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/travel/restaurants/search": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "RestaurantBookingModal"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/travel/restaurants/slots/delete": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "RestaurantBookingModal"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/travel/restaurants/slots/lock": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "RestaurantBookingModal"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/triggers/event-schemas": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "GenericWorkflowModal"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/triggers/event-subscriptions": {
+      "methods": [
+        "GET",
+        "POST"
+      ],
+      "chunks": [
+        "GenericWorkflowModal"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/triggers/event-subscriptions/${e}": {
+      "methods": [
+        "DELETE"
+      ],
+      "chunks": [
+        "GenericWorkflowModal"
+      ],
+      "dynamic": true,
+      "known": null
+    },
+    "/rest/triggers/event-subscriptions/{trigger_id}": {
+      "methods": [],
+      "chunks": [
+        "GenericWorkflowModal"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/uploads/batch_create_upload_urls": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/uploads/create_upload_url": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "spa"
+      ],
+      "dynamic": false,
+      "known": "file uploads (RE'd, deferred Phase 2)"
+    },
+    "/rest/user/carrier-billing-subscription": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "details"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/user/delete-account": {
+      "methods": [
+        "DELETE"
+      ],
+      "chunks": [
+        "miscMutations"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/user/get_all_active_perks": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "settingsAccess"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/user/get_user_ai_profile": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "spa",
+        "useUserProfileQuery"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/user/get_user_pro_perk": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "pro",
+        "settingsAccess"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/user/info": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "experimentation"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/user/pplx-subscription": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "IncentiveProModal"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/user/previous-subscription": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "useUserPreviousSubscriptionQuery"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/user/promotions": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "layout",
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/user/save-settings": {
+      "methods": [
+        "PUT"
+      ],
+      "chunks": [
+        "saveUserSettings"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/user/save_user_ai_profile": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "memory",
+        "saveUserAIProfile"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/user/settings": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/user/sign-out-all": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "details"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/user/site-instructions": {
+      "methods": [
+        "GET",
+        "PUT"
+      ],
+      "chunks": [
+        "site",
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/user/site-instructions/{site}/reset": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "site"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/user/subscription/refresh": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "bootstrap",
+        "hotels"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/user/update-full-name": {
+      "methods": [
+        "PUT"
+      ],
+      "chunks": [
+        "FullNameModal"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/visitor/ask-complete": {
+      "methods": [
+        "POST"
+      ],
+      "chunks": [
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/visitor/consent-requirement": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/visitor/information": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "spa"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/webhooks/asi/files/{entry_uuid}": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "useAssetCapabilities"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/workflows": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "computer"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/workflows/pins": {
+      "methods": [
+        "GET"
+      ],
+      "chunks": [
+        "usePinnedWorkflows"
+      ],
+      "dynamic": false,
+      "known": null
+    },
+    "/rest/workflows/pins/{workflow_id}": {
+      "methods": [
+        "DELETE",
+        "POST"
+      ],
+      "chunks": [
+        "usePinnedWorkflows"
+      ],
+      "dynamic": false,
+      "known": null
+    }
+  }
+}

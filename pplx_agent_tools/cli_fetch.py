@@ -12,7 +12,7 @@ import os
 import sys
 from collections.abc import Sequence
 
-from .cli_runner import run_verb
+from .cli_runner import resolve_model, resolve_timeout, run_verb
 from .errors import EXIT_OK, EXIT_PARTIAL
 from .render import render_fetch_json, render_fetch_text
 from .verbs.fetch import FetchResult, fetch
@@ -43,6 +43,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--profile",
         help="cookie profile (default: $PPLX_PROFILE or 'default')",
+    )
+    parser.add_argument(
+        "--model",
+        default=None,
+        help=(
+            "for --prompt mode: model_preference (default: turbo = 'Best', or "
+            "$PPLX_FETCH_MODEL / $PPLX_MODEL). See `pplx models`."
+        ),
     )
     parser.add_argument(
         "--keep-thread",
@@ -76,24 +84,6 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _resolve_timeout(arg: float | None) -> float | None:
-    """CLI flag → env var → default. 0 means 'disable the deadline'."""
-    if arg is not None:
-        return None if arg <= 0 else arg
-    env = os.environ.get("PPLX_FETCH_TIMEOUT")
-    if env is not None:
-        try:
-            v = float(env)
-        except ValueError:
-            print(
-                f"pplx fetch: ignoring non-numeric $PPLX_FETCH_TIMEOUT={env!r}",
-                file=sys.stderr,
-            )
-            return _DEFAULT_PROMPT_TIMEOUT_SECONDS
-        return None if v <= 0 else v
-    return _DEFAULT_PROMPT_TIMEOUT_SECONDS
-
-
 def _finalize(result: FetchResult, max_chars: int | None) -> int:
     """Verb-specific stderr warnings + EXIT_PARTIAL for incomplete streams.
 
@@ -119,7 +109,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     keep_thread = args.keep_thread or os.environ.get("PPLX_KEEP_THREADS") == "1"
     progress = args.progress or os.environ.get("PPLX_PROGRESS") == "1"
-    timeout = _resolve_timeout(args.timeout) if args.prompt else None
+    timeout = (
+        resolve_timeout(
+            args.timeout, "PPLX_FETCH_TIMEOUT", _DEFAULT_PROMPT_TIMEOUT_SECONDS, "fetch"
+        )
+        if args.prompt
+        else None
+    )
+    model = resolve_model(args.model, ("PPLX_FETCH_MODEL", "PPLX_MODEL"), "turbo")
 
     return run_verb(
         "fetch",
@@ -133,6 +130,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             keep_thread=keep_thread,
             timeout=timeout,
             progress=progress,
+            model=model,
         ),
         render_text=render_fetch_text,
         render_json=render_fetch_json,

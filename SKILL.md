@@ -1,19 +1,24 @@
 ---
 name: pplx-agent-tools
-description: Query Perplexity via your Pro subscription's web session. Use `pplx search` for ranked web hits with longer-form summaries, `pplx fetch URL --prompt "..."` for one-call URL-to-LLM-extracted-answer, or `pplx snippets QUERY URL...` for hybrid (keyword + semantic) excerpt extraction from N supplied URLs. Pair search → snippets for "find candidates, then dig into specific ones."
+description: Query Perplexity via your Pro subscription's web session. Use `pplx search` for ranked web hits (sources), `pplx ask "..." [--model X]` for one synthesized cited answer (Pro Search), `pplx research "..."` for deep multi-step cited research, `pplx fetch URL --prompt "..."` for one-call URL-to-LLM-extracted-answer, or `pplx snippets QUERY URL...` for hybrid (keyword + semantic) excerpt extraction from N supplied URLs. `pplx quota` shows rate-limit availability; `pplx models` lists models/modes. Pair search → snippets for "find candidates, then dig into specific ones."
 ---
 
 # When to reach for each verb
 
-- **`pplx search <query>...`** — ranked web hits. Each hit carries `title`, `url`, `domain`, `snippet` (~200 chars), and `summary` (~1500 chars, agent-friendly extract). Multi-query is native — pass several queries, server merges/dedupes.
-- **`pplx fetch <url>`** — local fetch + cleaned content extraction. With `--prompt`, routes to Perplexity's LLM which fetches the URL itself and answers your prompt in one round-trip.
+- **`pplx search <query>...`** — ranked web hits (sources, no answer). Each hit carries `title`, `url`, `domain`, `snippet` (~200 chars), and `summary` (~1500 chars, agent-friendly extract). Multi-query is native — pass several queries, server merges/dedupes. Stateless (creates no thread).
+- **`pplx ask <query>`** — the front door: ask a question, get one **synthesized, cited answer** + its sources (Pro Search). `search` returns sources; `ask` returns the answer (with `-j` also a `sources` list). `--model <id>` picks the model (default `turbo` = "Best"; pass a thinking variant like `claude48opusthinking` for max reasoning — see `pplx models`). ~5–15 s. Session-creating but incognito + auto-cleanup.
+- **`pplx research <query>`** — deep, multi-step, cited research (Perplexity's "Research" mode). Returns a long markdown report + a sources list. Takes ~10–60 s; far more thorough than `search`. This is the differentiated capability — reach for it when one search won't cut it. Session-creating but runs **incognito** (no history pollution) + auto-cleans the thread.
+- **`pplx fetch <url>`** — local fetch + cleaned content extraction. With `--prompt`, routes to Perplexity's LLM which fetches the URL itself and answers your prompt in one round-trip (model-selectable via `--model`, default `turbo`; runs incognito + auto-cleanup like `ask`).
 - **`pplx snippets <query> <url>...`** — concurrent-fetch N URLs locally, return query-relevant paragraphs from each using hybrid retrieval (BM25 keyword + semantic vectors). Useful after `pplx search` narrows candidates.
+- **`pplx quota`** — subscription rate-limit / availability per mode (`research`, `pro_search`, …) + per-source. Stateless GET; check before firing an expensive `research` call in a loop.
+- **`pplx models`** — model catalog + mode catalog + default model per mode. Stateless GET; feeds `pplx research --mode`.
 - **`pplx auth check`** — validate cookies. Run if other verbs fail with exit code 2.
 
 # vs `kagi-search`
 
 - Prefer **`kagi-search`** for: small queries where the Quick Answer summary is enough; queries you'd rather route through Kagi than Perplexity.
 - Prefer **`pplx search`** for: deeper extraction (the `summary` field is much longer than Kagi's), multi-query in one round-trip, when you want Perplexity's source-ranking specifically.
+- Prefer **`pplx research`** over `search`/`kagi-search` when the question needs synthesis across many sources, not a hit list — it runs multiple searches and writes a cited report. Slower + spends a research-quota unit, so use `search` for quick lookups and `research` for "go deep."
 - Prefer **`pplx fetch --prompt`** over a "search + fetch + summarize" chain: Perplexity's LLM does fetch+extract in one call.
 - Prefer **`pplx snippets`** over "fetch + grep" or "fetch + LLM-summarize each URL" pipelines — local hybrid retrieval is faster, free, and ranks by query relevance.
 
@@ -25,6 +30,18 @@ pplx search "claude code agentic" "claude code installation" -n 5
 
 # JSON output for parsing
 pplx search "openssh persourcepenalties" -j | jq '.hits[0].summary'
+
+# Ask a question → one synthesized cited answer (pick a model)
+pplx ask "what changed in HTTP/3 vs HTTP/2 for CDNs?"
+pplx ask "explain QUIC's 0-RTT security tradeoffs" --model claude48opusthinking
+
+# Deep multi-step cited research (slower; returns a report + sources)
+pplx research "Compare HTTP/3 adoption across major CDNs in 2026" --timeout 240
+pplx research "..." -j | jq '.answer, .sources'
+
+# Check availability before an expensive research loop; list models/modes
+pplx quota
+pplx models -j | jq '.default_models'
 
 # Plain URL fetch → cleaned markdown
 pplx fetch "https://docs.anthropic.com/claude-code"
@@ -72,7 +89,9 @@ Stdout is results only; stderr carries diagnostics. `2>/dev/null` gives clean pa
 # Caveats
 
 - Unofficial. Endpoints can change without notice — bug reports welcome at github.com/ak2k/pplx-agent-tools.
-- `pplx search` is web-results only. Other search modes (academic / images / videos / shopping) and filter knobs (country, domain include/exclude) would route through the ask-SSE endpoint if added — not the realtime/search-web layer this verb uses.
+- `pplx search` is web-results only. Image/video/news "variant searches" are NOT standalone — they're entry-scoped (require an existing answer thread), so they aren't exposed. For deeper/synthesized results use `pplx research` (which selects `mode=research` on the ask endpoint).
+- `pplx research` and `pplx ask` are the session-creating verbs (both run incognito + auto-cleanup). `pplx research` sends `is_incognito: true` so the thread never enters your Perplexity history, and best-effort-deletes it afterward (`--keep-thread` to retain). Default deadline 300 s (`--timeout N`, `$PPLX_RESEARCH_TIMEOUT`, or 0 to disable); on deadline trip you get the partial report + `stream: incomplete` marker + exit 6. Real Deep Research takes ~90–120 s (multi-round, ~40+ sources). `--model <id>` overrides the model (research accepts `pplx_alpha`/`o4mini`). `--mode council` (Model Council: 3 frontier models cross-checked, ~80 s) — pick the trio with `--council-models a,b,c`; a sensible default trio is auto-sent (council stalls without one).
+- `pplx quota` / `pplx models` are stateless read-only GETs (no thread, no LLM cost).
 - `pplx fetch` plain mode is a local fetch (no Perplexity-backend paywall bypass / cache reuse). Use `--prompt` for LLM-routed extraction when those features matter.
 - Prompt-injection awareness: `pplx fetch --prompt` sends fetched page content to Perplexity's LLM. Adversarial pages can manipulate the extraction.
 - `pplx fetch --prompt` defaults to a 180 s overall deadline (override with `--timeout N`, `$PPLX_FETCH_TIMEOUT`, or 0 to disable). On deadline trip you get any partial content + a `stream: incomplete` header marker + a stderr warning — check `stream_complete` in JSON output or grep stderr if your script can't tolerate a partial answer. 429s auto-retry up to 3 attempts honoring `retry-after`, bounded by the same deadline.

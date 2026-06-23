@@ -35,6 +35,9 @@ DEFAULT_IMPERSONATE = "chrome"
 # would otherwise hold our connection forever — DEFAULT_TIMEOUT only
 # bounds the initial connect on streaming requests.
 DEFAULT_SSE_READ_TIMEOUT = 60.0
+# Hard cap on un-dispatched SSE buffer (a single event with no `\n\n` terminator).
+# Defends against a server that trickles bytes forever without a terminator.
+_MAX_SSE_BUFFER_BYTES = 16 * 1024 * 1024
 
 
 class Client:
@@ -130,6 +133,18 @@ class Client:
         internal state.
         """
         return dict(self._cookies)
+
+    def get_json(self, path: str) -> Any:
+        """GET a path, return the parsed JSON response.
+
+        Same error mapping as `_get` / `post_json`: auth/rate-limit/network/CF.
+        Used by the read-only stateless verbs (quota, models).
+        """
+        resp = self._get(path)
+        try:
+            return resp.json()
+        except Exception as e:
+            raise SchemaError(f"non-JSON response from {path}") from e
 
     def post_json(self, path: str, body: dict[str, Any]) -> Any:
         """POST a JSON body, return the parsed JSON response.
@@ -240,6 +255,15 @@ class Client:
                 buffer += chunk.decode("utf-8", errors="replace")
                 # Normalize CRLF that SSE protocol uses.
                 buffer = buffer.replace("\r\n", "\n")
+                # Bound memory against a server that trickles bytes without ever
+                # emitting an event terminator (`\n\n`): the per-chunk idle timeout
+                # wouldn't fire on a continuous trickle, so cap the un-dispatched
+                # buffer. A single SSE event over 16 MiB is pathological.
+                if "\n\n" not in buffer and len(buffer) > _MAX_SSE_BUFFER_BYTES:
+                    raise SchemaError(
+                        f"SSE stream on {path} exceeded {_MAX_SSE_BUFFER_BYTES} bytes "
+                        "without an event terminator"
+                    )
                 while "\n\n" in buffer:
                     raw_event, buffer = buffer.split("\n\n", 1)
                     parsed = _parse_sse_event(raw_event)

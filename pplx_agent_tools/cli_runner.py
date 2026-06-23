@@ -24,15 +24,46 @@ boilerplate at every call site.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from argparse import Namespace
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any, Literal, TypeVar, overload
 
 from .errors import EXIT_OK, PplxError, exit_code
 from .wire import Client
 
 R = TypeVar("R")
+
+
+def resolve_model(arg: str | None, env_vars: Sequence[str], default: str) -> str:
+    """Resolve a model preference: explicit --model flag → env vars (in order) →
+    default. Lets a user set e.g. $PPLX_ASK_MODEL=claude48opusthinking once
+    instead of passing --model every call, while the flag still wins per-call."""
+    if arg:
+        return arg
+    for ev in env_vars:
+        v = os.environ.get(ev)
+        if v:
+            return v
+    return default
+
+
+def resolve_timeout(arg: float | None, env_var: str, default: float, verb: str) -> float | None:
+    """Resolve a wall-clock deadline: --timeout flag → env var → default. A value
+    of 0 (or negative) means 'disable the deadline' and returns None. A non-numeric
+    env var is warned about and ignored. Shared by the ask-family CLIs."""
+    if arg is not None:
+        return None if arg <= 0 else arg
+    env = os.environ.get(env_var)
+    if env is not None:
+        try:
+            v = float(env)
+        except ValueError:
+            print(f"pplx {verb}: ignoring non-numeric ${env_var}={env!r}", file=sys.stderr)
+            return default
+        return None if v <= 0 else v
+    return default
 
 
 @overload

@@ -21,7 +21,11 @@ from __future__ import annotations
 from typing import Any
 
 from . import __version__
+from .verbs.ask import AskResult
 from .verbs.fetch import FetchResult
+from .verbs.models import ModelsResult
+from .verbs.quota import QuotaItem, QuotaResult
+from .verbs.research import ResearchResult
 from .verbs.search import Hit, SearchResult
 from .verbs.snippets import SnippetsResult
 
@@ -168,6 +172,196 @@ def render_fetch_json(result: FetchResult) -> dict[str, Any]:
     if result.published_date is not None:
         payload["published_date"] = result.published_date
     return envelope("fetch", payload)
+
+
+def _quota_avail(it: QuotaItem) -> str:
+    base = "available" if it.available else "EXHAUSTED"
+    if it.remaining is not None:
+        base += f" ({it.remaining} remaining)"
+    return base
+
+
+def render_quota_text(result: QuotaResult) -> str:
+    """Modes (the interesting axis for an agent) first, then free queries, then a
+    sources summary with only the notable (unavailable or metered) sources spelled
+    out — the full source list is noisy and mostly 'available'."""
+    lines: list[str] = []
+    if result.modes:
+        lines.append("modes:")
+        lines.extend(f"  {it.name:18s} {_quota_avail(it)}" for it in result.modes)
+    if result.free_queries is not None:
+        lines.append(f"free queries: {_quota_avail(result.free_queries)}")
+    if result.sources:
+        avail = sum(1 for s in result.sources if s.available)
+        lines.append(f"sources: {avail}/{len(result.sources)} available")
+        notable = [s for s in result.sources if (not s.available) or s.remaining is not None]
+        lines.extend(f"  {s.name:18s} {_quota_avail(s)}" for s in notable)
+    return "\n".join(lines) if lines else "(no quota data)"
+
+
+def _quota_item_json(it: QuotaItem) -> dict[str, Any]:
+    out: dict[str, Any] = {"name": it.name, "available": it.available}
+    if it.remaining is not None:
+        out["remaining"] = it.remaining
+    return out
+
+
+def render_quota_json(result: QuotaResult) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "modes": [_quota_item_json(i) for i in result.modes],
+        "sources": [_quota_item_json(i) for i in result.sources],
+    }
+    if result.free_queries is not None:
+        payload["free_queries"] = _quota_item_json(result.free_queries)
+    return envelope("quota", payload, warnings=result.warnings)
+
+
+def render_models_text(result: ModelsResult) -> str:
+    """Modes, then models, then the default model per mode."""
+    lines: list[str] = []
+    if result.modes:
+        lines.append("modes:")
+        for m in result.modes:
+            desc = f" — {m.description}" if m.description else ""
+            lines.append(f"  {m.id:18s} {m.label or ''}{desc}")
+    if result.models:
+        if lines:
+            lines.append("")
+        lines.append(f"models ({len(result.models)}):")
+        for mi in result.models:
+            tag = f" [{mi.mode}]" if mi.mode else ""
+            lines.append(f"  {mi.key:24s} {mi.label or ''}{tag}")
+    if result.cards:
+        if lines:
+            lines.append("")
+        lines.append("model picker (use the thinking id to enable reasoning):")
+        for c in result.cards:
+            ids = c.base or "—"
+            if c.thinking:
+                ids += f"  +thinking: {c.thinking}"
+            tier = f" [{c.tier}]" if c.tier else ""
+            lines.append(f"  {c.label:22s} {ids}{tier}")
+    if result.default_models:
+        if lines:
+            lines.append("")
+        lines.append("default model per mode:")
+        lines.extend(f"  {mode:18s} -> {key}" for mode, key in result.default_models.items())
+    return "\n".join(lines) if lines else "(no model data)"
+
+
+def render_models_json(result: ModelsResult) -> dict[str, Any]:
+    return envelope(
+        "models",
+        {
+            "models": [
+                {
+                    "key": m.key,
+                    **({"label": m.label} if m.label else {}),
+                    **({"description": m.description} if m.description else {}),
+                    **({"mode": m.mode} if m.mode else {}),
+                    **({"provider": m.provider} if m.provider else {}),
+                }
+                for m in result.models
+            ],
+            "modes": [
+                {
+                    "id": m.id,
+                    **({"label": m.label} if m.label else {}),
+                    **({"description": m.description} if m.description else {}),
+                }
+                for m in result.modes
+            ],
+            "picker": [
+                {
+                    "label": c.label,
+                    **({"base": c.base} if c.base else {}),
+                    **({"thinking": c.thinking} if c.thinking else {}),
+                    **({"tier": c.tier} if c.tier else {}),
+                }
+                for c in result.cards
+            ],
+            "default_models": dict(result.default_models),
+        },
+        warnings=result.warnings,
+    )
+
+
+def render_ask_text(result: AskResult) -> str:
+    """The synthesized answer (with inline [n] citations) then the numbered
+    sources. The incomplete marker is appended (and `cli_ask` also warns on
+    stderr + exits 6)."""
+    parts: list[str] = [result.answer if result.answer else "(no answer)"]
+    if result.sources:
+        parts.append("")
+        parts.append(f"— sources ({len(result.sources)}) —")
+        for i, s in enumerate(result.sources, start=1):
+            parts.append(f"[{i}] {s.title or s.url}")
+            if s.title:
+                parts.append(f"    {s.url}")
+    if not result.stream_complete:
+        parts.append("")
+        parts.append("stream: incomplete (deadline or cut)")
+    return "\n".join(parts)
+
+
+def render_ask_json(result: AskResult) -> dict[str, Any]:
+    return envelope(
+        "ask",
+        {
+            "query": result.query,
+            "model": result.model,
+            "answer": result.answer,
+            "sources": [
+                {
+                    "url": s.url,
+                    **({"title": s.title} if s.title else {}),
+                    **({"snippet": s.snippet} if s.snippet else {}),
+                }
+                for s in result.sources
+            ],
+            "stream_complete": result.stream_complete,
+        },
+        warnings=result.warnings,
+    )
+
+
+def render_research_text(result: ResearchResult) -> str:
+    """The cited report, then a numbered sources list. A stream-incomplete
+    marker is appended (and `cli_research` also emits a stderr warning + exit 6)
+    so a human doesn't mistake a deadline-clipped partial for a full report."""
+    parts: list[str] = [result.answer if result.answer else "(no answer)"]
+    if result.sources:
+        parts.append("")
+        parts.append(f"— sources ({len(result.sources)}) —")
+        for i, s in enumerate(result.sources, start=1):
+            parts.append(f"[{i}] {s.title or s.url}")
+            if s.title:
+                parts.append(f"    {s.url}")
+    if not result.stream_complete:
+        parts.append("")
+        parts.append("stream: incomplete (deadline or cut)")
+    return "\n".join(parts)
+
+
+def render_research_json(result: ResearchResult) -> dict[str, Any]:
+    return envelope(
+        "research",
+        {
+            "query": result.query,
+            "mode": result.mode,
+            "answer": result.answer,
+            "sources": [
+                {
+                    "url": s.url,
+                    **({"title": s.title} if s.title else {}),
+                    **({"snippet": s.snippet} if s.snippet else {}),
+                }
+                for s in result.sources
+            ],
+            "stream_complete": result.stream_complete,
+        },
+        warnings=result.warnings,
+    )
 
 
 def _hit_to_json(hit: Hit) -> dict[str, Any]:
