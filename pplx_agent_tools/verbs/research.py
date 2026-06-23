@@ -23,16 +23,13 @@ bounded 429 retry.
 from __future__ import annotations
 
 import json
-import random
-import sys
-import time
 from dataclasses import dataclass, field
 from typing import Any
 from uuid import uuid4
 
-from ..errors import RateLimitError, SchemaError, StreamDeadlineError
+from ..errors import SchemaError, StreamDeadlineError
 from ..wire import Client
-from .fetch import event_marks_completed
+from ._ask_common import run_ask_stream
 
 ENDPOINT = "/rest/sse/perplexity_ask"
 DEFAULT_MODE = "research"
@@ -59,17 +56,6 @@ def _model_for_mode(mode: str) -> str:
     return _MODE_MODEL.get(mode, mode)
 
 
-# 429 retry policy — mirrors fetch's tight bound (the agent contract documents
-# exit-3 for callers wanting their own backoff). Research is rarer than fetch so
-# we keep this conservative rather than aggressive.
-_RATE_LIMIT_MAX_ATTEMPTS = 3
-_RATE_LIMIT_DEFAULT_BACKOFF = 5.0
-_RATE_LIMIT_BACKOFF_CAP = 60.0
-_BACKOFF_JITTER_LOW = 0.85
-_BACKOFF_JITTER_HIGH = 1.15
-_PROGRESS_EVENT_STRIDE = 10
-
-
 @dataclass
 class ResearchSource:
     url: str
@@ -88,18 +74,6 @@ class ResearchResult:
     warnings: list[str] = field(default_factory=list)
 
 
-@dataclass
-class _StreamState:
-    """Accumulator threaded across retry attempts. Research sends full snapshots,
-    so we keep the *latest* `text` rather than concatenating deltas."""
-
-    latest_text: str | None = None
-    backend_uuid: str | None = None
-    read_write_token: str | None = None
-    saw_completed: bool = False
-    failed: bool = False  # server emitted status=FAILED (e.g. model incompatible with mode)
-
-
 def research(
     client: Client,
     query: str,
@@ -115,42 +89,28 @@ def research(
     answer with `stream_complete=False` (the agent contract is "always something
     plus a flag", exit 6). `keep_thread` preserves the incognito thread instead
     of deleting it (default deletes).
+
+    Research streams full-snapshot frames, so we keep the *latest* `text` rather
+    than concatenating deltas; the retry/deadline/heartbeat plumbing is shared
+    (`_ask_common.run_ask_stream`).
     """
     body = _build_research_body(query, mode)
-    state = _StreamState()
-    deadline_tripped = False
-    overall_deadline = (time.monotonic() + timeout) if timeout else None
+    latest: dict[str, str | None] = {"text": None}
 
-    def _remaining() -> float | None:
-        if overall_deadline is None:
-            return None
-        return max(0.0, overall_deadline - time.monotonic())
+    def _on_event(event: dict[str, Any]) -> None:
+        data = event.get("data")
+        if isinstance(data, dict) and isinstance(data.get("text"), str):
+            latest["text"] = data["text"]
 
-    last_rate_limit: RateLimitError | None = None
-    for attempt in range(1, _RATE_LIMIT_MAX_ATTEMPTS + 1):
-        remaining = _remaining()
-        if remaining == 0.0:
-            if last_rate_limit is not None:
-                raise last_rate_limit
-            break
-        try:
-            _consume_stream(client, body, state, remaining_seconds=remaining, progress=progress)
-            break
-        except StreamDeadlineError:
-            deadline_tripped = True
-            break
-        except RateLimitError as e:
-            last_rate_limit = e
-            if attempt >= _RATE_LIMIT_MAX_ATTEMPTS:
-                raise
-            sleep_s = _rate_limit_backoff(e, _remaining())
-            if sleep_s > 0:
-                print(
-                    f"pplx research: rate limited (attempt {attempt}/"
-                    f"{_RATE_LIMIT_MAX_ATTEMPTS}); sleeping {sleep_s:.1f}s",
-                    file=sys.stderr,
-                )
-                time.sleep(sleep_s)
+    state, deadline_tripped = run_ask_stream(
+        client,
+        ENDPOINT,
+        body,
+        on_event=_on_event,
+        timeout=timeout,
+        progress=progress,
+        label="research",
+    )
 
     if state.failed:
         raise SchemaError(
@@ -158,14 +118,14 @@ def research(
             f"reject model_preference — check model↔mode compatibility via `pplx models`"
         )
 
-    if state.latest_text is None:
+    if latest["text"] is None:
         if deadline_tripped:
             raise StreamDeadlineError(
                 f"research stream on {ENDPOINT} exceeded {timeout:.1f}s before any content"
             )
         raise SchemaError(f"no schematized text received from {ENDPOINT}")
 
-    answer, sources = decode_research_text(state.latest_text)
+    answer, sources = decode_research_text(latest["text"])
 
     if not keep_thread and state.backend_uuid and state.read_write_token:
         client.delete_thread(state.backend_uuid, state.read_write_token)
@@ -264,58 +224,6 @@ def _to_source(raw: Any) -> ResearchSource | None:
         title=title if isinstance(title, str) else None,
         snippet=raw.get("snippet") if isinstance(raw.get("snippet"), str) else None,
     )
-
-
-def _consume_stream(
-    client: Client,
-    body: dict[str, Any],
-    state: _StreamState,
-    *,
-    remaining_seconds: float | None,
-    progress: bool,
-) -> None:
-    """Drive one SSE call, keeping the latest full-snapshot `text` and ids.
-
-    Propagates StreamDeadlineError / RateLimitError for the caller to handle.
-    """
-    event_count = 0
-    try:
-        for event in client.sse_post(ENDPOINT, body, max_total_seconds=remaining_seconds):
-            event_count += 1
-            if progress and event_count % _PROGRESS_EVENT_STRIDE == 0:
-                print(".", end="", file=sys.stderr, flush=True)
-            data = event.get("data")
-            if not isinstance(data, dict):
-                continue
-            if state.backend_uuid is None and isinstance(data.get("backend_uuid"), str):
-                state.backend_uuid = data["backend_uuid"]
-            if state.read_write_token is None and isinstance(data.get("read_write_token"), str):
-                state.read_write_token = data["read_write_token"]
-            if isinstance(data.get("text"), str):
-                state.latest_text = data["text"]
-            # A FAILED frame still carries a `text` field, so check it before the
-            # completion/parse path — otherwise we'd treat a server-side failure
-            # as an empty partial answer. Seen when model_preference is a model
-            # that isn't valid for `mode` (server drops mode to CONCISE + FAILED).
-            if data.get("status") == "FAILED":
-                state.failed = True
-                return
-            if event_marks_completed(event):
-                state.saw_completed = True
-                return
-    finally:
-        if progress and event_count >= _PROGRESS_EVENT_STRIDE:
-            print("", file=sys.stderr, flush=True)
-
-
-def _rate_limit_backoff(err: RateLimitError, remaining: float | None) -> float:
-    base = err.retry_after if err.retry_after is not None else _RATE_LIMIT_DEFAULT_BACKOFF
-    sleep_s = min(base, _RATE_LIMIT_BACKOFF_CAP) * random.uniform(
-        _BACKOFF_JITTER_LOW, _BACKOFF_JITTER_HIGH
-    )
-    if remaining is not None:
-        sleep_s = min(sleep_s, remaining)
-    return max(0.0, sleep_s)
 
 
 def _build_research_body(query: str, mode: str) -> dict[str, Any]:

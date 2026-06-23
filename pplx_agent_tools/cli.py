@@ -12,6 +12,7 @@ from collections.abc import Callable, Sequence
 
 from . import (
     __version__,
+    cli_ask,
     cli_auth,
     cli_fetch,
     cli_models,
@@ -24,6 +25,7 @@ from . import (
 
 VERBS: dict[str, tuple[Callable[[Sequence[str] | None], int], str]] = {
     "search": (cli_search.main, "Search Perplexity for ranked web hits"),
+    "ask": (cli_ask.main, "Ask a question, get a synthesized cited answer (--model)"),
     "fetch": (cli_fetch.main, "Fetch a URL (use --prompt for LLM extraction)"),
     "research": (cli_research.main, "Deep research: multi-step, cited (research mode)"),
     "snippets": (cli_snippets.main, "Extract query-relevant excerpts from N URLs"),

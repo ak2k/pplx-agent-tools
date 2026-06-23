@@ -21,6 +21,7 @@ from __future__ import annotations
 from typing import Any
 
 from . import __version__
+from .verbs.ask import AskResult
 from .verbs.fetch import FetchResult
 from .verbs.models import ModelsResult
 from .verbs.quota import QuotaItem, QuotaResult
@@ -261,6 +262,29 @@ def render_models_json(result: ModelsResult) -> dict[str, Any]:
                 for m in result.modes
             ],
             "default_models": dict(result.default_models),
+        },
+        warnings=result.warnings,
+    )
+
+
+def render_ask_text(result: AskResult) -> str:
+    """The synthesized answer (with inline [n] citations). Stdout stays the
+    answer alone so it pipes cleanly; the incomplete marker is appended (and
+    `cli_ask` also warns on stderr + exits 6)."""
+    out = result.answer if result.answer else "(no answer)"
+    if not result.stream_complete:
+        out += "\n\nstream: incomplete (deadline or cut)"
+    return out
+
+
+def render_ask_json(result: AskResult) -> dict[str, Any]:
+    return envelope(
+        "ask",
+        {
+            "query": result.query,
+            "model": result.model,
+            "answer": result.answer,
+            "stream_complete": result.stream_complete,
         },
         warnings=result.warnings,
     )
