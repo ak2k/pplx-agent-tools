@@ -24,15 +24,29 @@ boilerplate at every call site.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from argparse import Namespace
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any, Literal, TypeVar, overload
 
 from .errors import EXIT_OK, PplxError, exit_code
 from .wire import Client
 
 R = TypeVar("R")
+
+
+def resolve_model(arg: str | None, env_vars: Sequence[str], default: str) -> str:
+    """Resolve a model preference: explicit --model flag → env vars (in order) →
+    default. Lets a user set e.g. $PPLX_ASK_MODEL=claude48opusthinking once
+    instead of passing --model every call, while the flag still wins per-call."""
+    if arg:
+        return arg
+    for ev in env_vars:
+        v = os.environ.get(ev)
+        if v:
+            return v
+    return default
 
 
 @overload

@@ -33,8 +33,29 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             f"research depth (default: {DEFAULT_MODE} = Perplexity Deep Research). "
             "'council' (aka 'agentic_research') = Model Council: multiple frontier "
-            "models cross-checked — higher rigor, much slower/heavier, experimental. "
-            "An unknown value is passed through as a raw model_preference."
+            "models cross-checked. EXPERIMENTAL — observed to run >7 min without "
+            "completing and its answer block isn't decoded yet, so it usually times "
+            "out empty; prefer 'research'. An unknown value is passed through as a "
+            "raw model_preference."
+        ),
+    )
+    parser.add_argument(
+        "--model",
+        default=None,
+        help=(
+            "override the model_preference the --mode maps to (power users; a model "
+            "incompatible with research fails fast). research accepts pplx_alpha / "
+            "o4mini — see `pplx models`."
+        ),
+    )
+    parser.add_argument(
+        "--council-models",
+        default=None,
+        metavar="A,B,C",
+        help=(
+            "Model Council only (--mode council): comma-separated model ids to "
+            "cross-check (e.g. gpt55_thinking,claude48opusthinking,gemini31pro_high). "
+            "Omitted → Perplexity's default trio."
         ),
     )
     parser.add_argument("-j", "--json", action="store_true", help="output JSON")
@@ -103,6 +124,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     keep_thread = args.keep_thread or os.environ.get("PPLX_KEEP_THREADS") == "1"
     progress = args.progress or os.environ.get("PPLX_PROGRESS") == "1"
     timeout = _resolve_timeout(args.timeout)
+    council_models = (
+        [m.strip() for m in args.council_models.split(",") if m.strip()]
+        if args.council_models
+        else None
+    )
 
     return run_verb(
         "research",
@@ -112,6 +138,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             client,
             args.query,
             mode=args.mode,
+            model=args.model,
+            council_models=council_models,
             keep_thread=keep_thread,
             timeout=timeout,
             progress=progress,

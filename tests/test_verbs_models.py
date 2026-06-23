@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from pplx_agent_tools.errors import SchemaError
-from pplx_agent_tools.verbs.models import decode_models_config, decode_modes
+from pplx_agent_tools.verbs.models import decode_model_cards, decode_models_config, decode_modes
 
 CONFIG = {
     "models": {
@@ -19,6 +19,16 @@ CONFIG = {
         "bad": "not a dict",
     },
     "default_models": {"search": "pplx_pro", "research": "pplx_alpha", "junk": 5},
+    "config": [
+        {
+            "label": "Claude Opus 4.8",
+            "non_reasoning_model": "claude48opus",
+            "reasoning_model": "claude48opusthinking",
+            "subscription_tier": "max",
+        },
+        {"label": "Sonar 2", "non_reasoning_model": "experimental", "reasoning_model": None},
+        "not a dict",
+    ],
 }
 
 MODES = {
@@ -68,3 +78,18 @@ def test_modes_non_dict_raises() -> None:
 
 def test_modes_missing_list_tolerated() -> None:
     assert decode_modes({"debug": None}) == []
+
+
+def test_model_cards_picker() -> None:
+    cards = decode_model_cards(CONFIG)
+    assert [c.label for c in cards] == ["Claude Opus 4.8", "Sonar 2"]  # non-dict skipped
+    opus = cards[0]
+    assert opus.base == "claude48opus"
+    assert opus.thinking == "claude48opusthinking"  # the id to pass for thinking
+    assert opus.tier == "max"
+    assert cards[1].thinking is None  # reasoning_model None → None
+
+
+def test_model_cards_non_dict_tolerated() -> None:
+    assert decode_model_cards([]) == []
+    assert decode_model_cards({"config": "nope"}) == []

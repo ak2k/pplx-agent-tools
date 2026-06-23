@@ -8,7 +8,7 @@ from pplx_agent_tools.render import (
     render_quota_json,
     render_quota_text,
 )
-from pplx_agent_tools.verbs.models import ModeInfo, ModelInfo, ModelsResult
+from pplx_agent_tools.verbs.models import ModeInfo, ModelCard, ModelInfo, ModelsResult
 from pplx_agent_tools.verbs.quota import QuotaItem, QuotaResult
 
 QUOTA = QuotaResult(
@@ -24,6 +24,7 @@ MODELS = ModelsResult(
     models=[ModelInfo("turbo", "Best", "Adapts", "search", "PERPLEXITY")],
     modes=[ModeInfo("research", "Research", "deep")],
     default_models={"search": "pplx_pro", "research": "pplx_alpha"},
+    cards=[ModelCard("Claude Opus 4.8", "claude48opus", "claude48opusthinking", "max")],
 )
 
 
@@ -52,12 +53,24 @@ def test_models_text() -> None:
     assert "research" in out and "pplx_alpha" in out
 
 
+def test_models_text_picker() -> None:
+    out = render_models_text(MODELS)
+    assert "model picker" in out
+    assert "claude48opusthinking" in out and "[max]" in out
+
+
 def test_models_json_envelope() -> None:
     j = render_models_json(MODELS)
     assert j["_verb"] == "models"
     assert j["models"][0]["key"] == "turbo"
     assert j["models"][0]["mode"] == "search"
     assert j["default_models"]["research"] == "pplx_alpha"
+    assert j["picker"][0] == {
+        "label": "Claude Opus 4.8",
+        "base": "claude48opus",
+        "thinking": "claude48opusthinking",
+        "tier": "max",
+    }
 
 
 def test_empty_renders_are_safe() -> None:

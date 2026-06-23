@@ -12,7 +12,7 @@ import os
 import sys
 from collections.abc import Sequence
 
-from .cli_runner import run_verb
+from .cli_runner import resolve_model, run_verb
 from .errors import EXIT_OK, EXIT_PARTIAL
 from .render import render_ask_json, render_ask_text
 from .verbs.ask import DEFAULT_MODEL, AskResult, ask
@@ -28,11 +28,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("query", help="the question to ask")
     parser.add_argument(
         "--model",
-        default=DEFAULT_MODEL,
+        default=None,
         help=(
-            f"model_preference (default: {DEFAULT_MODEL} = 'Best'). Pass a model id "
-            "from `pplx models` — incl. thinking variants like 'claude48opusthinking' "
-            "(Max). An invalid/unavailable model fails fast with a clear error."
+            f"model_preference (default: {DEFAULT_MODEL} = 'Best', or $PPLX_ASK_MODEL "
+            "/ $PPLX_MODEL). Pass a model id from `pplx models` — incl. thinking "
+            "variants like 'claude48opusthinking' (Max). An invalid model fails fast."
         ),
     )
     parser.add_argument("-j", "--json", action="store_true", help="output JSON")
@@ -93,6 +93,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     keep_thread = args.keep_thread or os.environ.get("PPLX_KEEP_THREADS") == "1"
     progress = args.progress or os.environ.get("PPLX_PROGRESS") == "1"
     timeout = _resolve_timeout(args.timeout)
+    model = resolve_model(args.model, ("PPLX_ASK_MODEL", "PPLX_MODEL"), DEFAULT_MODEL)
 
     return run_verb(
         "ask",
@@ -101,7 +102,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         run=lambda client: ask(
             client,
             args.query,
-            model=args.model,
+            model=model,
             keep_thread=keep_thread,
             timeout=timeout,
             progress=progress,

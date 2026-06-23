@@ -79,11 +79,17 @@ def research(
     query: str,
     *,
     mode: str = DEFAULT_MODE,
+    model: str | None = None,
+    council_models: list[str] | None = None,
     keep_thread: bool = False,
     timeout: float | None = None,
     progress: bool = False,
 ) -> ResearchResult:
     """Run a deep-research query through the ask endpoint in `mode`.
+
+    `model` overrides the model_preference the `mode` would map to (power users
+    only — a model incompatible with research fails fast). `council_models`
+    (Model Council only) picks the cross-checked trio.
 
     `timeout` bounds wall-clock; on deadline-with-partial we return the partial
     answer with `stream_complete=False` (the agent contract is "always something
@@ -94,7 +100,8 @@ def research(
     than concatenating deltas; the retry/deadline/heartbeat plumbing is shared
     (`_ask_common.run_ask_stream`).
     """
-    body = _build_research_body(query, mode)
+    model_preference = model or _model_for_mode(mode)
+    body = _build_research_body(query, model_preference, council_models=council_models)
     latest: dict[str, str | None] = {"text": None}
 
     def _on_event(event: dict[str, Any]) -> None:
@@ -226,35 +233,39 @@ def _to_source(raw: Any) -> ResearchSource | None:
     )
 
 
-def _build_research_body(query: str, mode: str) -> dict[str, Any]:
-    """Ask-endpoint body for research. `model_preference` (derived from `mode`)
-    is what selects Deep Research vs Model Council — see `_MODE_MODEL`. `params.mode`
-    stays "copilot" (coarse; the server derives the real mode from the model).
-    `is_incognito` is True so the created thread stays out of history."""
+def _build_research_body(
+    query: str, model_preference: str, *, council_models: list[str] | None = None
+) -> dict[str, Any]:
+    """Ask-endpoint body for research. `model_preference` is what selects Deep
+    Research (`pplx_alpha`) vs Model Council (`pplx_agentic_research`) — see
+    `_MODE_MODEL`. `params.mode` stays "copilot" (coarse; the server derives the
+    real mode from the model). `is_incognito` is True so the thread stays out of
+    history. `council_models` (Model Council only) picks the cross-checked trio
+    via `compare_model_preferences`; omitted → Perplexity's default trio."""
     frontend_uuid = str(uuid4())
-    return {
-        "query_str": query,
-        "params": {
-            "query_source": "home",
-            "prompt_source": "user",
-            "source": "default",
-            "version": "2.18",
-            "language": "en-US",
-            "timezone": "UTC",
-            "search_focus": "internet",
-            "sources": ["web"],
-            "mode": "copilot",
-            "model_preference": _model_for_mode(mode),
-            "frontend_uuid": frontend_uuid,
-            "frontend_context_uuid": str(uuid4()),
-            "client_search_results_cache_key": frontend_uuid,
-            "use_schematized_api": True,
-            "send_back_text_in_streaming_api": True,
-            "skip_search_enabled": True,
-            "is_incognito": True,
-            "attachments": [],
-            "mentions": [],
-            "client_coordinates": None,
-            "dsl_query": query,
-        },
+    params: dict[str, Any] = {
+        "query_source": "home",
+        "prompt_source": "user",
+        "source": "default",
+        "version": "2.18",
+        "language": "en-US",
+        "timezone": "UTC",
+        "search_focus": "internet",
+        "sources": ["web"],
+        "mode": "copilot",
+        "model_preference": model_preference,
+        "frontend_uuid": frontend_uuid,
+        "frontend_context_uuid": str(uuid4()),
+        "client_search_results_cache_key": frontend_uuid,
+        "use_schematized_api": True,
+        "send_back_text_in_streaming_api": True,
+        "skip_search_enabled": True,
+        "is_incognito": True,
+        "attachments": [],
+        "mentions": [],
+        "client_coordinates": None,
+        "dsl_query": query,
     }
+    if council_models:
+        params["compare_model_preferences"] = list(council_models)
+    return {"query_str": query, "params": params}

@@ -12,7 +12,7 @@ import os
 import sys
 from collections.abc import Sequence
 
-from .cli_runner import run_verb
+from .cli_runner import resolve_model, run_verb
 from .errors import EXIT_OK, EXIT_PARTIAL
 from .render import render_fetch_json, render_fetch_text
 from .verbs.fetch import FetchResult, fetch
@@ -43,6 +43,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--profile",
         help="cookie profile (default: $PPLX_PROFILE or 'default')",
+    )
+    parser.add_argument(
+        "--model",
+        default=None,
+        help=(
+            "for --prompt mode: model_preference (default: turbo = 'Best', or "
+            "$PPLX_FETCH_MODEL / $PPLX_MODEL). See `pplx models`."
+        ),
     )
     parser.add_argument(
         "--keep-thread",
@@ -120,6 +128,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     keep_thread = args.keep_thread or os.environ.get("PPLX_KEEP_THREADS") == "1"
     progress = args.progress or os.environ.get("PPLX_PROGRESS") == "1"
     timeout = _resolve_timeout(args.timeout) if args.prompt else None
+    model = resolve_model(args.model, ("PPLX_FETCH_MODEL", "PPLX_MODEL"), "turbo")
 
     return run_verb(
         "fetch",
@@ -133,6 +142,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             keep_thread=keep_thread,
             timeout=timeout,
             progress=progress,
+            model=model,
         ),
         render_text=render_fetch_text,
         render_json=render_fetch_json,

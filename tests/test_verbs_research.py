@@ -266,14 +266,30 @@ def test_model_for_mode_maps_to_driving_model() -> None:
 
 
 def test_build_body_drives_via_model_preference() -> None:
-    body = _build_research_body("q", "research")
+    body = _build_research_body("q", _model_for_mode("research"))
     assert body["params"]["model_preference"] == "pplx_alpha"  # the deep-research model
     assert body["params"]["mode"] == "copilot"  # coarse; server derives mode from the model
     assert body["params"]["is_incognito"] is True
-    assert (
-        _build_research_body("q", "council")["params"]["model_preference"]
-        == "pplx_agentic_research"
+    assert "compare_model_preferences" not in body["params"]  # only set for council
+
+
+def test_build_body_council_models() -> None:
+    body = _build_research_body(
+        "q", "pplx_agentic_research", council_models=["gpt55_thinking", "claude48opusthinking"]
     )
+    assert body["params"]["compare_model_preferences"] == ["gpt55_thinking", "claude48opusthinking"]
+
+
+def test_research_model_override_bypasses_mode_mapping() -> None:
+    captured: dict[str, Any] = {}
+
+    class _Cap(_FakeClient):
+        def sse_post(self, path: str, body: dict[str, Any], *, max_total_seconds=None):  # type: ignore[override]
+            captured["mp"] = body["params"]["model_preference"]
+            return iter(self._events)
+
+    research(_Cap(_complete_events()), "q", mode="research", model="o4mini")
+    assert captured["mp"] == "o4mini"  # --model wins over the mode default (pplx_alpha)
 
 
 def test_research_passes_model_preference_into_body() -> None:

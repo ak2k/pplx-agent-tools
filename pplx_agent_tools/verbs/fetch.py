@@ -210,6 +210,7 @@ def fetch(
     keep_thread: bool = False,
     timeout: float | None = None,
     progress: bool = False,
+    model: str = "turbo",
 ) -> FetchResult:
     """Fetch a URL, optionally route through Perplexity's LLM for extraction.
 
@@ -218,7 +219,10 @@ def fetch(
 
     `keep_thread` controls whether the chat-endpoint thread created by
     `--prompt` mode is preserved in the user's Perplexity UI. Default
-    (False) deletes it post-call.
+    (False) deletes it post-call. `--prompt` runs incognito so the thread
+    never enters history regardless.
+
+    `model` is the `model_preference` for `--prompt` mode (default `turbo`).
 
     `timeout` bounds the wall-clock duration of `--prompt` mode (the SSE
     chat call). When the deadline trips with any accumulated content, the
@@ -240,6 +244,7 @@ def fetch(
         keep_thread=keep_thread,
         timeout=timeout,
         progress=progress,
+        model=model,
     )
 
 
@@ -331,6 +336,7 @@ def _fetch_with_prompt(
     keep_thread: bool = False,
     timeout: float | None = None,
     progress: bool = False,
+    model: str = "turbo",
 ) -> FetchResult:
     """Submit url+prompt to /rest/sse/perplexity_ask; Perplexity's LLM has
     URL-fetching as a tool and will fetch+extract+answer in one round trip.
@@ -349,7 +355,7 @@ def _fetch_with_prompt(
     Auto-retry on `RateLimitError` follows `retry_after` and is bounded by
     the overall deadline so a stubborn 429 can't push past `timeout`.
     """
-    body = _build_chat_body(f"{prompt}\n\nFor URL: {url}")
+    body = _build_chat_body(f"{prompt}\n\nFor URL: {url}", model_preference=model)
     # The chat endpoint streams the answer one chunk per event. Each event
     # may have parallel blocks (`ask_text` for the incremental stream and
     # `ask_text_0_markdown` for the markdown-rendered variant) carrying the
@@ -426,9 +432,14 @@ def _fetch_with_prompt(
     )
 
 
-def _build_chat_body(query: str) -> dict[str, Any]:
+def _build_chat_body(
+    query: str, *, model_preference: str = "turbo", is_incognito: bool = True
+) -> dict[str, Any]:
     """Minimum-viable body for /rest/sse/perplexity_ask. See docs/wire/search-web.md
     for the full captured shape; we strip UI-specific fields here.
+
+    `is_incognito` defaults True so `--prompt` threads never enter history
+    (delete_thread cleanup is then belt-and-suspenders, not load-bearing).
 
     `timezone` is set to "UTC" rather than detected from the host: detection
     actively leaks the user's location, and `time.tzname` returns
@@ -448,14 +459,14 @@ def _build_chat_body(query: str) -> dict[str, Any]:
             "search_focus": "internet",
             "sources": ["web"],
             "mode": "copilot",
-            "model_preference": "turbo",
+            "model_preference": model_preference,
             "frontend_uuid": frontend_uuid,
             "frontend_context_uuid": str(uuid4()),
             "client_search_results_cache_key": frontend_uuid,
             "use_schematized_api": True,
             "send_back_text_in_streaming_api": True,
             "skip_search_enabled": True,
-            "is_incognito": False,
+            "is_incognito": is_incognito,
             "attachments": [],
             "mentions": [],
             "client_coordinates": None,

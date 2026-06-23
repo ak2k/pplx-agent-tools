@@ -231,6 +231,16 @@ def render_models_text(result: ModelsResult) -> str:
         for mi in result.models:
             tag = f" [{mi.mode}]" if mi.mode else ""
             lines.append(f"  {mi.key:24s} {mi.label or ''}{tag}")
+    if result.cards:
+        if lines:
+            lines.append("")
+        lines.append("model picker (use the thinking id to enable reasoning):")
+        for c in result.cards:
+            ids = c.base or "—"
+            if c.thinking:
+                ids += f"  +thinking: {c.thinking}"
+            tier = f" [{c.tier}]" if c.tier else ""
+            lines.append(f"  {c.label:22s} {ids}{tier}")
     if result.default_models:
         if lines:
             lines.append("")
@@ -260,6 +270,15 @@ def render_models_json(result: ModelsResult) -> dict[str, Any]:
                     **({"description": m.description} if m.description else {}),
                 }
                 for m in result.modes
+            ],
+            "picker": [
+                {
+                    "label": c.label,
+                    **({"base": c.base} if c.base else {}),
+                    **({"thinking": c.thinking} if c.thinking else {}),
+                    **({"tier": c.tier} if c.tier else {}),
+                }
+                for c in result.cards
             ],
             "default_models": dict(result.default_models),
         },
