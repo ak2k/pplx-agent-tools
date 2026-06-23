@@ -24,11 +24,11 @@ from hypothesis import strategies as st
 
 from pplx_agent_tools.auth import _normalize
 from pplx_agent_tools.errors import AuthError, SchemaError
-from pplx_agent_tools.verbs.fetch import (
-    _fetch_with_prompt,
+from pplx_agent_tools.verbs._ask_common import (
     event_marks_completed,
     extract_chunks_from_event,
 )
+from pplx_agent_tools.verbs.fetch import _fetch_with_prompt
 from pplx_agent_tools.verbs.search import (
     _keep,
     _to_hit,

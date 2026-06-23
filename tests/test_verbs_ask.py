@@ -25,6 +25,17 @@ def _chunk_event(text: str) -> dict[str, Any]:
     }
 
 
+def _web_results_event(results: list[dict[str, Any]]) -> dict[str, Any]:
+    """A copilot SSE event carrying the cited-sources block."""
+    return {
+        "data": {
+            "blocks": [
+                {"intended_usage": "web_results", "web_result_block": {"web_results": results}}
+            ]
+        }
+    }
+
+
 class _FakeClient(_TestClientBase):
     def __init__(self, events: list[dict[str, Any]], *, raise_deadline: bool = False) -> None:
         super().__init__()
@@ -61,6 +72,28 @@ def test_ask_keep_thread_skips_cleanup() -> None:
     client = _FakeClient(_complete())
     ask(client, "hi", keep_thread=True)
     assert client.deleted == []
+
+
+def test_ask_extracts_sources_from_web_results_block() -> None:
+    client = _FakeClient(
+        [
+            _web_results_event(
+                [
+                    {"url": "https://a", "name": "A", "snippet": "sa"},
+                    {"url": "https://b", "name": "B"},
+                    {"url": "https://a", "name": "dup"},  # duplicate URL
+                    {"name": "no url — skipped"},
+                ]
+            ),
+            _chunk_event("the answer"),
+            {"data": {"status": "COMPLETED"}},
+        ]
+    )
+    result = ask(client, "q")
+    assert result.answer == "the answer"
+    assert [s.url for s in result.sources] == ["https://a", "https://b"]  # deduped, ordered
+    assert result.sources[0].title == "A"
+    assert result.sources[0].snippet == "sa"
 
 
 def test_ask_partial_on_deadline() -> None:
@@ -100,6 +133,22 @@ def test_ask_model_passthrough_to_body() -> None:
     assert body["params"]["is_incognito"] is True
 
 
+def test_ask_family_bodies_share_one_base() -> None:
+    """ask/research/fetch --prompt bodies all delegate to base_ask_params, so a
+    field added to one without the others is a bug. Lock the shared key set."""
+    from pplx_agent_tools.verbs.fetch import _build_chat_body
+    from pplx_agent_tools.verbs.research import _build_research_body
+
+    ask_p = _build_ask_body("q", "turbo")["params"]
+    research_p = _build_research_body("q", "pplx_alpha")["params"]
+    fetch_p = _build_chat_body("q")["params"]
+    base_keys = set(ask_p) - {"compare_model_preferences"}
+    assert set(research_p) == base_keys
+    assert set(fetch_p) == base_keys
+    for k in ("mode", "search_focus", "sources", "is_incognito", "use_schematized_api"):
+        assert ask_p[k] == research_p[k] == fetch_p[k]
+
+
 def test_render_ask_text_and_json() -> None:
     result = AskResult(query="q", answer="The answer.", model="turbo")
     assert render_ask_text(result) == "The answer."
@@ -113,6 +162,16 @@ def test_render_ask_text_and_json() -> None:
 def test_render_ask_text_incomplete_marker() -> None:
     result = AskResult("q", "partial", "turbo", stream_complete=False)
     assert "stream: incomplete" in render_ask_text(result)
+
+
+def test_render_ask_with_sources() -> None:
+    from pplx_agent_tools.verbs._ask_common import Source
+
+    result = AskResult("q", "Answer.", "turbo", True, [Source("https://a", "A", "snip")])
+    out = render_ask_text(result)
+    assert "— sources (1) —" in out and "[1] A" in out and "https://a" in out
+    j = render_ask_json(result)
+    assert j["sources"][0] == {"url": "https://a", "title": "A", "snippet": "snip"}
 
 
 # ---------- run_ask_stream 429 retry/exhaustion (exercised via ask) ----------

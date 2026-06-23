@@ -23,7 +23,7 @@ from typing import Any
 from unittest.mock import patch
 
 from pplx_agent_tools.errors import RateLimitError
-from pplx_agent_tools.verbs.fetch import (
+from pplx_agent_tools.verbs._ask_common import (
     _BACKOFF_JITTER_HIGH,
     _BACKOFF_JITTER_LOW,
     _RATE_LIMIT_BACKOFF_CAP,

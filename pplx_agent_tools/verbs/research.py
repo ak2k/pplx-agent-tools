@@ -25,11 +25,10 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from typing import Any
-from uuid import uuid4
 
 from ..errors import SchemaError, StreamDeadlineError
 from ..wire import Client
-from ._ask_common import run_ask_stream
+from ._ask_common import Source, base_ask_params, run_ask_stream, to_source
 
 ENDPOINT = "/rest/sse/perplexity_ask"
 DEFAULT_MODE = "research"
@@ -65,11 +64,9 @@ def _model_for_mode(mode: str) -> str:
     return _MODE_MODEL.get(mode, mode)
 
 
-@dataclass
-class ResearchSource:
-    url: str
-    title: str | None = None
-    snippet: str | None = None
+# ResearchSource is the shared `Source` (url/title/snippet) — alias kept for the
+# verb's public API + existing tests/render references.
+ResearchSource = Source
 
 
 @dataclass
@@ -211,10 +208,10 @@ def decode_research_text(text: str) -> tuple[str, list[ResearchSource]]:
                 search_web.extend(wr)
 
     chosen = final_web if final_web else search_web
-    sources: list[ResearchSource] = []
+    sources: list[Source] = []
     seen: set[str] = set()
     for wr in chosen:
-        src = _to_source(wr)
+        src = to_source(wr)
         if src is not None and src.url not in seen:
             seen.add(src.url)
             sources.append(src)
@@ -241,20 +238,6 @@ def _unwrap_final_answer(raw: Any) -> tuple[str, list[Any]]:
     return (md if isinstance(md, str) else raw), (web if isinstance(web, list) else [])
 
 
-def _to_source(raw: Any) -> ResearchSource | None:
-    if not isinstance(raw, dict):
-        return None
-    url = raw.get("url")
-    if not isinstance(url, str) or not url:
-        return None
-    title = raw.get("name") or raw.get("title")
-    return ResearchSource(
-        url=url,
-        title=title if isinstance(title, str) else None,
-        snippet=raw.get("snippet") if isinstance(raw.get("snippet"), str) else None,
-    )
-
-
 def _build_research_body(
     query: str, model_preference: str, *, council_models: list[str] | None = None
 ) -> dict[str, Any]:
@@ -264,30 +247,7 @@ def _build_research_body(
     real mode from the model). `is_incognito` is True so the thread stays out of
     history. `council_models` (Model Council only) picks the cross-checked trio
     via `compare_model_preferences`; omitted → Perplexity's default trio."""
-    frontend_uuid = str(uuid4())
-    params: dict[str, Any] = {
-        "query_source": "home",
-        "prompt_source": "user",
-        "source": "default",
-        "version": "2.18",
-        "language": "en-US",
-        "timezone": "UTC",
-        "search_focus": "internet",
-        "sources": ["web"],
-        "mode": "copilot",
-        "model_preference": model_preference,
-        "frontend_uuid": frontend_uuid,
-        "frontend_context_uuid": str(uuid4()),
-        "client_search_results_cache_key": frontend_uuid,
-        "use_schematized_api": True,
-        "send_back_text_in_streaming_api": True,
-        "skip_search_enabled": True,
-        "is_incognito": True,
-        "attachments": [],
-        "mentions": [],
-        "client_coordinates": None,
-        "dsl_query": query,
-    }
+    params = base_ask_params(query, model_preference=model_preference)
     if council_models:
         params["compare_model_preferences"] = list(council_models)
     return {"query_str": query, "params": params}

@@ -287,13 +287,21 @@ def render_models_json(result: ModelsResult) -> dict[str, Any]:
 
 
 def render_ask_text(result: AskResult) -> str:
-    """The synthesized answer (with inline [n] citations). Stdout stays the
-    answer alone so it pipes cleanly; the incomplete marker is appended (and
-    `cli_ask` also warns on stderr + exits 6)."""
-    out = result.answer if result.answer else "(no answer)"
+    """The synthesized answer (with inline [n] citations) then the numbered
+    sources. The incomplete marker is appended (and `cli_ask` also warns on
+    stderr + exits 6)."""
+    parts: list[str] = [result.answer if result.answer else "(no answer)"]
+    if result.sources:
+        parts.append("")
+        parts.append(f"— sources ({len(result.sources)}) —")
+        for i, s in enumerate(result.sources, start=1):
+            parts.append(f"[{i}] {s.title or s.url}")
+            if s.title:
+                parts.append(f"    {s.url}")
     if not result.stream_complete:
-        out += "\n\nstream: incomplete (deadline or cut)"
-    return out
+        parts.append("")
+        parts.append("stream: incomplete (deadline or cut)")
+    return "\n".join(parts)
 
 
 def render_ask_json(result: AskResult) -> dict[str, Any]:
@@ -303,6 +311,14 @@ def render_ask_json(result: AskResult) -> dict[str, Any]:
             "query": result.query,
             "model": result.model,
             "answer": result.answer,
+            "sources": [
+                {
+                    "url": s.url,
+                    **({"title": s.title} if s.title else {}),
+                    **({"snippet": s.snippet} if s.snippet else {}),
+                }
+                for s in result.sources
+            ],
             "stream_complete": result.stream_complete,
         },
         warnings=result.warnings,

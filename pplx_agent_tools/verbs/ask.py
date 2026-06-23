@@ -18,12 +18,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any
-from uuid import uuid4
 
 from ..errors import SchemaError, StreamDeadlineError
 from ..wire import Client
-from ._ask_common import run_ask_stream
-from .fetch import extract_chunks_from_event
+from ._ask_common import (
+    Source,
+    base_ask_params,
+    extract_chunks_from_event,
+    extract_web_results,
+    run_ask_stream,
+    to_source,
+)
 
 ENDPOINT = "/rest/sse/perplexity_ask"
 DEFAULT_MODEL = "turbo"  # "Best — adapts to each query"
@@ -36,6 +41,7 @@ class AskResult:
     model: str
     # False iff the stream was cut before COMPLETED (deadline tripped / server cut).
     stream_complete: bool = True
+    sources: list[Source] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
 
@@ -56,9 +62,22 @@ def ask(
     """
     body = _build_ask_body(query, model)
     chunks: list[str] = []
+    sources: list[Source] = []
 
     def on_event(event: dict[str, Any]) -> None:
         chunks.extend(extract_chunks_from_event(event))
+        # The copilot stream emits a `web_results` block carrying the cited
+        # sources; the latest non-empty one wins (deduped by URL).
+        raw_results = extract_web_results(event)
+        if raw_results:
+            seen: set[str] = set()
+            collected: list[Source] = []
+            for raw in raw_results:
+                src = to_source(raw)
+                if src is not None and src.url not in seen:
+                    seen.add(src.url)
+                    collected.append(src)
+            sources[:] = collected
 
     state, deadline_tripped = run_ask_stream(
         client, ENDPOINT, body, on_event=on_event, timeout=timeout, progress=progress, label="ask"
@@ -84,37 +103,15 @@ def ask(
             )
         raise SchemaError(f"no content received from {ENDPOINT}")
 
-    return AskResult(query=query, answer=content, model=model, stream_complete=state.saw_completed)
+    return AskResult(
+        query=query,
+        answer=content,
+        model=model,
+        stream_complete=state.saw_completed,
+        sources=sources,
+    )
 
 
 def _build_ask_body(query: str, model: str) -> dict[str, Any]:
-    """Copilot ask body (query-only, no URL). Same shape as fetch's prompt body
-    but model-selectable and incognito. `mode` stays "copilot"; the model is the
-    real lever (see verbs/research.py for the model-as-mode finding)."""
-    frontend_uuid = str(uuid4())
-    return {
-        "query_str": query,
-        "params": {
-            "query_source": "home",
-            "prompt_source": "user",
-            "source": "default",
-            "version": "2.18",
-            "language": "en-US",
-            "timezone": "UTC",
-            "search_focus": "internet",
-            "sources": ["web"],
-            "mode": "copilot",
-            "model_preference": model,
-            "frontend_uuid": frontend_uuid,
-            "frontend_context_uuid": str(uuid4()),
-            "client_search_results_cache_key": frontend_uuid,
-            "use_schematized_api": True,
-            "send_back_text_in_streaming_api": True,
-            "skip_search_enabled": True,
-            "is_incognito": True,
-            "attachments": [],
-            "mentions": [],
-            "client_coordinates": None,
-            "dsl_query": query,
-        },
-    }
+    """Copilot ask body (query-only, no URL), model-selectable + incognito."""
+    return {"query_str": query, "params": base_ask_params(query, model_preference=model)}

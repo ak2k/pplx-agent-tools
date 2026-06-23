@@ -1,14 +1,13 @@
-"""Shared orchestration for ask-family verbs (`ask`, `research`).
+"""Shared layer for the ask-family verbs (`ask`, `research`, `fetch --prompt`).
 
-All three deep verbs hit /rest/sse/perplexity_ask and need the same plumbing:
-429 retry honoring `retry-after`, an overall wall-clock deadline (soft-fail to a
-partial result), a progress heartbeat, and capture of the thread identifiers +
-completion/FAILED signals. Only the *accumulation* differs (copilot streams
-`markdown_block` chunks; research streams full-snapshot `text`), so callers pass
-an `on_event` callback and own their accumulator.
-
-`fetch --prompt` predates this and keeps its own copy for now; it can migrate
-here when it gains `--model`.
+All three hit /rest/sse/perplexity_ask and share: the request `params` block
+(`base_ask_params`), the copilot chunk/source extractors + the `Source` type, and
+the SSE orchestration (`run_ask_stream`: 429 retry honoring `retry-after`, an
+overall wall-clock deadline that soft-fails to a partial result, a progress
+heartbeat, and capture of the thread identifiers + completion/FAILED signals).
+Only the *accumulation* differs (copilot streams `markdown_block` chunks +
+`web_results` blocks; research streams full-snapshot `text`), so callers pass an
+`on_event` callback and own their accumulator.
 """
 
 from __future__ import annotations
@@ -19,6 +18,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
+from uuid import uuid4
 
 from ..errors import RateLimitError, StreamDeadlineError
 from ..wire import Client
@@ -37,6 +37,114 @@ class AskStreamState:
     read_write_token: str | None = None
     saw_completed: bool = False
     failed: bool = False  # server emitted status=FAILED (e.g. model incompatible with mode)
+
+
+def base_ask_params(
+    query: str, *, model_preference: str, is_incognito: bool = True
+) -> dict[str, Any]:
+    """The shared `params` block for /rest/sse/perplexity_ask (copilot mode), used
+    by `ask`, `research`, and `fetch --prompt`. Callers add their own extras (e.g.
+    `compare_model_preferences` for Model Council).
+
+    `params.mode` stays "copilot" — the *model* is the real behaviour selector (see
+    verbs/research.py for the model-as-mode finding). `is_incognito` defaults True
+    so created threads never enter history. `timezone` is hard-coded "UTC" rather
+    than host-detected: detection leaks location, and `time.tzname` yields
+    abbreviations ("EST") not the IANA names Perplexity expects.
+    """
+    frontend_uuid = str(uuid4())
+    return {
+        "query_source": "home",
+        "prompt_source": "user",
+        "source": "default",
+        "version": "2.18",
+        "language": "en-US",
+        "timezone": "UTC",
+        "search_focus": "internet",
+        "sources": ["web"],
+        "mode": "copilot",
+        "model_preference": model_preference,
+        "frontend_uuid": frontend_uuid,
+        "frontend_context_uuid": str(uuid4()),
+        "client_search_results_cache_key": frontend_uuid,
+        "use_schematized_api": True,
+        "send_back_text_in_streaming_api": True,
+        "skip_search_enabled": True,
+        "is_incognito": is_incognito,
+        "attachments": [],
+        "mentions": [],
+        "client_coordinates": None,
+        "dsl_query": query,
+    }
+
+
+@dataclass
+class Source:
+    """A cited source (url + optional title/snippet). Shared by ask + research."""
+
+    url: str
+    title: str | None = None
+    snippet: str | None = None
+
+
+def to_source(raw: Any) -> Source | None:
+    """Pure: a raw web_result dict → Source, or None if it has no usable URL.
+    Accepts both `name` (search/copilot) and `title` (some research blocks)."""
+    if not isinstance(raw, dict):
+        return None
+    url = raw.get("url")
+    if not isinstance(url, str) or not url:
+        return None
+    title = raw.get("name") or raw.get("title")
+    return Source(
+        url=url,
+        title=title if isinstance(title, str) else None,
+        snippet=raw.get("snippet") if isinstance(raw.get("snippet"), str) else None,
+    )
+
+
+def extract_web_results(event: dict[str, Any]) -> list[Any]:
+    """Pure: pull the raw web_results list from a copilot `web_results` block
+    (`blocks[].web_result_block.web_results`). Returns [] when absent; the caller
+    converts via `to_source` and dedupes. Never raises."""
+    data = event.get("data")
+    if not isinstance(data, dict):
+        return []
+    for block in data.get("blocks") or []:
+        if not isinstance(block, dict) or block.get("intended_usage") != "web_results":
+            continue
+        wrb = block.get("web_result_block")
+        if isinstance(wrb, dict):
+            wr = wrb.get("web_results")
+            if isinstance(wr, list):
+                return wr
+    return []
+
+
+def extract_chunks_from_event(event: dict[str, Any]) -> list[str]:
+    """Pure: pull the streamed markdown chunks added by one copilot SSE event.
+
+    Total function: never raises, returns `[]` for any event without the expected
+    `ask_text` markdown_block structure. We only consume `intended_usage ==
+    "ask_text"` blocks, not the parallel `ask_text_0_markdown` blocks the server
+    also emits — they carry the same chunks and reading both double-counts.
+    """
+    data = event.get("data")
+    if not isinstance(data, dict):
+        return []
+    out: list[str] = []
+    for block in data.get("blocks") or []:
+        if not isinstance(block, dict):
+            continue
+        if block.get("intended_usage") != "ask_text":
+            continue
+        mb = block.get("markdown_block")
+        if not isinstance(mb, dict):
+            continue
+        chunks = mb.get("chunks") or []
+        if isinstance(chunks, list):
+            out.extend(str(c) for c in chunks)
+    return out
 
 
 def event_marks_completed(event: dict[str, Any]) -> bool:
