@@ -64,6 +64,12 @@ def ask(
         client, ENDPOINT, body, on_event=on_event, timeout=timeout, progress=progress, label="ask"
     )
 
+    # Best-effort cleanup runs on EVERY exit path (success, FAILED, no-content).
+    # delete_thread never raises, so doing it before the error checks below stops
+    # a FAILED/partial request from leaking the incognito thread it created.
+    if not keep_thread and state.backend_uuid and state.read_write_token:
+        client.delete_thread(state.backend_uuid, state.read_write_token)
+
     if state.failed:
         raise SchemaError(
             f"ask request on {ENDPOINT} returned status=FAILED; model {model!r} may be "
@@ -77,9 +83,6 @@ def ask(
                 f"ask stream on {ENDPOINT} exceeded {timeout:.1f}s before any content"
             )
         raise SchemaError(f"no content received from {ENDPOINT}")
-
-    if not keep_thread and state.backend_uuid and state.read_write_token:
-        client.delete_thread(state.backend_uuid, state.read_write_token)
 
     return AskResult(query=query, answer=content, model=model, stream_complete=state.saw_completed)
 

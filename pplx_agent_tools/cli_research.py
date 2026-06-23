@@ -12,7 +12,7 @@ import os
 import sys
 from collections.abc import Sequence
 
-from .cli_runner import run_verb
+from .cli_runner import resolve_timeout, run_verb
 from .errors import EXIT_OK, EXIT_PARTIAL
 from .render import render_research_json, render_research_text
 from .verbs.research import DEFAULT_MODE, ResearchResult, research
@@ -88,24 +88,6 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _resolve_timeout(arg: float | None) -> float | None:
-    """CLI flag → env var → default. 0 means 'disable the deadline'."""
-    if arg is not None:
-        return None if arg <= 0 else arg
-    env = os.environ.get("PPLX_RESEARCH_TIMEOUT")
-    if env is not None:
-        try:
-            v = float(env)
-        except ValueError:
-            print(
-                f"pplx research: ignoring non-numeric $PPLX_RESEARCH_TIMEOUT={env!r}",
-                file=sys.stderr,
-            )
-            return _DEFAULT_TIMEOUT_SECONDS
-        return None if v <= 0 else v
-    return _DEFAULT_TIMEOUT_SECONDS
-
-
 def _finalize(result: ResearchResult) -> int:
     if not result.stream_complete:
         print(
@@ -121,7 +103,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     keep_thread = args.keep_thread or os.environ.get("PPLX_KEEP_THREADS") == "1"
     progress = args.progress or os.environ.get("PPLX_PROGRESS") == "1"
-    timeout = _resolve_timeout(args.timeout)
+    timeout = resolve_timeout(
+        args.timeout, "PPLX_RESEARCH_TIMEOUT", _DEFAULT_TIMEOUT_SECONDS, "research"
+    )
     council_models = (
         [m.strip() for m in args.council_models.split(",") if m.strip()]
         if args.council_models

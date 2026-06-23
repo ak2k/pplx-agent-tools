@@ -86,6 +86,10 @@ def run_ask_stream(
         if remaining == 0.0:
             if last_rate_limit is not None:
                 raise last_rate_limit
+            # Budget already spent before this attempt — surface it as a tripped
+            # deadline so the caller raises StreamDeadlineError (exit 6), not the
+            # generic "no content" SchemaError.
+            deadline_tripped = True
             break
         try:
             _drive_one(

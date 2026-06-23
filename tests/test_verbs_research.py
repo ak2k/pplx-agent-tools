@@ -250,11 +250,22 @@ def test_research_failed_status_raises_clear_error() -> None:
     # Real shape when model_preference is incompatible with the mode: a single
     # frame with text present but status=FAILED + mode dropped to CONCISE.
     client = _FakeClient(
-        [{"data": {"text": "{}", "status": "FAILED", "mode": "CONCISE", "text_completed": False}}]
+        [
+            {
+                "data": {
+                    "backend_uuid": "BU",
+                    "read_write_token": "RW",
+                    "text": "{}",
+                    "status": "FAILED",
+                    "mode": "CONCISE",
+                    "text_completed": False,
+                }
+            }
+        ]
     )
     with pytest.raises(SchemaError, match="FAILED"):
         research(client, "q", mode="research")
-    assert client.deleted == []  # no thread to clean up on a failed request
+    assert client.deleted == [("BU", "RW")]  # thread reaped even on FAILED (no leak)
 
 
 def test_model_for_mode_maps_to_driving_model() -> None:

@@ -112,8 +112,13 @@ def research(
     model_preference = model or _model_for_mode(mode)
     # Model Council never completes unless compare_model_preferences is set, so
     # default to the trio when the user didn't pick one (see _DEFAULT_COUNCIL_MODELS).
-    if model_preference == _COUNCIL_MODEL and not council_models:
-        council_models = list(_DEFAULT_COUNCIL_MODELS)
+    if model_preference == _COUNCIL_MODEL:
+        if not council_models:
+            council_models = list(_DEFAULT_COUNCIL_MODELS)
+    else:
+        # compare_model_preferences only applies to Model Council; drop it for any
+        # other model so a stray --council-models doesn't ride along on a research req.
+        council_models = None
     body = _build_research_body(query, model_preference, council_models=council_models)
     latest: dict[str, str | None] = {"text": None}
 
@@ -132,6 +137,13 @@ def research(
         label="research",
     )
 
+    # Best-effort cleanup runs on EVERY exit path (success, FAILED, no-content,
+    # or a decode error below) — delete_thread never raises, so doing it before
+    # the error checks stops a FAILED/partial request from leaking the incognito
+    # thread it created.
+    if not keep_thread and state.backend_uuid and state.read_write_token:
+        client.delete_thread(state.backend_uuid, state.read_write_token)
+
     if state.failed:
         raise SchemaError(
             f"research request on {ENDPOINT} returned status=FAILED; mode {mode!r} may "
@@ -146,9 +158,6 @@ def research(
         raise SchemaError(f"no schematized text received from {ENDPOINT}")
 
     answer, sources = decode_research_text(latest["text"])
-
-    if not keep_thread and state.backend_uuid and state.read_write_token:
-        client.delete_thread(state.backend_uuid, state.read_write_token)
 
     return ResearchResult(
         query=query,

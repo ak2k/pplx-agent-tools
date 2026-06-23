@@ -49,6 +49,23 @@ def resolve_model(arg: str | None, env_vars: Sequence[str], default: str) -> str
     return default
 
 
+def resolve_timeout(arg: float | None, env_var: str, default: float, verb: str) -> float | None:
+    """Resolve a wall-clock deadline: --timeout flag → env var → default. A value
+    of 0 (or negative) means 'disable the deadline' and returns None. A non-numeric
+    env var is warned about and ignored. Shared by the ask-family CLIs."""
+    if arg is not None:
+        return None if arg <= 0 else arg
+    env = os.environ.get(env_var)
+    if env is not None:
+        try:
+            v = float(env)
+        except ValueError:
+            print(f"pplx {verb}: ignoring non-numeric ${env_var}={env!r}", file=sys.stderr)
+            return default
+        return None if v <= 0 else v
+    return default
+
+
 @overload
 def run_verb(
     name: str,
