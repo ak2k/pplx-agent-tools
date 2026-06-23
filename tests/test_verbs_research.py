@@ -292,6 +292,33 @@ def test_research_model_override_bypasses_mode_mapping() -> None:
     assert captured["mp"] == "o4mini"  # --model wins over the mode default (pplx_alpha)
 
 
+def test_research_council_auto_sends_default_trio() -> None:
+    captured: dict[str, Any] = {}
+
+    class _Cap(_FakeClient):
+        def sse_post(self, path: str, body: dict[str, Any], *, max_total_seconds=None):  # type: ignore[override]
+            captured["mp"] = body["params"]["model_preference"]
+            captured["compare"] = body["params"].get("compare_model_preferences")
+            return iter(self._events)
+
+    research(_Cap(_complete_events()), "q", mode="council")
+    assert captured["mp"] == "pplx_agentic_research"
+    # council STALLS without compare_model_preferences, so the verb defaults the trio.
+    assert captured["compare"] == ["gpt55_thinking", "claude48opusthinking", "gemini31pro_high"]
+
+
+def test_research_council_explicit_models_override_default() -> None:
+    captured: dict[str, Any] = {}
+
+    class _Cap(_FakeClient):
+        def sse_post(self, path: str, body: dict[str, Any], *, max_total_seconds=None):  # type: ignore[override]
+            captured["compare"] = body["params"].get("compare_model_preferences")
+            return iter(self._events)
+
+    research(_Cap(_complete_events()), "q", mode="council", council_models=["m1", "m2", "m3"])
+    assert captured["compare"] == ["m1", "m2", "m3"]
+
+
 def test_research_passes_model_preference_into_body() -> None:
     captured: dict[str, Any] = {}
 

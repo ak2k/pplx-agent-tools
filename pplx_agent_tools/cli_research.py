@@ -32,11 +32,9 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_MODE,
         help=(
             f"research depth (default: {DEFAULT_MODE} = Perplexity Deep Research). "
-            "'council' (aka 'agentic_research') = Model Council: multiple frontier "
-            "models cross-checked. EXPERIMENTAL — observed to run >7 min without "
-            "completing and its answer block isn't decoded yet, so it usually times "
-            "out empty; prefer 'research'. An unknown value is passed through as a "
-            "raw model_preference."
+            "'council' (aka 'agentic_research') = Model Council: 3 frontier models "
+            "cross-checked (~80s; pick them with --council-models, else a default "
+            "trio is sent). An unknown value is passed through as a raw model_preference."
         ),
     )
     parser.add_argument(

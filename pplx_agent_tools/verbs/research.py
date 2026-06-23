@@ -43,11 +43,20 @@ DEFAULT_MODE = "research"
 # params.mode coarse ("copilot"). Model ids here are the stable internal
 # constants (ALPHA / AGENTIC_RESEARCH); the per-mode default_models can drift,
 # but these identifiers have held across builds.
+_RESEARCH_MODEL = "pplx_alpha"  # Deep Research: multi-round + reasoning
+_COUNCIL_MODEL = "pplx_agentic_research"  # Model Council: multi-model cross-check
 _MODE_MODEL = {
-    "research": "pplx_alpha",  # Deep Research: multi-round + reasoning
-    "agentic_research": "pplx_agentic_research",  # Model Council: multi-model
-    "council": "pplx_agentic_research",  # friendly alias for agentic_research
+    "research": _RESEARCH_MODEL,
+    "agentic_research": _COUNCIL_MODEL,
+    "council": _COUNCIL_MODEL,  # friendly alias
 }
+
+# Default Model Council trio (mirrors /rest/models/config
+# `agentic_research_compare_models`; can drift across builds — override with
+# --council-models). Verified 2026-06-23: council STALLS forever unless
+# `compare_model_preferences` is set (the web always sends it); with the trio it
+# completes in ~80s and returns a FINAL block in the usual shape.
+_DEFAULT_COUNCIL_MODELS = ["gpt55_thinking", "claude48opusthinking", "gemini31pro_high"]
 
 
 def _model_for_mode(mode: str) -> str:
@@ -101,6 +110,10 @@ def research(
     (`_ask_common.run_ask_stream`).
     """
     model_preference = model or _model_for_mode(mode)
+    # Model Council never completes unless compare_model_preferences is set, so
+    # default to the trio when the user didn't pick one (see _DEFAULT_COUNCIL_MODELS).
+    if model_preference == _COUNCIL_MODEL and not council_models:
+        council_models = list(_DEFAULT_COUNCIL_MODELS)
     body = _build_research_body(query, model_preference, council_models=council_models)
     latest: dict[str, str | None] = {"text": None}
 

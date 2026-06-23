@@ -15,8 +15,16 @@ behavior:
 |---|---|---|---|
 | Pro Search (copilot) | `turbo` | 1 SEARCH_WEB round, ~15 sources, ~20s | `copilot` |
 | **Deep Research** | **`pplx_alpha`** | LOAD_SKILL + **3 SEARCH_WEB rounds** + THOUGHT steps, **~43 sources**, ~90–115s | `copilot` |
-| **Model Council** | **`pplx_agentic_research`** | `COUNCIL_RESEARCH` block (GPT-5.5-thinking + Claude-Opus-4.8-thinking + Gemini-3.1-Pro), 165s+ | `copilot` |
+| **Model Council** | **`pplx_agentic_research`** | `INITIAL_QUERY` → `COUNCIL_RESEARCH` → `FINAL`, ~80s | `copilot` |
 | Computer / ASI | `pplx_asi` | echoes mode `ASI`; separate runtime (needs `/rest/realtime/v2/computer/session`) | `copilot` |
+
+**Model Council gotcha (verified 2026-06-23):** `pplx_agentic_research` STALLS
+forever unless `params.compare_model_preferences` is set (the web always sends the
+3-model trio). With the trio it completes in ~80s and returns a normal `FINAL`
+block (`content.answer` JSON-wrapped like Deep Research, so the same decoder
+works). `pplx research --mode council` therefore auto-sends a default trio
+(`gpt55_thinking, claude48opusthinking, gemini31pro_high`) unless `--council-models`
+overrides it.
 
 So `pplx research` keeps `params.mode = "copilot"` (coarse; the server derives the
 real mode from the model) and maps its user-facing `--mode` to the driving model
