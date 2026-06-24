@@ -40,9 +40,12 @@ preserve all shapes bump the **patch**.
 - Typecheck: `uv run --extra dev basedpyright pplx_agent_tools/`
 - Coverage: `uv run --extra dev pytest --cov` (gated at `fail_under = 60`)
 
-**CI runs all four** — `ruff check`, `ruff format --check`, `basedpyright`,
-and `pytest`. Running only `ruff check` locally misses the formatter;
-always run both before pushing.
+**CI is `nix flake check`** — it builds `checks.{lint,typecheck,deadcode,tests}`:
+`ruff check` + `ruff format --check` (lint), `basedpyright` (typecheck), `vulture`
+(deadcode), and `pytest --cov` (tests), and **stops at the first failing check** (so
+failures surface one at a time). The per-tool commands above cover most of it, but
+`ruff check` alone misses the formatter, basedpyright, and vulture — run
+`nix flake check` to reproduce the exact gate before pushing.
 
 The `[tool.pyright]` table in `pyproject.toml` still configures the type
 checker — basedpyright reads the same config keys as pyright (it's a
