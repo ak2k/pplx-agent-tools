@@ -17,8 +17,11 @@ That's it — no source-file edits, no version strings to keep in sync.
 The tag IS the version: `hatch-vcs` derives it at build time from
 either git history (local dev) or the substituted `.git_archival.txt`
 (GitHub-fetched tarballs, which is how Nix flake-consumes us via
-`github:ak2k/pplx-agent-tools/vX.Y.Z`). Renovate picks up the new tag
-within an hour and opens a PR on `ak2k-skills`.
+`github:ak2k/pplx-agent-tools/vX.Y.Z`). Pushing the tag triggers
+`.github/workflows/release.yml`, which creates the matching GitHub
+**Release** — `ak2k-skills`' Renovate watches Releases (not bare tags), so
+the Release is what opens the bump PR there (within ~an hour). A tag with no
+Release never reaches consumers.
 
 Between tags, `pplx --version` reports a dev marker like
 `0.3.2.dev2+ga1b2c3d` — informative ("you're on a non-released build")
