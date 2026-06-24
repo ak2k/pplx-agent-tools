@@ -31,6 +31,7 @@ from collections.abc import Callable, Sequence
 from typing import Any, Literal, TypeVar, overload
 
 from .errors import EXIT_OK, PplxError, exit_code
+from .render import envelope
 from .wire import Client
 
 R = TypeVar("R")
@@ -64,6 +65,26 @@ def resolve_timeout(arg: float | None, env_var: str, default: float, verb: str) 
             return default
         return None if v <= 0 else v
     return default
+
+
+def _emit_error(name: str, err: PplxError, args: Namespace) -> int:
+    """Print the error to stderr and, under --json, a parseable error envelope
+    to stdout, then return the mapped exit code.
+
+    Without this, a `--json` run that fails writes nothing to stdout and the
+    reason only to stderr, forcing pure-JSON consumers to scrape stderr text.
+    The error envelope mirrors the success shape (`_pplx_tools_version`,
+    `_verb`) so a consumer can branch on the presence of an `error` key.
+    """
+    print(f"pplx {name}: {err}", file=sys.stderr)
+    if getattr(args, "json", False):
+        error_obj = {
+            "type": type(err).__name__,
+            "message": str(err),
+            "exit_code": exit_code(err),
+        }
+        print(json.dumps(envelope(name, {"error": error_obj}), indent=2))
+    return exit_code(err)
 
 
 @overload
@@ -122,14 +143,12 @@ def run_verb(
         try:
             client = Client.from_default_cookies(profile=getattr(args, "profile", None))
         except PplxError as e:
-            print(f"pplx {name}: {e}", file=sys.stderr)
-            return exit_code(e)
+            return _emit_error(name, e, args)
 
     try:
         result = run(client)
     except PplxError as e:
-        print(f"pplx {name}: {e}", file=sys.stderr)
-        return exit_code(e)
+        return _emit_error(name, e, args)
 
     if getattr(args, "json", False):
         print(json.dumps(render_json(result), indent=2))

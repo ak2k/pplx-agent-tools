@@ -18,9 +18,11 @@ signals but keeps the agent-shape single-command primitive.
 
 from __future__ import annotations
 
+import ipaddress
+import socket
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 from curl_cffi import requests as cf_requests
 
@@ -34,6 +36,12 @@ _PROMPT_ENDPOINT = "/rest/sse/perplexity_ask"
 # gopher://, custom) is rejected up front — we never want curl_cffi to
 # touch the local filesystem or non-HTTP backends from a user-supplied URL.
 _ALLOWED_FETCH_SCHEMES = frozenset({"http", "https"})
+
+# Manual redirect handling: curl_cffi's allow_redirects would follow a 3xx into
+# an internal host without re-running the SSRF guard below, so we cap the hops
+# and re-validate each Location ourselves (see _get_guarded).
+_MAX_REDIRECTS = 5
+_REDIRECT_CODES = frozenset({301, 302, 303, 307, 308})
 
 
 def _require_http_url(url: str) -> None:
@@ -49,6 +57,66 @@ def _require_http_url(url: str) -> None:
         )
     if not parsed.netloc:
         raise NetworkError(f"fetch {url}: URL has no host")
+
+
+def _assert_public_host(url: str) -> None:
+    """Reject URLs whose host resolves to a non-public address (SSRF guard).
+
+    Blocks private (10/8, 172.16/12, 192.168/16), loopback (127/8, ::1),
+    link-local (169.254/16 — incl. the cloud metadata IP 169.254.169.254),
+    and other reserved/multicast ranges. Every address the host resolves to is
+    checked, so a hostname that maps to an internal IP is caught as well as a
+    bare-IP URL.
+
+    Residual risk: the name is resolved here, but curl_cffi resolves it again at
+    connect time, so a DNS-rebinding attacker could return a public IP now and
+    an internal one then. Closing that fully needs IP-pinned connections; this
+    guard covers the common direct-internal-IP and redirect-to-internal vectors.
+    """
+    host = urlparse(url).hostname
+    if not host:
+        raise NetworkError(f"fetch {url}: URL has no host")
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except OSError as e:
+        raise NetworkError(f"fetch {url}: cannot resolve host {host!r}: {e}") from e
+    for info in infos:
+        addr = str(info[4][0])
+        ip = ipaddress.ip_address(addr)
+        if (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_reserved
+            or ip.is_multicast
+            or ip.is_unspecified
+        ):
+            raise NetworkError(f"fetch {url}: host {host!r} resolves to non-public address {addr}")
+
+
+def _get_guarded(
+    session: cf_requests.Session[cf_requests.Response],
+    url: str,
+    *,
+    timeout: float = 30.0,
+) -> cf_requests.Response:
+    """GET `url`, following redirects manually so every hop is SSRF-checked.
+
+    curl_cffi's `allow_redirects=True` would follow a 3xx into a private host
+    without re-running the guard, so we disable it and re-validate the scheme
+    and resolved IP of each Location before fetching it.
+    """
+    current = url
+    for _ in range(_MAX_REDIRECTS + 1):
+        _require_http_url(current)
+        _assert_public_host(current)
+        resp = session.get(current, timeout=timeout, allow_redirects=False)
+        location = resp.headers.get("location")
+        if resp.status_code in _REDIRECT_CODES and location:
+            current = urljoin(current, location)
+            continue
+        return resp
+    raise NetworkError(f"fetch {url}: exceeded {_MAX_REDIRECTS} redirects")
 
 
 @dataclass
@@ -132,17 +200,16 @@ def fetch_page(
     host is markedly less Cloudflare-antagonizing than rapid TCP setups.
     When None (default), a fresh session is created and torn down per call.
     """
-    _require_http_url(url)
     try:
         if session is None:
             # Standalone path: fresh session, torn down on exit. curl_cffi
             # keeps the chrome TLS fingerprint which handles Cloudflare-
             # protected sources transparently.
             with cf_requests.Session(impersonate="chrome") as sess:
-                resp = sess.get(url, timeout=30, allow_redirects=True)
+                resp = _get_guarded(sess, url)
         else:
             # Caller owns the session lifecycle (typically one per host group).
-            resp = session.get(url, timeout=30, allow_redirects=True)
+            resp = _get_guarded(session, url)
     except NetworkError:
         raise
     except Exception as e:
