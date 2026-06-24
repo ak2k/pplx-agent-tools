@@ -1,0 +1,29 @@
+name: release
+
+# Create a GitHub Release whenever a vX.Y.Z tag is pushed.
+#
+# Why this exists: downstream Renovate (on ak2k-skills, which pins this repo by
+# tag in flake.nix) watches GitHub *Releases*, not git tags. Without a Release,
+# a pushed tag never reaches consumers — the bump PR is never opened. This
+# bridges `git push origin vX.Y.Z` to a Release so the existing Renovate
+# `github-releases` datasource picks it up.
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Create GitHub Release from the pushed tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" --generate-notes --verify-tag
