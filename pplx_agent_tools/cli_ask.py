@@ -17,7 +17,17 @@ from .errors import EXIT_OK, EXIT_PARTIAL
 from .render import render_ask_json, render_ask_text
 from .verbs.ask import DEFAULT_MODEL, AskResult, ask
 
-_DEFAULT_TIMEOUT_SECONDS = 120.0
+# Sized for a thinking model, not for `turbo`. `turbo` answers in ~5-15 s; the
+# reasoning variants (`claude50opusthinking` et al., often pinned via
+# $PPLX_MODEL) measured 30-86 s over a 6-question sample, and a separate run
+# streamed for 147 s before returning an empty answer. So the backend does
+# exceed 120 s, and the old ceiling left only ~1.4x headroom over the observed
+# max — thin for a hang guard. 180 s matches `fetch --prompt`, the other
+# LLM-routed streaming verb. Deliberately not `research`'s 300 s: nothing in
+# the sample justifies it, and the deadline is also what bounds the wait on a
+# degenerate no-answer stream. Tighten per call with --timeout /
+# $PPLX_ASK_TIMEOUT when a caller needs a real latency bound.
+_DEFAULT_TIMEOUT_SECONDS = 180.0
 
 
 def build_parser() -> argparse.ArgumentParser:
