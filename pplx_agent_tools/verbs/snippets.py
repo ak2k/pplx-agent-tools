@@ -256,6 +256,17 @@ def _build_index(
     sqlite_vec.load(conn)
     conn.enable_load_extension(False)
 
+    # vec0 consumes a `rowid IN (...)` pre-filter only through sqlite3_vtab_in,
+    # added in SQLite 3.38. Below that the IN degrades to a post-filter applied
+    # after a GLOBAL top-k, so _hybrid_retrieve would silently return no vector
+    # rows for a url whose paragraphs fall outside that window.
+    if sqlite3.sqlite_version_info < (3, 38):
+        conn.close()
+        raise SchemaError(
+            "pplx snippets needs SQLite 3.38+ so vec0 can pre-filter the KNN "
+            f"by url (found {sqlite3.sqlite_version})"
+        )
+
     conn.execute(
         "CREATE TABLE paragraphs (id INTEGER PRIMARY KEY, url TEXT, text TEXT, words INTEGER)"
     )

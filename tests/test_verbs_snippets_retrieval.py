@@ -14,6 +14,7 @@ import sqlite3
 
 import pytest
 
+from pplx_agent_tools.errors import SchemaError
 from pplx_agent_tools.verbs.snippets import (
     RRF_K,
     _build_index,
@@ -219,3 +220,27 @@ def test_retrieve_large_corpus_does_not_exceed_vec0_k_limit() -> None:
     )
     assert len(results) == 3
     assert all(text.startswith("tiny paragraph ") for text, _, _ in results)
+
+
+def test_host_sqlite_satisfies_vec0_pushdown_floor() -> None:
+    """The rest of this file asserts url-scoped KNN behaviour, which is only
+    correct on the pushdown path. Pin the floor so a host below it fails here
+    rather than producing silently misleading passes elsewhere.
+    """
+    assert sqlite3.sqlite_version_info >= (3, 38), (
+        f"tests assume vec0 rowid pushdown; host SQLite is {sqlite3.sqlite_version}"
+    )
+
+
+def test_build_index_refuses_sqlite_below_3_38(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Below 3.38 vec0 cannot consume the rowid IN pre-filter, so the KNN goes
+    global again. The verb must raise, not return a plausible wrong answer.
+    """
+    monkeypatch.setattr(sqlite3, "sqlite_version_info", (3, 37, 2))
+    monkeypatch.setattr(sqlite3, "sqlite_version", "3.37.2")
+    rows, vecs = _make_rows()
+    with pytest.raises(SchemaError) as excinfo:
+        _build_index(rows, vecs, dim=3)
+    message = str(excinfo.value)
+    assert "3.38" in message
+    assert "3.37.2" in message
