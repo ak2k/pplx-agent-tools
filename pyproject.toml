@@ -138,6 +138,9 @@ show_missing = true
 fail_under = 60
 
 [tool.pyright]
+# Editors and a bare `basedpyright` read this; CI and the documented CLI pass
+# explicit paths, which override `include` entirely — keep both in sync when
+# the checked surface changes.
 include = ["pplx_agent_tools", "tests"]
 exclude = ["re-fixtures", "**/__pycache__"]
 pythonVersion = "3.10"
