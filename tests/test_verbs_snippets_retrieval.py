@@ -223,7 +223,7 @@ def test_retrieve_large_corpus_does_not_exceed_vec0_k_limit() -> None:
 
 
 def test_host_sqlite_satisfies_vec0_pushdown_floor() -> None:
-    """The rest of this file asserts url-scoped KNN behaviour, which is only
+    """The rest of this file asserts url-scoped KNN behavior, which is only
     correct on the pushdown path. Pin the floor so a host below it fails here
     rather than producing silently misleading passes elsewhere.
     """
