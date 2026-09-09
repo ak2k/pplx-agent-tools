@@ -82,7 +82,7 @@ do not hold against the current surface:
 
 | May conclusion | Reality now |
 |---|---|
-| "no rate-limit visibility" (daemon trigger was "hitting 429s blind") | `GET /rest/rate-limit/status` returns per-mode + per-source quota — **validated 200 today** |
+| "no rate-limit visibility" (daemon trigger was "hitting 429s blind") | `GET /rest/rate-limit/status` returns per-mode + per-source quota — **validated 200 today**. Also 200 anonymously, with everything at exact 0 (2026-09-09) — pre-flight `/api/auth/session` |
 | "variant searches route only through the chat SSE; no dedicated endpoints" | `models/config.default_models` exposes modes `research / agentic_research / study / document_review` selectable on the ask endpoint — deep/variant *modes* are reachable (but via the ask/session flow, not statelessly) |
 | variant search was "Phase 2, needs SSE block parsing" | `/rest/sse` has **23** endpoints incl. resume/terminate (`perplexity_ask/reconnect/{uuid}`, `perplexity_terminate`) — directly relevant to the `pplx fetch --prompt` partial-stream problem (exit 6) |
 
@@ -126,7 +126,7 @@ Tier 1 — cheap, read-only, high agent value, minimal RE:
 
 | Verb idea | Endpoint(s) | Method | Notes |
 |---|---|---|---|
-| `pplx quota` / `pplx rate-limit` | `/rest/rate-limit/status` | GET | per-mode + per-source budget; lets agent loops self-throttle. Validated. |
+| `pplx quota` / `pplx rate-limit` | `/rest/rate-limit/status` | GET | per-mode + per-source budget; lets agent loops self-throttle. Validated. Anonymous → 200 with a zeroed table, so the verb validates the session first. |
 | `pplx models` | `/rest/models/config`, `/rest/models/modes` | GET | model + mode catalog; feeds a `--model`/`--mode` flag. Validated. |
 | `pplx suggest` | `/rest/autosuggest/list-autosuggest` | POST | query completion/expansion. |
 

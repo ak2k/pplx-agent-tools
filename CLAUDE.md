@@ -92,6 +92,15 @@ Discipline for the ask-family exception:
   belt-and-suspenders, but deletion stops being load-bearing.
 - Keep `delete_thread` cleanup as the secondary guard (`keep_thread=False`).
 
+Gotcha — **the stateless GETs answer 200 to an anonymous caller.** With no
+cookies (or an expired session), `rate-limit/status` returns a fully populated
+table with every mode and source `{"available": false, "remaining_detail":
+{"kind": "exact", "remaining": 0}}` — byte-for-byte the shape of an exhausted
+account — and `models/config` returns the public catalog. The wire layer's
+401/403 → `AuthError` mapping never fires on these. A verb whose payload is only
+meaningful for *this* session must call `client.auth_session()` first (`quota`
+does; captured fixture at `tests/fixtures/rate-limit-status/anonymous.json`).
+
 Gotcha — **the image/video/news "variant search" endpoints are NOT stateless.**
 `/rest/media/search-images-and-videos` requires `{query, entry_uuid,
 read_write_token}` and `/rest/sources/search/news` requires `{entry_uuid, limit,
