@@ -80,9 +80,10 @@ class ResearchResult:
     mode: str
     # False iff the stream was cut before COMPLETED (deadline tripped / server cut).
     stream_complete: bool = True
-    # True when the snapshot we kept decodes to a *shorter* answer than one we
-    # saw earlier in the stream: the stream finished, but the text we return is
-    # demonstrably missing content, so the caller must not trust it as complete.
+    # True when the kept snapshot decodes shorter than the single LONGEST raw
+    # snapshot seen (raw length is the cheap proxy — decoding all ~800 frames is
+    # not). So it is a positive signal, never a completeness guarantee: a shrink
+    # hidden under a frame whose raw text was larger goes unflagged.
     content_shortfall: bool = False
     warnings: list[str] = field(default_factory=list)
 

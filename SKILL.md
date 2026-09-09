@@ -77,7 +77,7 @@ pplx auth check
 | 3 | Rate limit (429) | exponential backoff |
 | 4 | Network (DNS / timeout / TLS) | linear backoff |
 | 5 | Anti-bot (Cloudflare challenge) | investigate, don't auto-retry |
-| 6 | Partial: stream incomplete (deadline tripped or server cut). Stdout still carries usable content. | accept partial OR bump `--timeout`; blind retry usually hits the same backend slowness |
+| 6 | Partial: stream incomplete (deadline tripped or server cut), or the answer decoded shorter than an earlier frame (`content_shortfall: true` with `stream_complete: true`). Stdout still carries usable content. | accept partial OR bump `--timeout`; blind retry usually hits the same backend slowness |
 
 Stdout is results only; stderr carries diagnostics. `2>/dev/null` gives clean parseable stdout.
 

@@ -26,8 +26,8 @@ payload AND inside `data.text` (a JSON *string* holding the research block list)
 AND inside the FINAL block's `content.answer` (a JSON string again):
   - account/thread-bound ids (see SENTINELS): backend_uuid, read_write_token,
     context/frontend uuids, per-block `uuid`, cursor, slugs, author_*/user_*
-  - the RESEARCH_ANSWER report URL: a *signed* CloudFront/S3 link (Policy +
-    Signature query params), i.e. a time-limited credential
+  - the RESEARCH_ANSWER report URL: a *signed* CloudFront/S3 link (custom- or
+    canned-policy query params), i.e. a time-limited credential
   - any email-shaped string anywhere
 
 Preserved verbatim: `status`, `text_completed`, `step_type`s, the report body
@@ -75,8 +75,13 @@ _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 # The generated report is served from a pre-signed CDN link; the same link is
 # repeated under several asset keys (`url`, `download_info[].url`,
 # `fallback_info.webview_url`), so match the credential itself, not the key name.
+# CloudFront signs two ways and only the custom-policy form carries `Policy=`; the
+# canned-policy form carries just `Signature=` + `Key-Pair-Id=`, so matching
+# `Policy=` alone would let that second form ride out intact.
 # `/web/direct-files/<account hash>/...` is the unsigned twin of the same asset.
-_SIGNED_URL_RE = re.compile(r"https?://\S*(?:[?&]Policy=|/web/direct-files/)\S*")
+_SIGNED_URL_RE = re.compile(
+    r"https?://\S*(?:[?&](?:Policy|Signature|Key-Pair-Id)=|/web/direct-files/)\S*"
+)
 
 MAX_WEB_RESULTS = 10
 
@@ -89,6 +94,25 @@ def _is_identity_key(key: str) -> bool:
     return key not in PREFIX_EXEMPT and key.startswith(("author_", "user_"))
 
 
+def _redact_identity(key: str, value: Any) -> Any:
+    """An `author_*`/`user_*` value → its sentinel, whatever its JSON type.
+
+    Gating this on `str` let an identity ride out under a dict, list or int.
+    Scalars are replaced outright; a list is redacted element-wise (it inherits
+    the key's meaning — a list of user ids is still user ids); a dict recurses
+    through `_scrub`, keeping the shape while still applying the SENTINELS,
+    email and signed-URL rules inside it. `None` stays `None`: a null carries no
+    identity, and substituting one would invent a field the wire never sent.
+    """
+    if isinstance(value, list):
+        return [_redact_identity(key, item) for item in value]
+    if isinstance(value, dict):
+        return _scrub(value)
+    if value is None:
+        return None
+    return SENTINELS.get(key, "REDACTED")
+
+
 def _scrub(node: Any) -> Any:
     """Recursively replace identity fields, cap web_results, scrub emails."""
     if isinstance(node, dict):
@@ -96,8 +120,8 @@ def _scrub(node: Any) -> Any:
         for key, value in node.items():
             if key in SENTINELS and value is not None:
                 out[key] = SENTINELS[key]
-            elif _is_identity_key(key) and isinstance(value, str):
-                out[key] = SENTINELS.get(key, "REDACTED")
+            elif _is_identity_key(key):
+                out[key] = _redact_identity(key, value)
             elif key == "web_results" and isinstance(value, list):
                 out[key] = [_scrub(v) for v in value[:MAX_WEB_RESULTS]]
             elif key == "research_report" and isinstance(value, dict):

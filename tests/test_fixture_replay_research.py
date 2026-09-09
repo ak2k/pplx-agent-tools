@@ -11,6 +11,9 @@ Observed shape (weather-nowcasting-apis.events.jsonl — 8 of 802 captured frame
   - frame 6: status COMPLETED carrying the authoritative repaint
   - frame 7: `{}` — the stream's final empty frame
 
+Nested `web_results` lists are capped at 10 per list by the sanitizer, so source
+counts here are a floor, not the real stream's total — assert on shape, not size.
+
 Two defects are pinned here, both of which shipped a plausible-looking wrong
 answer (exit 0, ~1.2k chars) instead of the 9.7k-char report:
   1. the report body lives in the RESEARCH_ANSWER block's report asset, not in
@@ -23,9 +26,11 @@ Regenerate with scripts/re-capture-research.py + scripts/re-sanitize-research-fi
 
 from __future__ import annotations
 
+import importlib.util
 import json
 from collections.abc import Iterator
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 import pytest
@@ -142,6 +147,52 @@ def test_final_block_alone_is_only_a_cover_note(weather_fixture: Path) -> None:
     assert answer.startswith(cover)
     assert len(answer) > 4 * len(cover)
     assert len(_headings(answer)) >= 3
+
+
+def _sanitizer() -> ModuleType:
+    """Import the sanitizer by path: `scripts/` is not a package and the module
+    name is hyphenated, so neither a plain import nor a relative one reaches it."""
+    spec = importlib.util.spec_from_file_location("re_sanitize_fixture", SANITIZER_SCRIPT)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_sanitizer_redacts_identity_keys_of_every_type() -> None:
+    """An `author_*`/`user_*` key is identity whatever its value's JSON type.
+    Gating the rule on `str` let an int, a list or a dict ride out unscrubbed."""
+    san = _sanitizer()
+    out = san._scrub(
+        {
+            "user_id": 481516,
+            "user_aliases": ["adam", "ak2k"],
+            "author_profile": {"backend_uuid": "real-uuid", "bio": "reach me at a@b.example"},
+            "user_deleted_at": None,
+            "user_selected_model": "pplx_alpha",
+        }
+    )
+
+    assert out["user_id"] == "REDACTED", "an int id is still an id"
+    assert out["user_aliases"] == ["REDACTED", "REDACTED"]
+    assert out["author_profile"]["backend_uuid"] == san.SENTINELS["backend_uuid"]
+    assert "a@b.example" not in out["author_profile"]["bio"]
+    assert out["user_deleted_at"] is None, "a null carries no identity — don't invent a field"
+    assert out["user_selected_model"] == "pplx_alpha", "PREFIX_EXEMPT: a model id, not an identity"
+
+
+def test_sanitizer_scrubs_canned_policy_signed_urls() -> None:
+    """CloudFront's canned-policy signature carries no `Policy=` — only
+    `Signature=` + `Key-Pair-Id=` — so a `Policy=`-only pattern let a live
+    credential survive into a committed fixture."""
+    san = _sanitizer()
+    canned = "https://cdn.example/report.md?Expires=1&Signature=AbC123&Key-Pair-Id=APKAEXAMPLE"
+
+    assert san._scrub({"url": canned})["url"] == san.SENTINEL_REPORT_URL
+    assert san._scrub({"url": f"{canned}&Policy=eyJ"})["url"] == san.SENTINEL_REPORT_URL
+    # …without swallowing ordinary cited sources, which the tests read as data.
+    plain = "https://example.com/article?utm_source=x"
+    assert san._scrub({"url": plain})["url"] == plain
 
 
 def test_sentinels_match_sanitizer_script() -> None:

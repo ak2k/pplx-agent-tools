@@ -449,3 +449,27 @@ def test_render_json_reports_content_shortfall() -> None:
     assert render_research_json(ResearchResult("q", "a", [], "research"))["content_shortfall"] is (
         False
     )
+
+
+def test_research_incomplete_when_stream_ends_at_text_completed() -> None:
+    """A stream that stops at `text_completed` never sent the repaint research
+    waits for, so its answer is partial and must say so. The shared default
+    predicate treated this same stream as a clean finish (exit 0)."""
+    client = _FakeClient(
+        [
+            {
+                "data": {
+                    "backend_uuid": "BU",
+                    "read_write_token": "RW",
+                    "text": _snapshot("partial"),
+                }
+            },
+            {"data": {"text": _snapshot("partial"), "text_completed": True}},
+        ]
+    )
+    result = research(client, "q")
+
+    assert result.stream_complete is False
+    assert result.answer == "partial"
+    assert result.content_shortfall is False
+    assert client.deleted == [("BU", "RW")], "the incognito thread is still cleaned up"
