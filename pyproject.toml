@@ -133,9 +133,10 @@ exclude_also = [
     "if __name__ == .__main__.:",
 ]
 show_missing = true
-# Floor — `pytest --cov` fails below this. Bumped manually when coverage
-# climbs and we want the new floor enforced (not auto-ratcheted to current).
-fail_under = 60
+# Floor — `pytest --cov` fails below this, and the flake `tests` check runs
+# --cov, so this gates CI. Bumped manually when coverage climbs and we want
+# the new floor enforced (not auto-ratcheted to current).
+fail_under = 80
 
 [tool.pyright]
 # Editors and a bare `basedpyright` read this; CI and the documented CLI pass
@@ -149,5 +150,8 @@ typeCheckingMode = "standard"
 # trafilatura (older lib, no inline annotations). Silence stub-missing noise
 # rather than burn time chasing it.
 reportMissingTypeStubs = false
-reportMissingImports = "warning"
+# Not "warning": an unresolved import degrades every dependent symbol to
+# Unknown, erasing real type errors while basedpyright still exits 0 — a
+# green check that verified nothing. Distinct from missing *stubs* above.
+reportMissingImports = "error"
 useLibraryCodeForTypes = true
