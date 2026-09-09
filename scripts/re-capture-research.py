@@ -51,12 +51,32 @@ from pplx_agent_tools.wire import Client  # noqa: E402
 OUT_DIR = REPO / "re-fixtures" / "research"
 
 
+def label_arg(value: str) -> str:
+    """A --label is a bare basename, never a path.
+
+    An unchecked label escapes OUT_DIR: `../../tests/fixtures/research/raw` drops
+    an UNSANITIZED capture (live thread token, account ids) straight into the
+    tracked fixture tree."""
+    if not value:
+        raise argparse.ArgumentTypeError("label must not be empty")
+    if "/" in value or "\\" in value:
+        raise argparse.ArgumentTypeError(f"label must not contain a path separator: {value!r}")
+    if any(part in ("", ".", "..") for part in value.split(".")):
+        raise argparse.ArgumentTypeError(f"label must not contain a . or .. component: {value!r}")
+    return value
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("query")
     ap.add_argument("--mode", default="research")
     ap.add_argument("--timeout", type=float, default=600.0)
-    ap.add_argument("--label", default=None, help="output basename (default: derived from query)")
+    ap.add_argument(
+        "--label",
+        type=label_arg,
+        default=None,
+        help="output basename (default: derived from query)",
+    )
     args = ap.parse_args(argv)
 
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%SZ")
@@ -64,6 +84,11 @@ def main(argv: list[str] | None = None) -> int:
     label = args.label or f"{slug}-{ts}"
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     out_path = OUT_DIR / f"{label}.events.jsonl"
+    # Belt-and-braces behind label_arg, and the one check the derived slug also
+    # passes through: a capture lands inside the gitignored scratch dir or nowhere.
+    if out_path.resolve().parent != OUT_DIR.resolve():
+        print(f"refusing to write outside {OUT_DIR}: {out_path}", file=sys.stderr)
+        return 2
 
     client = Client.from_default_cookies(profile=None)
     model = _model_for_mode(args.mode)
@@ -72,11 +97,19 @@ def main(argv: list[str] | None = None) -> int:
     council = list(_DEFAULT_COUNCIL_MODELS) if model == _COUNCIL_MODEL else None
     body = _build_research_body(args.query, model, council_models=council)
 
+    # Exclusive create, before the request: two captures of the same query inside
+    # one second derive the same filename, and "w" truncated the first one away.
+    try:
+        out_file = out_path.open("x")
+    except FileExistsError:
+        print(f"capture already exists, refusing to overwrite: {out_path}", file=sys.stderr)
+        return 2
+
     backend_uuid: str | None = None
     read_write_token: str | None = None
     count = 0
     try:
-        with out_path.open("w") as f:
+        with out_file as f:
             for event in client.sse_post(ENDPOINT, body, max_total_seconds=args.timeout):
                 data: Any = event.get("data")
                 f.write(json.dumps(data, separators=(",", ":")))

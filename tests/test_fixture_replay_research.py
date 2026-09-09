@@ -26,6 +26,7 @@ Regenerate with scripts/re-capture-research.py + scripts/re-sanitize-research-fi
 
 from __future__ import annotations
 
+import argparse
 import importlib.util
 import json
 from collections.abc import Iterator
@@ -41,6 +42,7 @@ from tests._doubles import _TestClientBase
 
 FIXTURES = Path(__file__).parent / "fixtures" / "research"
 SANITIZER_SCRIPT = Path(__file__).parent.parent / "scripts" / "re-sanitize-research-fixture.py"
+CAPTURE_SCRIPT = Path(__file__).parent.parent / "scripts" / "re-capture-research.py"
 
 # Matches the sentinels in scripts/re-sanitize-research-fixture.py.
 # Drift between this file and the script is caught by
@@ -163,14 +165,40 @@ def test_final_block_alone_is_only_a_cover_note(weather_fixture: Path) -> None:
     assert len(_headings(answer)) >= 3
 
 
-def _sanitizer() -> ModuleType:
-    """Import the sanitizer by path: `scripts/` is not a package and the module
-    name is hyphenated, so neither a plain import nor a relative one reaches it."""
-    spec = importlib.util.spec_from_file_location("re_sanitize_fixture", SANITIZER_SCRIPT)
+def _load_script(name: str, path: Path) -> ModuleType:
+    """Import a script by path: `scripts/` is not a package and the module names
+    are hyphenated, so neither a plain import nor a relative one reaches them."""
+    spec = importlib.util.spec_from_file_location(name, path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _sanitizer() -> ModuleType:
+    return _load_script("re_sanitize_fixture", SANITIZER_SCRIPT)
+
+
+def test_capture_label_must_stay_inside_the_scratch_dir() -> None:
+    """A raw capture holds a live thread token and account ids. An unvalidated
+    --label escaped re-fixtures/ and landed one in the tracked fixture tree."""
+    capture = _load_script("re_capture_research", CAPTURE_SCRIPT)
+
+    for bad in (
+        "",
+        "..",
+        "../../tests/fixtures/research/raw",
+        "/tmp/raw",
+        "sub/dir",
+        "back\\slash",
+        ".hidden",
+        "a..b",
+    ):
+        with pytest.raises(argparse.ArgumentTypeError):
+            capture.label_arg(bad)
+
+    for ok in ("weather-nowcasting-apis-2026-06-22T10-00-00Z", "run2.take3"):
+        assert capture.label_arg(ok) == ok
 
 
 def test_sanitizer_redacts_identity_keys_of_every_type() -> None:
