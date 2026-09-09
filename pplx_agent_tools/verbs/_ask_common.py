@@ -169,6 +169,7 @@ def run_ask_stream(
     timeout: float | None,
     progress: bool,
     label: str,
+    is_complete: Callable[[dict[str, Any]], bool] = event_marks_completed,
 ) -> tuple[AskStreamState, bool]:
     """Drive the SSE call with retry/deadline; return (state, deadline_tripped).
 
@@ -178,6 +179,11 @@ def run_ask_stream(
     `AskStreamState`. Propagates a terminal `RateLimitError` (exit 3) when retries
     are exhausted; a tripped deadline returns with `deadline_tripped=True` so the
     caller can salvage whatever `on_event` accumulated.
+
+    `is_complete` decides which event ends the stream. The default accepts the
+    early `text_completed` flag, which is right for delta-accumulating callers
+    (stopping there avoids double-counting the COMPLETED repaint). Snapshot
+    callers need the repaint and override it — see verbs/research.py.
     """
     state = AskStreamState()
     deadline_tripped = False
@@ -208,6 +214,7 @@ def run_ask_stream(
                 remaining_seconds=remaining,
                 progress=progress,
                 on_event=on_event,
+                is_complete=is_complete,
             )
             break
         except StreamDeadlineError:
@@ -237,6 +244,7 @@ def _drive_one(
     remaining_seconds: float | None,
     progress: bool,
     on_event: Callable[[dict[str, Any]], None],
+    is_complete: Callable[[dict[str, Any]], bool],
 ) -> None:
     event_count = 0
     try:
@@ -256,7 +264,7 @@ def _drive_one(
             if _event_marks_failed(event):
                 state.failed = True
                 return
-            if event_marks_completed(event):
+            if is_complete(event):
                 state.saw_completed = True
                 return
     finally:

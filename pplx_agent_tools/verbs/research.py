@@ -11,9 +11,12 @@ docs/wire/perplexity-ask-research.md), with two important differences:
      guard. See CLAUDE.md → "Endpoint selection principle".
   2. Schematized response. Unlike copilot mode's incremental `markdown_block`
      chunks, research streams full-snapshot frames whose `text` field is a JSON
-     list of `{step_type, content, uuid}` blocks. The answer lives in the FINAL
-     block's `content.answer`; sources accumulate across SEARCH_RESULTS blocks'
-     `content.web_results`. We keep the latest snapshot and decode it once.
+     list of `{step_type, content, uuid}` blocks. The FINAL block's
+     `content.answer` holds only a short *cover note* ("I've compiled…, the full
+     report includes…"); the report itself is a RESEARCH_ANSWER block asset
+     (`assets[].research_report.source_content`), so the answer we return is the
+     cover note followed by that body. Sources accumulate across SEARCH_RESULTS
+     blocks' `content.web_results`. We keep the latest snapshot and decode it once.
 
 Deep research takes ~90-120s (multi-round, ~40+ sources); the verb supports the
 same `--timeout` → partial-result (exit 6) contract as `fetch --prompt`, with
@@ -77,7 +80,22 @@ class ResearchResult:
     mode: str
     # False iff the stream was cut before COMPLETED (deadline tripped / server cut).
     stream_complete: bool = True
+    # True when the snapshot we kept decodes to a *shorter* answer than one we
+    # saw earlier in the stream: the stream finished, but the text we return is
+    # demonstrably missing content, so the caller must not trust it as complete.
+    content_shortfall: bool = False
     warnings: list[str] = field(default_factory=list)
+
+
+def _status_completed(event: dict[str, Any]) -> bool:
+    """Completion predicate for research: `status == "COMPLETED"` only.
+
+    The shared default also accepts `text_completed`, which Perplexity sets a
+    few frames BEFORE the terminal repaint. That is right for delta callers, but
+    research keeps whole snapshots: stopping early keeps a snapshot whose FINAL
+    block is still being written."""
+    data = event.get("data")
+    return isinstance(data, dict) and data.get("status") == "COMPLETED"
 
 
 def research(
@@ -117,12 +135,19 @@ def research(
         # other model so a stray --council-models doesn't ride along on a research req.
         council_models = None
     body = _build_research_body(query, model_preference, council_models=council_models)
+    # `latest` is what we decode (the newest snapshot wins); `longest` is kept
+    # only to detect a shortfall — a late frame can repaint a *smaller* snapshot.
     latest: dict[str, str | None] = {"text": None}
+    longest: dict[str, str | None] = {"text": None}
 
     def _on_event(event: dict[str, Any]) -> None:
         data = event.get("data")
         if isinstance(data, dict) and isinstance(data.get("text"), str):
-            latest["text"] = data["text"]
+            text = data["text"]
+            latest["text"] = text
+            best = longest["text"]
+            if best is None or len(text) > len(best):
+                longest["text"] = text
 
     state, deadline_tripped = run_ask_stream(
         client,
@@ -132,6 +157,7 @@ def research(
         timeout=timeout,
         progress=progress,
         label="research",
+        is_complete=_status_completed,
     )
 
     # Best-effort cleanup runs on EVERY exit path (success, FAILED, no-content,
@@ -155,6 +181,17 @@ def research(
         raise SchemaError(f"no schematized text received from {ENDPOINT}")
 
     answer, sources = decode_research_text(latest["text"])
+    warnings: list[str] = []
+    content_shortfall = False
+    best = longest["text"]
+    if best is not None and best != latest["text"]:
+        richer, _ = decode_research_text(best)
+        if len(richer) > len(answer):
+            content_shortfall = True
+            warnings.append(
+                f"kept snapshot decodes to {len(answer)} chars but an earlier frame "
+                f"carried {len(richer)}; the report may be truncated"
+            )
 
     return ResearchResult(
         query=query,
@@ -162,6 +199,8 @@ def research(
         sources=sources,
         mode=mode,
         stream_complete=state.saw_completed,
+        content_shortfall=content_shortfall,
+        warnings=warnings,
     )
 
 
@@ -175,6 +214,9 @@ def decode_research_text(text: str) -> tuple[str, list[ResearchSource]]:
 
     The FINAL block's `content.answer` is itself a JSON string wrapping
     `{answer: <markdown>, web_results: [<cited sources>], ...}` — we unwrap it.
+    That markdown is only the cover note; the report body is the RESEARCH_ANSWER
+    block's report asset, so the returned answer is cover note + body (in that
+    reading order, not block order — RESEARCH_ANSWER precedes FINAL on the wire).
     Sources prefer the FINAL block's cited `web_results` (citation-aligned with
     the answer's [n] markers); we fall back to the intermediate SEARCH_RESULTS
     rounds when FINAL carries none.
@@ -186,7 +228,8 @@ def decode_research_text(text: str) -> tuple[str, list[ResearchSource]]:
     if not isinstance(blocks, list):
         raise SchemaError(f"research text decoded to {type(blocks).__name__}, expected list")
 
-    answer_parts: list[str] = []
+    cover_parts: list[str] = []
+    report_parts: list[str] = []
     final_web: list[Any] | None = None
     search_web: list[Any] = []
     for blk in blocks:
@@ -199,14 +242,19 @@ def decode_research_text(text: str) -> tuple[str, list[ResearchSource]]:
         if step == "FINAL":
             markdown, cited = _unwrap_final_answer(content.get("answer"))
             if markdown:
-                answer_parts.append(markdown)
+                cover_parts.append(markdown)
             if cited:
                 final_web = cited
+        elif step == "RESEARCH_ANSWER":
+            report_parts.extend(_report_bodies(blk))
         elif step == "SEARCH_RESULTS":
             wr = content.get("web_results")
             if isinstance(wr, list):
                 search_web.extend(wr)
 
+    cover = "\n\n".join(cover_parts).strip()
+    # A body already quoted in the cover note would just be printed twice.
+    answer_parts = cover_parts + [p for p in report_parts if p not in cover]
     chosen = final_web if final_web else search_web
     sources: list[Source] = []
     seen: set[str] = set()
@@ -216,6 +264,33 @@ def decode_research_text(text: str) -> tuple[str, list[ResearchSource]]:
             seen.add(src.url)
             sources.append(src)
     return "\n\n".join(answer_parts).strip(), sources
+
+
+def _report_bodies(blk: dict[str, Any]) -> list[str]:
+    """A RESEARCH_ANSWER block → its report body/bodies (usually exactly one).
+
+    The body is an asset: `assets[].research_report.source_content`. The block's
+    own `content.answer` is empty in the observed builds but is honoured as a
+    fallback, since that is where a non-asset build would put the same text.
+    Returns [] when the block carries neither (a partial snapshot)."""
+    bodies: list[str] = []
+    for asset in blk.get("assets") or []:
+        if not isinstance(asset, dict):
+            continue
+        report = asset.get("research_report")
+        if not isinstance(report, dict):
+            continue
+        body = report.get("source_content")
+        if isinstance(body, str) and body.strip():
+            bodies.append(body.strip())
+    if bodies:
+        return bodies
+    content = blk.get("content")
+    if isinstance(content, dict):
+        inline = content.get("answer")
+        if isinstance(inline, str) and inline.strip():
+            return [inline.strip()]
+    return []
 
 
 def _unwrap_final_answer(raw: Any) -> tuple[str, list[Any]]:
