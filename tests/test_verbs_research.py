@@ -492,8 +492,9 @@ def test_decode_research_answer_survives_null_content() -> None:
 
 
 def test_research_shortfall_survives_an_unparseable_longest_frame() -> None:
-    """The shortfall check only inspects an intermediate frame; that frame failing
-    to parse says nothing about the kept snapshot and must not sink the run."""
+    """A snapshot that fails to decode is skipped by the shortfall tracker: it
+    says nothing about the kept snapshot and must not sink the run, even though
+    its raw text is by far the largest in the stream."""
     events = [
         {"data": {"backend_uuid": "BU", "read_write_token": "RW", "text": "not json " * 600}},
         {"data": {"text": _snapshot("the real answer"), "status": "COMPLETED"}},
@@ -503,3 +504,52 @@ def test_research_shortfall_survives_an_unparseable_longest_frame() -> None:
     assert result.answer == "the real answer"
     assert result.content_shortfall is False
     assert result.warnings == []
+
+
+def _padded_snapshot(answer: str, *, pad_results: int) -> str:
+    """A snapshot whose raw size is inflated by SEARCH_RESULTS metadata.
+
+    Models the production repaint: the COMPLETED frame carries more sources and
+    envelope fields than earlier frames, so its RAW length grows even when its
+    report body shrinks."""
+    blocks = [
+        {
+            "step_type": "SEARCH_RESULTS",
+            "content": {
+                "web_results": [
+                    {"url": f"https://pad/{i}", "name": f"pad {i}", "snippet": "s" * 40}
+                    for i in range(pad_results)
+                ]
+            },
+        },
+        {
+            "step_type": "FINAL",
+            "content": {
+                "answer": json.dumps(
+                    {"answer": answer, "web_results": [{"url": "https://cited", "name": "Cited"}]}
+                )
+            },
+        },
+    ]
+    return json.dumps(blocks)
+
+
+def test_research_flags_shortfall_when_the_repaint_grows_in_metadata() -> None:
+    """The terminal repaint can carry MORE raw bytes than earlier frames (extra
+    SEARCH_RESULTS, envelope fields) while its report body shrinks or vanishes.
+    Judging by raw frame size never compared those two, so the drop shipped as
+    exit 0."""
+    early = _padded_snapshot("x" * 500, pad_results=0)
+    repaint = _padded_snapshot("tiny", pad_results=12)
+    assert len(repaint) > len(early), "the premise: the repaint is raw-larger, body-smaller"
+
+    events = [
+        {"data": {"backend_uuid": "BU", "read_write_token": "RW", "text": early}},
+        {"data": {"text": repaint, "status": "COMPLETED"}},
+    ]
+    result = research(_FakeClient(events), "q")
+
+    assert result.stream_complete is True
+    assert result.answer == "tiny", "the latest snapshot is still what we return"
+    assert result.content_shortfall is True
+    assert result.warnings and "truncated" in result.warnings[0]
