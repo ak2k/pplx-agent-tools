@@ -9,6 +9,10 @@ import pytest
 
 from pplx_agent_tools.errors import RateLimitError, SchemaError, StreamDeadlineError
 from pplx_agent_tools.render import render_ask_json, render_ask_text
+from pplx_agent_tools.verbs._ask_common import (
+    extract_chunks_from_event,
+    extract_web_results,
+)
 from pplx_agent_tools.verbs.ask import AskResult, _build_ask_body, ask
 
 from ._doubles import _TestClientBase
@@ -212,3 +216,16 @@ def test_ask_rate_limit_exhausted_reraises() -> None:
     client = _RateLimitClient(3, _complete())  # fail all 3 attempts
     with pytest.raises(RateLimitError):
         ask(client, "hi")
+
+
+# ---------- block extractors stay total ----------
+
+
+@pytest.mark.parametrize("blocks", [True, 5, 3.5])
+def test_block_extractors_survive_truthy_non_list_blocks(blocks: object) -> None:
+    """`blocks` is server-supplied, and `... or []` only absorbs the falsy shapes:
+    a truthy scalar reached the `for` and raised TypeError, which both extractors
+    document as impossible and every caller relies on mid-stream."""
+    event: dict[str, Any] = {"event": None, "data": {"blocks": blocks}}
+    assert extract_chunks_from_event(event) == []
+    assert extract_web_results(event) == []

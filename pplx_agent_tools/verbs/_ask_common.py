@@ -110,7 +110,10 @@ def extract_web_results(event: dict[str, Any]) -> list[Any]:
     data = event.get("data")
     if not isinstance(data, dict):
         return []
-    for block in data.get("blocks") or []:
+    blocks = data.get("blocks")
+    if not isinstance(blocks, list):
+        return []
+    for block in blocks:
         if not isinstance(block, dict) or block.get("intended_usage") != "web_results":
             continue
         wrb = block.get("web_result_block")
@@ -132,8 +135,11 @@ def extract_chunks_from_event(event: dict[str, Any]) -> list[str]:
     data = event.get("data")
     if not isinstance(data, dict):
         return []
+    blocks = data.get("blocks")
+    if not isinstance(blocks, list):
+        return []
     out: list[str] = []
-    for block in data.get("blocks") or []:
+    for block in blocks:
         if not isinstance(block, dict):
             continue
         if block.get("intended_usage") != "ask_text":
