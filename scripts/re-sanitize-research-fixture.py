@@ -79,8 +79,14 @@ _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 # canned-policy form carries just `Signature=` + `Key-Pair-Id=`, so matching
 # `Policy=` alone would let that second form ride out intact.
 # `/web/direct-files/<account hash>/...` is the unsigned twin of the same asset.
+# `\S` ran past the closing quote of a URL embedded in compact JSON and ate the
+# rest of the document, so the run is bounded to characters a URL may contain.
+# S3 SigV4 and GCS prefix the param (`X-Amz-Signature=`, `X-Goog-Signature=`),
+# which a bare `[?&]Signature=` alternation misses.
+_URL_CHAR = r"""[^\s"'<>\\]"""
+_CREDENTIAL_PARAM = r"[?&][\w-]*(?:Policy|Signature|Key-Pair-Id|Credential|Security-Token)="
 _SIGNED_URL_RE = re.compile(
-    r"https?://\S*(?:[?&](?:Policy|Signature|Key-Pair-Id)=|/web/direct-files/)\S*"
+    rf"https?://{_URL_CHAR}*(?:{_CREDENTIAL_PARAM}|/web/direct-files/){_URL_CHAR}*"
 )
 
 MAX_WEB_RESULTS = 10
@@ -88,6 +94,23 @@ MAX_WEB_RESULTS = 10
 
 def _scrub_string(value: str) -> str:
     return _SIGNED_URL_RE.sub(SENTINEL_REPORT_URL, _EMAIL_RE.sub(SENTINEL_EMAIL, value))
+
+
+def _scrub_chunks(chunks: list[str]) -> list[str]:
+    """A `chunks` list → scrubbed, scrubbing the JOINED text.
+
+    Perplexity ships the answer twice: whole, and sliced into ~23-char `chunks`.
+    Per-string scrubbing therefore redacts a credential in `answer` and keeps it
+    verbatim in `chunks` whenever it straddles a slice boundary. Scrubbing the
+    join closes that. A clean capture keeps its original slicing (nothing
+    matched), so re-running the sanitizer over an already-clean input is
+    byte-for-byte stable.
+    """
+    joined = "".join(chunks)
+    scrubbed = _scrub_string(joined)
+    if scrubbed == joined:
+        return list(chunks)
+    return [scrubbed]
 
 
 def _is_identity_key(key: str) -> bool:
@@ -122,6 +145,12 @@ def _scrub(node: Any) -> Any:
                 out[key] = SENTINELS[key]
             elif _is_identity_key(key):
                 out[key] = _redact_identity(key, value)
+            elif (
+                key == "chunks"
+                and isinstance(value, list)
+                and all(isinstance(v, str) for v in value)
+            ):
+                out[key] = _scrub_chunks(value)
             elif key == "web_results" and isinstance(value, list):
                 out[key] = [_scrub(v) for v in value[:MAX_WEB_RESULTS]]
             elif key == "research_report" and isinstance(value, dict):
@@ -183,7 +212,8 @@ def _select(payloads: list[Any]) -> list[int]:
     if tail is None:
         raise SystemExit("no frame carries text_completed — capture looks truncated")
     mids = sorted({max(1, tail // 3), max(2, (tail * 2) // 3)})
-    return sorted({0, *mids, *range(tail, len(payloads))})
+    # The mid-stream floors (1, 2) can exceed a very short capture's length.
+    return sorted(i for i in {0, *mids, *range(tail, len(payloads))} if i < len(payloads))
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -94,11 +94,25 @@ def _headings(answer: str) -> list[str]:
 
 
 def test_research_replays_real_stream(weather_fixture: Path) -> None:
+    """The answer must be exactly the COMPLETED repaint's decode.
+
+    Size/shape thresholds alone do NOT pin the completion predicate: the earlier
+    `text_completed` frame decodes to 9684 chars and the COMPLETED one to 9688,
+    so both clear any `> 5000` bar. Equality is what discriminates them, and the
+    expectation is computed from the fixture so it survives regeneration."""
+    payloads = [
+        json.loads(line) for line in weather_fixture.read_text().splitlines() if line.strip()
+    ]
+    completed = next(p for p in payloads if p.get("status") == "COMPLETED")
+    expected_answer, expected_sources = decode_research_text(completed["text"])
+
     client = FixtureClient(weather_fixture)
     result = research(client, "compare weather nowcasting APIs")
 
     assert result.stream_complete is True
     assert result.content_shortfall is False
+    assert result.answer == expected_answer
+    assert [s.url for s in result.sources] == [s.url for s in expected_sources]
     assert len(result.answer) > 5000, "the report body, not just the cover note"
     assert len(_headings(result.answer)) >= 3
     assert len(result.sources) > 0
@@ -193,6 +207,56 @@ def test_sanitizer_scrubs_canned_policy_signed_urls() -> None:
     # …without swallowing ordinary cited sources, which the tests read as data.
     plain = "https://example.com/article?utm_source=x"
     assert san._scrub({"url": plain})["url"] == plain
+
+
+def test_sanitizer_keeps_compact_json_parseable() -> None:
+    """A `\\S*` URL run walked straight through the closing quote of a URL
+    embedded in compact JSON, leaving an unterminated string behind."""
+    san = _sanitizer()
+    doc = '{"url":"https://d1.cloudfront.net/r.md?Signature=AAA&Key-Pair-Id=K1","final":true}'
+
+    scrubbed = san._scrub_string(doc)
+
+    assert json.loads(scrubbed) == {"url": san.SENTINEL_REPORT_URL, "final": True}
+
+
+def test_sanitizer_scrubs_vendor_prefixed_signature_params() -> None:
+    """S3 SigV4 and GCS prefix the credential param, so a bare `[?&]Signature=`
+    alternation let a live pre-signed URL through."""
+    san = _sanitizer()
+    amz = "https://bucket.s3.amazonaws.com/r.md?X-Amz-Credential=AKIA%2F1&X-Amz-Signature=dead"
+    goog = "https://storage.googleapis.com/b/r.md?X-Goog-Signature=deadbeef"
+
+    assert san._scrub({"url": amz})["url"] == san.SENTINEL_REPORT_URL
+    assert san._scrub({"url": goog})["url"] == san.SENTINEL_REPORT_URL
+    plain = "https://example.com/article?utm_source=x"
+    assert san._scrub({"url": plain})["url"] == plain, "ordinary cited sources survive"
+
+
+def test_sanitizer_scrubs_a_credential_spanning_a_chunk_boundary() -> None:
+    """`chunks` re-ships the answer in ~23-char slices; per-string scrubbing
+    redacted the whole `answer` and kept the same credential verbatim across a
+    slice boundary."""
+    san = _sanitizer()
+    url = "https://cdn.example/r.md?Signature=SECRETSIG&Key-Pair-Id=K1"
+    chunks = [url[i : i + 23] for i in range(0, len(url), 23)]
+    assert len(chunks) > 1
+
+    out = san._scrub({"chunks": chunks})
+
+    assert "SECRETSIG" not in "".join(out["chunks"])
+    assert san.SENTINEL_REPORT_URL in "".join(out["chunks"])
+    # A clean capture keeps its slicing, so re-running the sanitizer is stable.
+    clean = ["hello ", "world"]
+    assert san._scrub({"chunks": clean})["chunks"] == clean
+
+
+def test_sanitizer_select_never_indexes_past_a_short_capture() -> None:
+    """The mid-stream floors (1, 2) exceed a two-frame capture's length."""
+    san = _sanitizer()
+    keep = san._select([{"text": "a"}, {"text": "b", "text_completed": True}])
+
+    assert keep == [0, 1]
 
 
 def test_sentinels_match_sanitizer_script() -> None:
