@@ -1,7 +1,7 @@
 """pplx research verb: Perplexity deep research via /rest/sse/perplexity_ask.
 
 The flagship differentiated capability — multi-step, cited research, far beyond
-`search`'s ranked hits. Same endpoint as `fetch --prompt`, but the deep behaviour
+`search`'s ranked hits. Same endpoint as `fetch --prompt`, but the deep behavior
 is selected by `model_preference` (NOT `params.mode` — see `_MODE_MODEL` and
 docs/wire/perplexity-ask-research.md), with two important differences:
 
@@ -36,7 +36,7 @@ from ._ask_common import Source, base_ask_params, run_ask_stream, to_source
 ENDPOINT = "/rest/sse/perplexity_ask"
 DEFAULT_MODE = "research"
 
-# Verified 2026-06-22: Perplexity selects deep-research behaviour by
+# Verified 2026-06-22: Perplexity selects deep-research behavior by
 # `model_preference`, NOT by `params.mode`. Sending params.mode="research" with
 # model_preference="turbo" yields a plain copilot answer (1 search round); it's
 # model_preference="pplx_alpha" that triggers real Deep Research (LOAD_SKILL +
@@ -280,7 +280,7 @@ def _report_bodies(blk: dict[str, Any]) -> list[str]:
     """A RESEARCH_ANSWER block → its report body/bodies (usually exactly one).
 
     The body is an asset: `assets[].research_report.source_content`. The block's
-    own `content.answer` is empty in the observed builds but is honoured as a
+    own `content.answer` is empty in the observed builds but is honored as a
     fallback, since that is where a non-asset build would put the same text.
     Returns [] when the block carries neither (a partial snapshot)."""
     bodies: list[str] = []

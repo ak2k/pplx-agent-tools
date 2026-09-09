@@ -46,7 +46,7 @@ def base_ask_params(
     by `ask`, `research`, and `fetch --prompt`. Callers add their own extras (e.g.
     `compare_model_preferences` for Model Council).
 
-    `params.mode` stays "copilot" — the *model* is the real behaviour selector (see
+    `params.mode` stays "copilot" — the *model* is the real behavior selector (see
     verbs/research.py for the model-as-mode finding). `is_incognito` defaults True
     so created threads never enter history. `timezone` is hard-coded "UTC" rather
     than host-detected: detection leaks location, and `time.tzname` yields
