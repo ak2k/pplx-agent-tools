@@ -186,7 +186,12 @@ def research(
     content_shortfall = False
     best = longest["text"]
     if best is not None and best != latest["text"]:
-        richer, _ = decode_research_text(best)
+        # Diagnostic only: an intermediate frame that fails to parse says nothing
+        # about the kept snapshot, so it must not sink an otherwise-good run.
+        try:
+            richer, _ = decode_research_text(best)
+        except SchemaError:
+            richer = ""
         if len(richer) > len(answer):
             content_shortfall = True
             warnings.append(
@@ -236,18 +241,22 @@ def decode_research_text(text: str) -> tuple[str, list[ResearchSource]]:
     for blk in blocks:
         if not isinstance(blk, dict):
             continue
+        step = blk.get("step_type")
+        # The report body is an ASSET, not `content` — so RESEARCH_ANSWER must be
+        # dispatched ahead of the content guard below, or a block with a null
+        # `content` and a perfectly good report asset drops the whole report.
+        if step == "RESEARCH_ANSWER":
+            report_parts.extend(_report_bodies(blk))
+            continue
         content = blk.get("content")
         if not isinstance(content, dict):
             continue
-        step = blk.get("step_type")
         if step == "FINAL":
             markdown, cited = _unwrap_final_answer(content.get("answer"))
             if markdown:
                 cover_parts.append(markdown)
             if cited:
                 final_web = cited
-        elif step == "RESEARCH_ANSWER":
-            report_parts.extend(_report_bodies(blk))
         elif step == "SEARCH_RESULTS":
             wr = content.get("web_results")
             if isinstance(wr, list):

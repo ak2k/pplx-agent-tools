@@ -473,3 +473,33 @@ def test_research_incomplete_when_stream_ends_at_text_completed() -> None:
     assert result.answer == "partial"
     assert result.content_shortfall is False
     assert client.deleted == [("BU", "RW")], "the incognito thread is still cleaned up"
+
+
+def test_decode_research_answer_survives_null_content() -> None:
+    """The report body is an ASSET, so a RESEARCH_ANSWER block with a null
+    `content` still carries a full report. Running the `content` isinstance guard
+    ahead of the step dispatch dropped it — the shipped bug, reproduced."""
+    blocks = [
+        {
+            "step_type": "RESEARCH_ANSWER",
+            "content": None,
+            "assets": [{"research_report": {"source_content": "# Report\nbody"}}],
+        },
+        {"step_type": "FINAL", "content": {"answer": "cover"}},
+    ]
+    answer, _ = decode_research_text(json.dumps(blocks))
+    assert answer == "cover\n\n# Report\nbody"
+
+
+def test_research_shortfall_survives_an_unparseable_longest_frame() -> None:
+    """The shortfall check only inspects an intermediate frame; that frame failing
+    to parse says nothing about the kept snapshot and must not sink the run."""
+    events = [
+        {"data": {"backend_uuid": "BU", "read_write_token": "RW", "text": "not json " * 600}},
+        {"data": {"text": _snapshot("the real answer"), "status": "COMPLETED"}},
+    ]
+    result = research(_FakeClient(events), "q")
+
+    assert result.answer == "the real answer"
+    assert result.content_shortfall is False
+    assert result.warnings == []
