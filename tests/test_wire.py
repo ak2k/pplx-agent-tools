@@ -252,12 +252,16 @@ class _FakeStreamResp:
         *,
         chunk_delay_s: float = 0.0,
         status_code: int = 200,
+        raise_after: BaseException | None = None,
     ) -> None:
         self.status_code = status_code
         self.headers: dict[str, str] = {}
         self.content = b""
         self._chunks = chunks
         self._chunk_delay_s = chunk_delay_s
+        # Raised once `chunks` is exhausted, standing in for a connection that
+        # dies part-way through a response body.
+        self._raise_after = raise_after
         self.closed = False
 
     def iter_content(self, chunk_size: int) -> object:
@@ -268,6 +272,8 @@ class _FakeStreamResp:
                 if self._chunk_delay_s:
                     _t.sleep(self._chunk_delay_s)
                 yield c
+            if self._raise_after is not None:
+                raise self._raise_after
 
         return gen()
 
@@ -318,3 +324,44 @@ def test_sse_post_deadline_zero_disabled_by_caller() -> None:
     client = _client_with_session(resp)
     events = list(client.sse_post("/x", {}))  # default max_total_seconds=None
     assert len(events) == 1
+
+
+# ---------- sse_post mid-stream transport failure ----------
+
+
+def test_sse_post_midstream_transport_error_becomes_network_error() -> None:
+    # Two events arrive, then the connection dies. The consumer must see a
+    # typed NetworkError (exit 4), not a raw transport exception.
+    framed = b'data: {"a": 1}\n\n'
+    resp = _FakeStreamResp([framed, framed], raise_after=OSError("connection reset by peer"))
+    client = _client_with_session(resp)
+    it = client.sse_post("/x", {})
+    assert next(it) == {"event": None, "data": {"a": 1}}
+    assert next(it) == {"event": None, "data": {"a": 1}}
+    with pytest.raises(NetworkError, match="mid-stream") as exc:
+        next(it)
+    # Reclassification must not masquerade as a deadline trip — callers that
+    # salvage partials key off StreamDeadlineError specifically.
+    assert not isinstance(exc.value, StreamDeadlineError)
+    assert resp.closed is True
+
+
+def test_sse_post_midstream_deadline_error_is_not_reclassified() -> None:
+    # StreamDeadlineError is raised from inside the same loop the wrapper
+    # guards; it must reach the caller with its own type intact.
+    framed = b'data: {"a": 1}\n\n'
+    resp = _FakeStreamResp([framed, framed, framed], chunk_delay_s=0.05)
+    client = _client_with_session(resp)
+    with pytest.raises(StreamDeadlineError) as exc:
+        list(client.sse_post("/x", {}, max_total_seconds=0.06))
+    assert "mid-stream" not in str(exc.value)
+
+
+def test_sse_post_midstream_pplx_error_passes_through() -> None:
+    # Any PplxError subclass raised during iteration keeps its type (SchemaError
+    # maps to exit 1, NetworkError to exit 4 — the distinction is the contract).
+    framed = b'data: {"a": 1}\n\n'
+    resp = _FakeStreamResp([framed], raise_after=SchemaError("bad shape"))
+    client = _client_with_session(resp)
+    with pytest.raises(SchemaError, match="bad shape"):
+        list(client.sse_post("/x", {}))
