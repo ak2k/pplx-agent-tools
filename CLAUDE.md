@@ -40,7 +40,7 @@ preserve all shapes bump the **patch**.
 
 - Run tests: `uv run --extra dev pytest -q`
 - Lint + format check: `uv run --extra dev ruff check . && uv run --extra dev ruff format --check .`
-- Typecheck: `uv run --extra dev basedpyright pplx_agent_tools/`
+- Typecheck: `uv run --extra dev basedpyright pplx_agent_tools/ tests/`
 - Coverage: `uv run --extra dev pytest --cov` (gated at `fail_under = 60`)
 
 **CI is `nix flake check`** — it builds `checks.{lint,typecheck,deadcode,tests}`:
@@ -49,6 +49,15 @@ preserve all shapes bump the **patch**.
 failures surface one at a time). The per-tool commands above cover most of it, but
 `ruff check` alone misses the formatter, basedpyright, and vulture — run
 `nix flake check` to reproduce the exact gate before pushing.
+
+`nix flake check` builds from a snapshot of the **git** tree: untracked files are
+invisible to it, so `git add` anything new before running it or the check runs
+against a tree that is missing it.
+
+`.python-version` pins uv to 3.12 because `rookiepy` publishes cp310–cp312 wheels
+only — on 3.13 uv falls back to building it from source and fails. Inside
+`nix develop` the shell's `UV_PYTHON` points at the flake's dev venv and outranks
+`.python-version`; the pin is what makes a bare `uv run` work outside that shell.
 
 The `[tool.pyright]` table in `pyproject.toml` still configures the type
 checker — basedpyright reads the same config keys as pyright (it's a
