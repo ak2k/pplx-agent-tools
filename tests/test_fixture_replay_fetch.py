@@ -15,7 +15,13 @@ If Perplexity ever drops `text_completed` and only sends `status: COMPLETED`,
 this test will fail loudly with a doubled answer string — exactly the upstream
 drift this fixture is here to catch.
 
-Regenerate the fixture with `scripts/re-sanitize-fetch-fixture.py`.
+Three further captures cover the answer shapes that differ from a short, clean
+summary: a paywalled article the model declines to quote, a prompt whose honest
+answer is "there is no such table on this page", and a 5 kB sectioned answer
+with a table. Each pins one invariant about how that shape maps to an exit code.
+
+Capture with `scripts/re-capture-fetch-prompt.py`, then sanitize with
+`scripts/re-sanitize-fetch-fixture.py`.
 """
 
 from __future__ import annotations
@@ -27,6 +33,8 @@ from typing import Any
 
 import pytest
 
+from pplx_agent_tools import cli_fetch, cli_runner
+from pplx_agent_tools.errors import EXIT_GENERIC, EXIT_NETWORK, EXIT_OK, NetworkError
 from pplx_agent_tools.verbs.fetch import _fetch_with_prompt
 from tests._doubles import _TestClientBase
 
@@ -38,6 +46,9 @@ SANITIZER_SCRIPT = Path(__file__).parent.parent / "scripts" / "re-sanitize-fetch
 # test_sentinels_match_sanitizer_script below — keep them in lockstep.
 SENTINEL_BACKEND_UUID = "00000000-0000-4000-8000-000000000001"
 SENTINEL_RW_TOKEN = "TEST_RW_TOKEN"
+SENTINEL_UUID = "00000000-0000-4000-8000-000000000003"
+SENTINEL_REDACTED = "REDACTED"
+SENTINEL_EMAIL = "redacted@example.invalid"
 
 # The example.com fetch's expected answer text. Derived from the
 # `markdown_block.answer` field on the captured COMPLETED event — this is
@@ -174,9 +185,219 @@ def test_sentinels_match_sanitizer_script() -> None:
     # Each sentinel that the replay test asserts on MUST appear verbatim
     # in the script. Substring match is fine — the script wraps these in
     # the SENTINELS dict.
-    assert SENTINEL_BACKEND_UUID in script, (
-        f"SENTINEL_BACKEND_UUID {SENTINEL_BACKEND_UUID!r} not in sanitizer script"
+    for name, value in (
+        ("SENTINEL_BACKEND_UUID", SENTINEL_BACKEND_UUID),
+        ("SENTINEL_RW_TOKEN", SENTINEL_RW_TOKEN),
+        ("SENTINEL_UUID", SENTINEL_UUID),
+        ("SENTINEL_REDACTED", SENTINEL_REDACTED),
+        ("SENTINEL_EMAIL", SENTINEL_EMAIL),
+    ):
+        assert value in script, f"{name} {value!r} not in sanitizer script"
+
+
+# ---------- capture-variety fixtures, driven through the CLI ----------
+#
+# These go through `cli_fetch.main` rather than `_fetch_with_prompt` because the
+# invariant each one pins is an exit code, and the exit code is decided by
+# `cli_fetch._finalize`, not by the verb.
+
+PAYWALLED_URL = "https://www.wsj.com/articles/even-chinas-property-stalwart-isnt-immune-from-the-crisis-19799863"
+PAYWALLED_PROMPT = "Quote the opening two paragraphs of this article verbatim."
+NO_RESULTS_URL = "https://example.com"
+NO_RESULTS_PROMPT = (
+    "List every pricing tier in the pricing table on this page, with the monthly price for each."
+)
+MULTI_BLOCK_URL = "https://en.wikipedia.org/wiki/SQLite"
+MULTI_BLOCK_PROMPT = (
+    "Summarize this page under three titled sections: ## Overview, ## Notable features, "
+    "## Limitations. Then add a markdown table of four notable releases with columns "
+    "Version, Year, Highlight."
+)
+
+PAYWALLED_FIXTURE = FIXTURES / "paywalled-article-prompt.events.jsonl"
+NO_RESULTS_FIXTURE = FIXTURES / "no-results-prompt.events.jsonl"
+MULTI_BLOCK_FIXTURE = FIXTURES / "multi-block-prompt.events.jsonl"
+
+
+def _load_events(path: Path) -> list[dict[str, Any]]:
+    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+
+def _completed_answer(path: Path) -> str:
+    """Perplexity's own join of the delta chunks, off the COMPLETED event.
+
+    The verb must reconstruct exactly this from the streamed chunks; deriving
+    the expectation from the capture rather than hard-coding prose keeps the
+    assertion honest when the fixture is re-captured.
+    """
+    for event in reversed(_load_events(path)):
+        if event.get("status") != "COMPLETED":
+            continue
+        for block in event.get("blocks") or []:
+            if not isinstance(block, dict) or block.get("intended_usage") != "ask_text":
+                continue
+            mb = block.get("markdown_block")
+            if isinstance(mb, dict) and isinstance(mb.get("answer"), str):
+                return mb["answer"].strip()
+    raise AssertionError(f"no COMPLETED ask_text markdown_block.answer in {path}")
+
+
+def _run_cli_json(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    client: Any,
+    argv: list[str],
+) -> tuple[int, dict[str, Any], str]:
+    """Drive `pplx fetch --prompt ... --json` against a canned client.
+
+    Returns the exit code, the parsed stdout envelope (success or error shape)
+    and stderr, which is where the CLI puts warnings and error prose.
+    """
+    monkeypatch.setattr(
+        cli_runner.Client,
+        "from_default_cookies",
+        classmethod(lambda cls, **_: client),
     )
-    assert SENTINEL_RW_TOKEN in script, (
-        f"SENTINEL_RW_TOKEN {SENTINEL_RW_TOKEN!r} not in sanitizer script"
+    rc = cli_fetch.main([*argv, "--json"])
+    cap = capsys.readouterr()
+    return rc, json.loads(cap.out), cap.err
+
+
+def test_paywalled_refusal_is_still_a_complete_stream(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A model that answers "I can't read this, it's paywalled" has produced a
+    normal, finished answer. Only the stream's own health decides the exit code,
+    so a refusal must not be reported as a partial or failed fetch.
+    """
+    events = _load_events(PAYWALLED_FIXTURE)
+    assert all(e.get("status") != "FAILED" for e in events)
+
+    client = FixtureClient(PAYWALLED_FIXTURE)
+    rc, payload, _ = _run_cli_json(
+        monkeypatch, capsys, client, [PAYWALLED_URL, "--prompt", PAYWALLED_PROMPT]
     )
+    assert rc == EXIT_OK
+    assert payload["stream_complete"] is True
+    assert payload["content"].strip() != ""
+
+
+def test_no_results_prose_is_content_not_an_error(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """ "Nothing found" is an answer. The empty-results case must be exit 0 with
+    the prose as content — only a stream with zero events is an error.
+    """
+    client = FixtureClient(NO_RESULTS_FIXTURE)
+    rc, payload, _ = _run_cli_json(
+        monkeypatch, capsys, client, [NO_RESULTS_URL, "--prompt", NO_RESULTS_PROMPT]
+    )
+    assert rc == EXIT_OK
+    assert payload["stream_complete"] is True
+    assert payload["content"].strip() != ""
+
+
+def test_empty_stream_is_the_error_case_not_no_results(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Contrast with the test above: zero SSE events is a SchemaError (exit 1)."""
+    client = FixtureClient(FIXTURES / "empty-stream.events.jsonl")
+    rc, payload, _ = _run_cli_json(
+        monkeypatch, capsys, client, ["https://example.com", "--prompt", "summarize"]
+    )
+    assert rc == EXIT_GENERIC
+    assert payload["error"]["type"] == "SchemaError"
+
+
+def test_multi_block_answer_is_not_double_counted(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A 5 kB sectioned answer with a table, streamed over ~100 events: the
+    case where any accumulation bug — a re-read of the COMPLETED event's full
+    repaint, or a second `intended_usage` slipping past the chunk filter —
+    shows up as a visibly doubled answer rather than a subtle off-by-one.
+    """
+    events = _load_events(MULTI_BLOCK_FIXTURE)
+    usages = {
+        b.get("intended_usage")
+        for e in events
+        for b in (e.get("blocks") or [])
+        if isinstance(b, dict)
+    }
+    assert "ask_text" in usages
+
+    client = FixtureClient(MULTI_BLOCK_FIXTURE)
+    rc, payload, _ = _run_cli_json(
+        monkeypatch, capsys, client, [MULTI_BLOCK_URL, "--prompt", MULTI_BLOCK_PROMPT]
+    )
+    assert rc == EXIT_OK
+    assert payload["stream_complete"] is True
+    assert payload["content"] == _completed_answer(MULTI_BLOCK_FIXTURE)
+
+
+@pytest.mark.parametrize(
+    "fixture",
+    [PAYWALLED_FIXTURE, NO_RESULTS_FIXTURE, MULTI_BLOCK_FIXTURE],
+    ids=["paywalled", "no-results", "multi-block"],
+)
+def test_truncation_never_flips_stream_complete(
+    fixture: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Truncation is a presentation choice made after the stream finished;
+    conflating it with an incomplete stream would hand agents exit 6 for a
+    perfectly healthy fetch.
+    """
+    client = FixtureClient(fixture)
+    rc, payload, _ = _run_cli_json(
+        monkeypatch,
+        capsys,
+        client,
+        ["https://example.com", "--prompt", "tldr", "--max-chars", "20"],
+    )
+    assert rc == EXIT_OK
+    assert payload["stream_complete"] is True
+    assert len(payload["content"]) == 20
+
+
+class MidStreamFailureClient(_TestClientBase):
+    """Yields `fail_after` events from a fixture, then dies like a dropped
+    connection — the shape `wire.sse_post` now reports as a NetworkError.
+    """
+
+    def __init__(self, fixture_path: Path, fail_after: int) -> None:
+        super().__init__()
+        self._events = _load_events(fixture_path)
+        self._fail_after = fail_after
+        self.deleted: list[tuple[str, str]] = []
+
+    def sse_post(  # type: ignore[override]
+        self,
+        path: str,
+        body: dict[str, Any],
+        *,
+        max_total_seconds: float | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        for payload in self._events[: self._fail_after]:
+            yield {"event": "message", "data": payload}
+        raise NetworkError(f"SSE stream on {path} failed mid-stream: connection reset")
+
+    def delete_thread(self, entry_uuid: str, read_write_token: str) -> bool:  # type: ignore[override]
+        self.deleted.append((entry_uuid, read_write_token))
+        return True
+
+
+def test_midstream_network_error_exits_four_without_traceback(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], example_com_fixture: Path
+) -> None:
+    """The agent contract is a typed error with a documented exit code; a
+    transport failure part-way through a stream must not surface as a crash.
+    """
+    client = MidStreamFailureClient(example_com_fixture, fail_after=5)
+    rc, payload, err = _run_cli_json(
+        monkeypatch, capsys, client, ["https://example.com", "--prompt", "summarize"]
+    )
+    assert rc == EXIT_NETWORK
+    assert payload["error"]["type"] == "NetworkError"
+    assert payload["error"]["exit_code"] == EXIT_NETWORK
+    assert "Traceback" not in err
+    assert err.startswith("pplx fetch: ")
