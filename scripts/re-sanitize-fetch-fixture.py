@@ -5,31 +5,44 @@
 """Sanitize a raw chat-fetch-prompt SSE capture into a checked-in fixture.
 
 Takes a `.events.jsonl` from re-fixtures/fetch-url/ (one event payload per
-line, as captured by scripts/re-capture-paste.py) and emits a sanitized
+line, as captured by scripts/re-capture-fetch-prompt.py) and emits a sanitized
 JSONL safe to commit under tests/fixtures/fetch-url/.
+
+Scrubbing is recursive: identifiers nest inside `blocks[*]`, inside `plan`,
+and inside the `text` field, which is itself a JSON document serialized into
+a string. Anything reachable is reachable by a leak, so the walk descends
+into all of it.
 
 What gets replaced (deterministically, so reruns are diff-free):
   - account-bound UUIDs (backend_uuid, context_uuid, frontend_uuid,
-    frontend_context_uuid, uuid, cursor)
-  - read_write_token (session-bound thread token)
-  - author_id, author_username
+    frontend_context_uuid, uuid, cursor) at any depth
+  - read_write_token (session-bound thread token) at any depth
+  - any `author_*` / `user_*` key at any depth, except the entries in
+    `_PRESERVED_PREFIXED_KEYS` that name a setting rather than a person
   - thread_url_slug (often the backend_uuid again)
+  - any email-shaped substring in any string value
 
 What is preserved verbatim:
   - blocks[*] (incl. markdown_block chunks / chunk_starting_offset / progress)
   - status, text_completed, final_sse_message
   - thread_title (it's the user's prompt — fixture's whole point)
+  - empty strings: the server emits `"uuid":""` for un-started plan steps, and
+    replacing that would both churn the fixture and hide the real shape
+
+Rerunning it over its own output is a no-op, so re-sanitizing a committed
+fixture is a safe way to check nothing new leaked in.
 
 Usage:
   uv run scripts/re-sanitize-fetch-fixture.py \\
-    re-fixtures/fetch-url/chat-fetch-prompt-2026-05-13T00-20-56Z.events.jsonl \\
-    tests/fixtures/fetch-url/example-com-prompt.events.jsonl
+    re-fixtures/fetch-url/multi-block-prompt.events.jsonl \\
+    tests/fixtures/fetch-url/multi-block-prompt.events.jsonl
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -49,12 +62,68 @@ SENTINELS = {
 }
 
 
+# Applied to any key matching `_REDACTED_KEY_PREFIXES` that has no entry of
+# its own in SENTINELS — a name we have not seen before is assumed identifying.
+SENTINEL_REDACTED = "REDACTED"
+# Applied to email-shaped substrings wherever they appear, including in answer
+# prose scraped off the fetched page.
+SENTINEL_EMAIL = "redacted@example.invalid"
+
+# Prefixes whose keys are person-bound by default.
+_REDACTED_KEY_PREFIXES = ("author_", "user_")
+# Exceptions to the prefix rule: these name a request setting, not a person,
+# and redacting them would destroy behaviour the fixture exists to pin.
+_PRESERVED_PREFIXED_KEYS = frozenset({"user_selected_model"})
+# Keys whose string value is itself a JSON document.
+_EMBEDDED_JSON_KEYS = frozenset({"text"})
+
+_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+
+
+def _scrub_str(key: str | None, value: str) -> str:
+    # Only non-empty strings are rewritten: `""` carries shape information
+    # (an un-started plan step) and no secret.
+    if not value:
+        return value
+    if key is not None:
+        if key in SENTINELS:
+            return SENTINELS[key]
+        if key.startswith(_REDACTED_KEY_PREFIXES) and key not in _PRESERVED_PREFIXED_KEYS:
+            return SENTINEL_REDACTED
+        if key in _EMBEDDED_JSON_KEYS:
+            return _scrub_embedded_json(value)
+    return _EMAIL_RE.sub(SENTINEL_EMAIL, value)
+
+
+def _scrub_embedded_json(value: str) -> str:
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return _EMAIL_RE.sub(SENTINEL_EMAIL, value)
+    if not isinstance(parsed, (dict, list)):
+        return _EMAIL_RE.sub(SENTINEL_EMAIL, value)
+    scrubbed = _scrub_node(parsed)
+    if scrubbed == parsed:
+        # Re-serializing an already-clean payload would rewrite the server's
+        # own spacing and escaping, making every rerun a diff.
+        return value
+    return json.dumps(scrubbed, separators=(",", ":"))
+
+
+def _scrub_node(node: Any, key: str | None = None) -> Any:
+    if isinstance(node, dict):
+        return {k: _scrub_node(v, k) for k, v in node.items()}
+    if isinstance(node, list):
+        # The parent key rides along so `{"author_ids": [...]}` scrubs its items.
+        return [_scrub_node(v, key) for v in node]
+    if isinstance(node, str):
+        return _scrub_str(key, node)
+    # Numbers, bools and null carry no identifier we can recognise.
+    return node
+
+
 def _scrub(payload: dict[str, Any]) -> dict[str, Any]:
-    out = dict(payload)
-    for key, sentinel in SENTINELS.items():
-        if key in out and out[key] is not None:
-            out[key] = sentinel
-    return out
+    return {k: _scrub_node(v, k) for k, v in payload.items()}
 
 
 def main(argv: list[str] | None = None) -> int:
