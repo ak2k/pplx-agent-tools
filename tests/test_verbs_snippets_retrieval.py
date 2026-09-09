@@ -152,17 +152,16 @@ def test_retrieve_k_limits_per_index_candidates() -> None:
 
 
 def test_retrieve_sparse_url_still_gets_vector_signal() -> None:
-    """Regression: sqlite-vec's MATCH is a GLOBAL top-K. A URL with few rows
-    in a large corpus would silently lose its vector signal unless k is
-    scaled by total_rows / url_rows. Construct a 1-row sparse URL against
-    a 9-row dense corpus and verify the sparse URL's row is retrieved.
+    """Regression: sqlite-vec's MATCH is a GLOBAL top-K. A sparse URL whose
+    single row is farther from the query than every dense-URL row would be
+    excluded by a global top-k, so retrieval must pre-filter to the URL.
     """
-    # Dense URL: 9 rows with vec ~(0,1,0) — far from the query
-    # Sparse URL: 1 row with vec (1,0,0) — exact match for the query
-    rows = [(f"https://dense/{i}", f"dense paragraph {i}", 3) for i in range(9)]
+    # Dense URL: 9 rows near (1,0,0) — strictly closer to the query.
+    # Sparse URL: 1 row at (0.2,0.9,0) — farther, so a global top-k drops it.
+    rows = [("https://dense/", f"dense paragraph {i}", 3) for i in range(9)]
     rows.append(("https://sparse/", "the one matching paragraph", 4))
-    vecs = [[0.0, 1.0, 0.0] for _ in range(9)]
-    vecs.append([1.0, 0.0, 0.0])
+    vecs: list[list[float]] = [[1.0, 0.0, 0.0] for _ in range(9)]
+    vecs.append([0.2, 0.9, 0.0])
 
     conn = _build_index(rows, vecs, dim=3)
     query_blob = _vec_to_blob([1.0, 0.0, 0.0])
@@ -171,3 +170,52 @@ def test_retrieve_sparse_url_still_gets_vector_signal() -> None:
     results = _hybrid_retrieve(conn, _fts5_escape("xyzzy"), query_blob, "https://sparse/", k=2)
     assert results, "sparse URL must surface via the vector branch"
     assert results[0][0] == "the one matching paragraph"
+
+
+def test_retrieve_dense_url_keeps_vector_signal_against_denser_competitors() -> None:
+    """A URL with plenty of rows still loses every vector hit under a global
+    top-K if a competing URL's rows are uniformly closer to the query.
+    """
+    rows: list[tuple[str, str, int]] = []
+    vecs: list[list[float]] = []
+    for u in range(4):
+        for i in range(225):
+            rows.append((f"https://near{u}.example/", f"near {u} {i}", 3))
+            vecs.append([1.0, 0.0, 0.0])
+    for i in range(100):
+        rows.append(("https://target.example/", f"target paragraph {i}", 3))
+        vecs.append([0.0, 1.0, 0.0])
+    assert len(rows) == 1000
+
+    conn = _build_index(rows, vecs, dim=3)
+    query_blob = _vec_to_blob([1.0, 0.0, 0.0])
+    # BM25 contributes nothing, so the vector branch alone must return k rows.
+    results = _hybrid_retrieve(
+        conn, _fts5_escape("xyzzy"), query_blob, "https://target.example/", k=8
+    )
+    assert len(results) == 8
+    assert all(text.startswith("target paragraph ") for text, _, _ in results)
+
+
+def test_retrieve_large_corpus_does_not_exceed_vec0_k_limit() -> None:
+    """vec0's MATCH k is capped at 4096. A sparse URL in a >4096-row corpus
+    must not push k past that cap.
+    """
+    rows: list[tuple[str, str, int]] = []
+    vecs: list[list[float]] = []
+    for u in range(4):
+        for i in range(1250):
+            rows.append((f"https://bulk{u}.example/", f"bulk {u} {i}", 3))
+            vecs.append([1.0, 0.0, 0.0])
+    for i in range(3):
+        rows.append(("https://tiny.example/", f"tiny paragraph {i}", 3))
+        vecs.append([0.0, 1.0, 0.0])
+    assert len(rows) == 5003
+
+    conn = _build_index(rows, vecs, dim=3)
+    query_blob = _vec_to_blob([1.0, 0.0, 0.0])
+    results = _hybrid_retrieve(
+        conn, _fts5_escape("xyzzy"), query_blob, "https://tiny.example/", k=8
+    )
+    assert len(results) == 3
+    assert all(text.startswith("tiny paragraph ") for text, _, _ in results)
