@@ -343,3 +343,109 @@ def test_research_passes_model_preference_into_body() -> None:
     research(client, "q", mode="agentic_research")
     assert captured["model_preference"] == "pplx_agentic_research"
     assert captured["is_incognito"] is True
+
+
+# ---------- report body (RESEARCH_ANSWER asset) ----------
+
+
+def _report_blocks(cover: str, body: str, *, inline: str = "") -> str:
+    """The real deep-research shape: a RESEARCH_ANSWER block whose report body is
+    an asset, plus a FINAL block holding only the cover note."""
+    blocks = [
+        {
+            "step_type": "RESEARCH_ANSWER",
+            "content": {"goal_id": "8", "answer": inline, "title": "T", "url": "https://asset"},
+            "assets": [
+                {
+                    "asset_type": "RESEARCH_REPORT",
+                    "research_report": {"name": "T", "source_content": body},
+                }
+            ],
+            "uuid": "9",
+        },
+        {"step_type": "FINAL", "content": {"answer": cover}, "uuid": "10"},
+    ]
+    return json.dumps(blocks)
+
+
+def test_decode_includes_report_body_after_cover_note() -> None:
+    """The FINAL block only carries a cover note; dropping the RESEARCH_ANSWER
+    asset is what made `research` return a summary that described a missing
+    report."""
+    answer, _ = decode_research_text(
+        _report_blocks("I compiled a report. The full report includes tables.", "# Report\nbody")
+    )
+    assert answer == "I compiled a report. The full report includes tables.\n\n# Report\nbody"
+
+
+def test_decode_falls_back_to_inline_research_answer() -> None:
+    answer, _ = decode_research_text(_report_blocks("cover", "", inline="# Inline body"))
+    assert answer == "cover\n\n# Inline body"
+
+
+def test_decode_does_not_duplicate_body_quoted_in_cover() -> None:
+    answer, _ = decode_research_text(_report_blocks("cover: # Report\nbody", "# Report\nbody"))
+    assert answer == "cover: # Report\nbody"
+
+
+def test_decode_partial_research_answer_without_body() -> None:
+    blocks = [{"step_type": "RESEARCH_ANSWER", "content": {"answer": ""}, "assets": []}]
+    answer, _ = decode_research_text(json.dumps(blocks))
+    assert answer == ""
+
+
+# ---------- completion predicate + shortfall flag ----------
+
+
+def test_research_reads_past_text_completed_to_the_repaint() -> None:
+    """`text_completed` fires before the terminal COMPLETED repaint. Research
+    keeps whole snapshots, so it must consume the repaint, not stop early."""
+    events = [
+        {"data": {"backend_uuid": "BU", "read_write_token": "RW", "text": _snapshot("early")}},
+        {"data": {"text": _snapshot("early"), "text_completed": True}},
+        {"data": {"text": _snapshot("final repaint"), "status": "COMPLETED"}},
+    ]
+    result = research(_FakeClient(events), "q")
+    assert result.answer == "final repaint"
+    assert result.stream_complete is True
+    assert result.content_shortfall is False
+
+
+def test_research_flags_content_shortfall_when_final_snapshot_shrinks() -> None:
+    long_answer = "x" * 500
+    events = [
+        {
+            "data": {
+                "backend_uuid": "BU",
+                "read_write_token": "RW",
+                "text": _snapshot(long_answer),
+            }
+        },
+        {"data": {"text": _snapshot("tiny"), "status": "COMPLETED"}},
+    ]
+    result = research(_FakeClient(events), "q")
+    # The stream DID complete — the honest signal is a separate flag, not a lie
+    # about stream_complete.
+    assert result.stream_complete is True
+    assert result.content_shortfall is True
+    assert result.answer == "tiny"  # the newest snapshot is still what we return
+    assert result.warnings and "truncated" in result.warnings[0]
+
+
+def test_research_no_shortfall_when_snapshots_grow() -> None:
+    result = research(_FakeClient(_complete_events()), "q")
+    assert result.content_shortfall is False
+    assert result.warnings == []
+
+
+def test_render_text_content_shortfall_marker() -> None:
+    result = ResearchResult("q", "short", [], "research", content_shortfall=True)
+    assert "content: truncated" in render_research_text(result)
+
+
+def test_render_json_reports_content_shortfall() -> None:
+    result = ResearchResult("q", "short", [], "research", content_shortfall=True)
+    assert render_research_json(result)["content_shortfall"] is True
+    assert render_research_json(ResearchResult("q", "a", [], "research"))["content_shortfall"] is (
+        False
+    )
