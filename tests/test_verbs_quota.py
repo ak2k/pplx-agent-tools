@@ -34,7 +34,7 @@ RAW = {
 class FakeClient(_TestClientBase):
     """Canned `auth_session` + `get_json`; records the call order."""
 
-    def __init__(self, payload: Any, *, authenticated: bool = True) -> None:
+    def __init__(self, payload: Any = None, *, authenticated: bool = True) -> None:
         super().__init__()
         self._payload = payload
         self._authenticated = authenticated
@@ -56,8 +56,8 @@ def anonymous_payload() -> dict[str, Any]:
     return json.loads((FIXTURES / "anonymous.json").read_text())
 
 
-def test_quota_expired_session_raises_before_fetch(anonymous_payload: dict[str, Any]) -> None:
-    client = FakeClient(anonymous_payload, authenticated=False)
+def test_quota_expired_session_raises_before_fetch() -> None:
+    client = FakeClient(authenticated=False)
     with pytest.raises(AuthError, match="session expired or unauthenticated"):
         quota(client)
     assert client.calls == ["/api/auth/session"]
@@ -76,7 +76,7 @@ def test_anonymous_fixture_decodes_as_fully_exhausted(anonymous_payload: dict[st
     must pre-flight the session rather than inspect the payload."""
     r = decode_quota(anonymous_payload)
     assert r.free_queries is not None and r.free_queries.available is True
-    assert len(r.modes) == 4
+    assert [m.name for m in r.modes] == ["agentic_research", "labs", "pro_search", "research"]
     assert all(not m.available and m.remaining == 0 for m in r.modes)
     assert r.sources
     assert all(not s.available and s.remaining == 0 for s in r.sources)

@@ -40,6 +40,17 @@ def _stub_client(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
+@pytest.fixture
+def _expired_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Overrides the autouse `_stub_client` (same scope, requested second) so the
+    runner hands the verb a client whose session pre-flight fails."""
+    monkeypatch.setattr(
+        cli_runner.Client,
+        "from_default_cookies",
+        classmethod(lambda cls, **_: _ExpiredClient()),
+    )
+
+
 def test_quota_text_exit_zero(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
 ) -> None:
@@ -67,13 +78,8 @@ def test_quota_json_exit_zero(
 
 
 def test_quota_expired_session_exit_two(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    _expired_session: None, capsys: pytest.CaptureFixture
 ) -> None:
-    monkeypatch.setattr(
-        cli_runner.Client,
-        "from_default_cookies",
-        classmethod(lambda cls, **_: _ExpiredClient()),
-    )
     rc = cli_quota.main([])
     captured = capsys.readouterr()
     assert rc == EXIT_AUTH
@@ -82,13 +88,8 @@ def test_quota_expired_session_exit_two(
 
 
 def test_quota_expired_session_json_error_envelope(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    _expired_session: None, capsys: pytest.CaptureFixture
 ) -> None:
-    monkeypatch.setattr(
-        cli_runner.Client,
-        "from_default_cookies",
-        classmethod(lambda cls, **_: _ExpiredClient()),
-    )
     rc = cli_quota.main(["--json"])
     assert rc == EXIT_AUTH
     payload = json.loads(capsys.readouterr().out)

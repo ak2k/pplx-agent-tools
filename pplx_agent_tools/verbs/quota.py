@@ -49,13 +49,11 @@ class QuotaResult:
 
 
 def quota(client: Client) -> QuotaResult:
-    """Fetch current rate-limit / availability status. Stateless GET.
+    """Fetch current rate-limit / availability status. Creates no thread.
 
-    Validates the session first: the endpoint serves an anonymous caller a
-    200 with everything at exact 0, which is indistinguishable from an
-    exhausted account, so an expired cookie would otherwise render as
-    "you have used everything up". `auth_session()` raises AuthError with
-    the same message `pplx auth check` prints.
+    Pre-flights `/api/auth/session` because the anonymous payload (see module
+    docstring) is indistinguishable from an exhausted account: without it an
+    expired cookie renders as "you have used everything up" and exits 0.
     """
     client.auth_session()
     raw = client.get_json(ENDPOINT)
