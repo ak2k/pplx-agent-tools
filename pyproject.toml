@@ -137,6 +137,9 @@ show_missing = true
 # --cov, so this gates CI. Bumped manually when coverage climbs and we want
 # the new floor enforced (not auto-ratcheted to current).
 fail_under = 80
+# coverage rounds the total to `precision` digits BEFORE the fail_under
+# comparison; at the default 0, a 79.5% total passes an 80 floor.
+precision = 2
 
 [tool.pyright]
 # Editors and a bare `basedpyright` read this; CI and the documented CLI pass
