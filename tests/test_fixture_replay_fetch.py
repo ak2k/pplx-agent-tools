@@ -26,9 +26,12 @@ Capture with `scripts/re-capture-fetch-prompt.py`, then sanitize with
 
 from __future__ import annotations
 
+import argparse
+import importlib.util
 import json
 from collections.abc import Iterator
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 import pytest
@@ -40,10 +43,11 @@ from tests._doubles import _TestClientBase
 
 FIXTURES = Path(__file__).parent / "fixtures" / "fetch-url"
 SANITIZER_SCRIPT = Path(__file__).parent.parent / "scripts" / "re-sanitize-fetch-fixture.py"
+CAPTURE_SCRIPT = Path(__file__).parent.parent / "scripts" / "re-capture-fetch-prompt.py"
 
 # Matches the sentinels in scripts/re-sanitize-fetch-fixture.py.
 # Drift between this file and the script is caught by
-# test_sentinels_match_sanitizer_script below — keep them in lockstep.
+# test_sentinels_appear_in_sanitizer_source below — keep them in lockstep.
 SENTINEL_BACKEND_UUID = "00000000-0000-4000-8000-000000000001"
 SENTINEL_RW_TOKEN = "TEST_RW_TOKEN"
 SENTINEL_UUID = "00000000-0000-4000-8000-000000000003"
@@ -174,11 +178,11 @@ def test_empty_stream_raises_schema_error() -> None:
         )
 
 
-def test_sentinels_match_sanitizer_script() -> None:
-    """Defensive: detect drift between the sanitizer's SENTINELS dict and
-    the constants this test asserts against. If someone changes one without
-    the other, the fixture-replay tests would mysteriously fail on the
-    next regeneration — better to fail loudly here.
+def test_sentinels_appear_in_sanitizer_source() -> None:
+    """Supplementary text check: the sentinel literals this file asserts on
+    still exist in the script. It cannot show they are USED — the behavioural
+    tests below do that — but it names the drift cheaply when a literal is
+    renamed on one side only.
     """
     assert SANITIZER_SCRIPT.exists(), f"missing script: {SANITIZER_SCRIPT}"
     script = SANITIZER_SCRIPT.read_text()
@@ -193,6 +197,119 @@ def test_sentinels_match_sanitizer_script() -> None:
         ("SENTINEL_EMAIL", SENTINEL_EMAIL),
     ):
         assert value in script, f"{name} {value!r} not in sanitizer script"
+
+
+# ---------- the sanitizer's behaviour, not its source text ----------
+#
+# The scripts are not importable modules (hyphenated names, PEP 723 headers),
+# so they are loaded by path. Asserting on `_scrub_node` is what makes a
+# redaction regression fail here: a sentinel can stay spelled in the source
+# while nothing applies it any more.
+
+
+def _load_script(path: Path, module_name: str) -> ModuleType:
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    assert spec is not None and spec.loader is not None, f"cannot load {path}"
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.fixture(scope="module")
+def sanitizer() -> ModuleType:
+    return _load_script(SANITIZER_SCRIPT, "re_sanitize_fetch_fixture")
+
+
+@pytest.fixture(scope="module")
+def capture() -> ModuleType:
+    return _load_script(CAPTURE_SCRIPT, "re_capture_fetch_prompt")
+
+
+# A payload carrying an identity under every JSON type the wire can use.
+DIRTY_PAYLOAD = {
+    "author_profile": {"account_id": "acct-secret-123", "name": "Alice"},
+    "user_id": 123456,
+    "user_ids": [1, 2],
+    "author_username": "alice",
+    "backend_uuid": "0e2a1f7c-real-uuid",
+    "read_write_token": "live-session-token",
+    "user_selected_model": "turbo",
+    "uuid": "",
+    "status": "COMPLETED",
+    "thread_title": "mail alice@corp.example for the numbers",
+}
+
+
+def test_scrub_redacts_identities_under_every_json_type(sanitizer: ModuleType) -> None:
+    """The defect this pins: dispatching on the value's type before the key
+    let a dict, a list or a number under an identity key ride out verbatim.
+    """
+    out = sanitizer._scrub_node(dict(DIRTY_PAYLOAD))
+
+    assert out["author_profile"] == SENTINEL_REDACTED
+    assert "acct-secret-123" not in json.dumps(out)
+    assert out["user_id"] == SENTINEL_REDACTED
+    assert out["user_ids"] == SENTINEL_REDACTED
+    assert out["author_username"] == "test_user"
+    assert out["backend_uuid"] == SENTINEL_BACKEND_UUID
+    assert out["read_write_token"] == SENTINEL_RW_TOKEN
+
+
+def test_scrub_preserves_settings_and_shape(sanitizer: ModuleType) -> None:
+    out = sanitizer._scrub_node(dict(DIRTY_PAYLOAD))
+    # A model id is a request setting, not a person; the empty uuid is an
+    # un-started plan step, and inventing a value there would hide the shape.
+    assert out["user_selected_model"] == "turbo"
+    assert out["uuid"] == ""
+    assert out["status"] == "COMPLETED"
+
+
+def test_scrub_redacts_emails_in_prose(sanitizer: ModuleType) -> None:
+    out = sanitizer._scrub_node(dict(DIRTY_PAYLOAD))
+    assert "alice@corp.example" not in json.dumps(out)
+    assert SENTINEL_EMAIL in out["thread_title"]
+
+
+def test_scrub_redacts_nested_and_embedded_identities(sanitizer: ModuleType) -> None:
+    """Identifiers nest inside blocks and inside `text`, which is itself a
+    JSON document serialized into a string — the walk must reach both.
+    """
+    payload = {
+        "blocks": [{"plan": {"uuid": "real-uuid", "author_id": {"id": "x"}}}],
+        "text": json.dumps([{"backend_uuid": "real", "user_id": 7}]),
+    }
+    out = sanitizer._scrub_node(payload)
+
+    assert out["blocks"][0]["plan"]["uuid"] == SENTINEL_UUID
+    assert out["blocks"][0]["plan"]["author_id"] == "00000000-0000-4000-8000-00000000000a"
+    inner = json.loads(out["text"])
+    assert inner[0]["backend_uuid"] == SENTINEL_BACKEND_UUID
+    assert inner[0]["user_id"] == SENTINEL_REDACTED
+
+
+def test_scrub_is_idempotent(sanitizer: ModuleType) -> None:
+    """Re-sanitizing a committed fixture is the standing leak check, so a
+    second pass must be a no-op rather than a diff.
+    """
+    once = sanitizer._scrub_node(dict(DIRTY_PAYLOAD))
+    assert sanitizer._scrub_node(once) == once
+
+
+@pytest.mark.parametrize(
+    "label",
+    ["../x", "a/b", ".", "..", "", "/abs/path", "..\\x", "../../tests/fixtures/fetch-url/x"],
+)
+def test_capture_label_rejects_path_like_values(capture: ModuleType, label: str) -> None:
+    """A capture is UNSANITIZED — it carries the session thread token and
+    account ids. A path-like label would write it outside the gitignored
+    capture directory, e.g. into tests/fixtures/.
+    """
+    with pytest.raises(argparse.ArgumentTypeError):
+        capture._fixture_label(label)
+
+
+def test_capture_label_accepts_a_bare_basename(capture: ModuleType) -> None:
+    assert capture._fixture_label("paywalled-article") == "paywalled-article"
 
 
 # ---------- capture-variety fixtures, driven through the CLI ----------

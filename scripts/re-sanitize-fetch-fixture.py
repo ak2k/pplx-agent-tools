@@ -18,7 +18,10 @@ What gets replaced (deterministically, so reruns are diff-free):
     frontend_context_uuid, uuid, cursor) at any depth
   - read_write_token (session-bound thread token) at any depth
   - any `author_*` / `user_*` key at any depth, except the entries in
-    `_PRESERVED_PREFIXED_KEYS` that name a setting rather than a person
+    `_PRESERVED_PREFIXED_KEYS` that name a setting rather than a person.
+    The key decides, not the value's JSON type: a nested object, a list or a
+    bare number under such a key is replaced wholesale, since an identity
+    hides just as well in `{"author_profile": {"account_id": ...}}`
   - thread_url_slug (often the backend_uuid again)
   - any email-shaped substring in any string value
 
@@ -80,18 +83,31 @@ _EMBEDDED_JSON_KEYS = frozenset({"text"})
 _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 
 
+def _is_identity_key(key: str | None) -> bool:
+    if key is None or key in _PRESERVED_PREFIXED_KEYS:
+        return False
+    return key in SENTINELS or key.startswith(_REDACTED_KEY_PREFIXES)
+
+
+def _redact_identity(key: str, value: Any) -> Any:
+    """Replace an identity-keyed value outright, whatever its JSON type.
+
+    Empty containers, empty strings and null carry shape but no secret (the
+    server emits `"uuid":""` for un-started plan steps), so they ride out
+    untouched; substituting them would churn the fixture and hide the shape.
+    """
+    if value is None or (isinstance(value, (str, list, dict)) and not value):
+        return value
+    return SENTINELS.get(key, SENTINEL_REDACTED)
+
+
 def _scrub_str(key: str | None, value: str) -> str:
     # Only non-empty strings are rewritten: `""` carries shape information
     # (an un-started plan step) and no secret.
     if not value:
         return value
-    if key is not None:
-        if key in SENTINELS:
-            return SENTINELS[key]
-        if key.startswith(_REDACTED_KEY_PREFIXES) and key not in _PRESERVED_PREFIXED_KEYS:
-            return SENTINEL_REDACTED
-        if key in _EMBEDDED_JSON_KEYS:
-            return _scrub_embedded_json(value)
+    if key is not None and key in _EMBEDDED_JSON_KEYS:
+        return _scrub_embedded_json(value)
     return _EMAIL_RE.sub(SENTINEL_EMAIL, value)
 
 
@@ -111,6 +127,10 @@ def _scrub_embedded_json(value: str) -> str:
 
 
 def _scrub_node(node: Any, key: str | None = None) -> Any:
+    # The key is consulted BEFORE the type: dispatching on type first let an
+    # identity ride out under any non-string value.
+    if key is not None and _is_identity_key(key):
+        return _redact_identity(key, node)
     if isinstance(node, dict):
         return {k: _scrub_node(v, k) for k, v in node.items()}
     if isinstance(node, list):

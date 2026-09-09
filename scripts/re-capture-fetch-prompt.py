@@ -51,9 +51,30 @@ ENDPOINT = "/rest/sse/perplexity_ask"
 CAPTURE_TIMEOUT_SECONDS = 300.0
 
 
+def _fixture_label(raw: str) -> str:
+    """Accept a bare basename only.
+
+    The label is interpolated into the output paths, so a separator or a `..`
+    component would land an UNSANITIZED capture — session thread token and
+    account identifiers included — outside the gitignored capture directory,
+    e.g. straight into tests/fixtures/.
+    """
+    if not raw:
+        raise argparse.ArgumentTypeError("label must not be empty")
+    if "/" in raw or "\\" in raw or Path(raw).is_absolute():
+        raise argparse.ArgumentTypeError(f"label must be a bare basename, not a path: {raw!r}")
+    if raw in {".", ".."}:
+        raise argparse.ArgumentTypeError(f"label must be a bare basename, not a path: {raw!r}")
+    return raw
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    p.add_argument("label", help="fixture basename, e.g. paywalled-article-prompt")
+    p.add_argument(
+        "label",
+        type=_fixture_label,
+        help="fixture basename, e.g. paywalled-article-prompt",
+    )
     p.add_argument("url", help="URL to hand to the fetch prompt")
     p.add_argument("prompt", help="the prompt text")
     args = p.parse_args(argv)
@@ -99,11 +120,21 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    jsonl = OUT_DIR / f"{args.label}.events.jsonl"
+    out_dir = OUT_DIR.resolve()
+    jsonl = (out_dir / f"{args.label}.events.jsonl").resolve()
+    raw = (out_dir / f"{args.label}.raw.sse").resolve()
+    # Second line of defence behind `_fixture_label`: symlinks resolve here,
+    # and this capture is unsanitized.
+    for dest in (jsonl, raw):
+        if not dest.is_relative_to(out_dir):
+            print(
+                f"re-capture-fetch-prompt: refuses to write outside {out_dir}: {dest}",
+                file=sys.stderr,
+            )
+            return 2
     jsonl.write_text(
         "".join(json.dumps(e, separators=(",", ":")) + "\n" for e in events),
     )
-    raw = OUT_DIR / f"{args.label}.raw.sse"
     raw.write_text("\n".join(raw_lines) + "\n")
     print(f"wrote {jsonl} ({len(events)} events)")
     print(f"wrote {raw}")
