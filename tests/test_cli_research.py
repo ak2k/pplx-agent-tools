@@ -78,5 +78,5 @@ def test_content_shortfall_exits_six(
 
     assert rc == EXIT_PARTIAL
     assert "short report" in cap.out
-    assert "treat it as truncated" in cap.err
+    assert "may be incomplete" in cap.err
     assert "did not reach COMPLETED" not in cap.err

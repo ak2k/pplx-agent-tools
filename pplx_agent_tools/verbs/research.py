@@ -350,9 +350,14 @@ def _report_bodies(blk: dict[str, Any]) -> list[str]:
     The body is an asset: `assets[].research_report.source_content`. The block's
     own `content.answer` is empty in the observed builds but is honored as a
     fallback, since that is where a non-asset build would put the same text.
-    Returns [] when the block carries neither (a partial snapshot)."""
+    Returns [] when the block carries neither (a partial snapshot).
+
+    Total over JSON shape: every decode path runs inside the stream callback,
+    which guards only SchemaError, so a TypeError here would escape the stream
+    loop and strand the thread it created."""
     bodies: list[str] = []
-    for asset in blk.get("assets") or []:
+    assets = blk.get("assets")
+    for asset in assets if isinstance(assets, list) else []:
         if not isinstance(asset, dict):
             continue
         report = asset.get("research_report")

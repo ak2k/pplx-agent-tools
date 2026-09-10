@@ -342,7 +342,7 @@ def render_research_text(result: ResearchResult) -> str:
         parts.append("stream: incomplete (deadline or cut)")
     if result.content_shortfall:
         parts.append("")
-        parts.append("content: truncated (an earlier frame carried more text)")
+        parts.append("content: may be incomplete (see warnings)")
     return "\n".join(parts)
 
 

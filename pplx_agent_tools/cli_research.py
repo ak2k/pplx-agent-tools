@@ -98,11 +98,11 @@ def _finalize(result: ResearchResult) -> int:
         return EXIT_PARTIAL
     if result.content_shortfall:
         # Stream finished, answer didn't: a plausible-looking short report is
-        # the failure mode worth an exit code. The size detail is already in
-        # `result.warnings`, which run_verb prints — don't repeat it here.
+        # the failure mode worth an exit code. Which of the several causes fired
+        # is in `result.warnings`, which run_verb prints — stay generic here
+        # rather than asserting one of them.
         print(
-            "warning: research answer is shorter than an earlier snapshot; "
-            "treat it as truncated (exit 6)",
+            "warning: research answer may be incomplete; see the warnings above for why (exit 6)",
             file=sys.stderr,
         )
         return EXIT_PARTIAL

@@ -7,6 +7,8 @@ from collections.abc import Iterator
 from typing import Any
 
 import pytest
+from hypothesis import HealthCheck, given, settings
+from hypothesis import strategies as st
 
 from pplx_agent_tools.errors import SchemaError, StreamDeadlineError
 from pplx_agent_tools.render import render_research_json, render_research_text
@@ -20,6 +22,23 @@ from pplx_agent_tools.verbs.research import (
 )
 
 from ._doubles import _TestClientBase
+
+# JSON-like recursive values, mirroring tests/test_fuzz_robustness.py — bounded
+# leaves keep individual inputs small (breadth of shape, not size).
+_json_leaf = st.one_of(
+    st.none(),
+    st.booleans(),
+    st.integers(min_value=-(2**31), max_value=2**31 - 1),
+    st.text(max_size=30),
+)
+_json_value = st.recursive(
+    _json_leaf,
+    lambda children: st.one_of(
+        st.lists(children, max_size=5),
+        st.dictionaries(st.text(min_size=1, max_size=15), children, max_size=5),
+    ),
+    max_leaves=15,
+)
 
 
 def _snapshot(answer: str = "QUIC is a protocol. [1]") -> str:
@@ -440,7 +459,7 @@ def test_research_no_shortfall_when_snapshots_grow() -> None:
 
 def test_render_text_content_shortfall_marker() -> None:
     result = ResearchResult("q", "short", [], "research", content_shortfall=True)
-    assert "content: truncated" in render_research_text(result)
+    assert "content: may be incomplete" in render_research_text(result)
 
 
 def test_render_json_reports_content_shortfall() -> None:
@@ -643,3 +662,47 @@ def test_research_no_shortfall_when_the_cover_note_quotes_the_whole_body() -> No
     assert result.content_shortfall is False
     assert result.warnings == []
     assert result.answer == "Here it is: " + body, "the body is not repeated after the cover"
+
+
+# ---------- decode totality ----------
+
+
+def test_research_survives_a_malformed_assets_field_mid_stream() -> None:
+    """Decoding now runs inside the stream callback, which catches SchemaError
+    only — a decode that raised TypeError escaped the stream loop before the
+    thread cleanup ran and lost the COMPLETED frame that followed."""
+    bad = json.dumps([{"step_type": "RESEARCH_ANSWER", "assets": True, "content": None}])
+    client = _FakeClient(
+        [
+            {"data": {"backend_uuid": "BU", "read_write_token": "RW", "text": bad}},
+            {"data": {"text": _snapshot("the real answer"), "status": "COMPLETED"}},
+        ]
+    )
+    result = research(client, "q")
+
+    assert result.answer == "the real answer"
+    assert client.deleted == [("BU", "RW")], "the incognito thread is still cleaned up"
+
+
+@pytest.mark.parametrize("assets", [True, 3, "str", {"a": 1}, None, [1, "x", None]])
+def test_decode_tolerates_any_assets_shape(assets: Any) -> None:
+    blocks = [
+        {"step_type": "RESEARCH_ANSWER", "assets": assets, "content": {"answer": "inline"}},
+        {"step_type": "FINAL", "content": {"answer": "cover"}},
+    ]
+    answer, _ = decode_research_text(json.dumps(blocks))
+    assert answer == "cover\n\ninline"
+
+
+@given(_json_value)
+@settings(suppress_health_check=[HealthCheck.too_slow])
+def test_decode_research_text_returns_or_raises_schema(payload: Any) -> None:
+    """Totality: over ANY JSON input, decode returns a (str, list[Source]) pair
+    or raises SchemaError. A TypeError/AttributeError/KeyError here reaches the
+    stream callback, which only guards against SchemaError."""
+    try:
+        answer, sources = decode_research_text(json.dumps(payload))
+    except SchemaError:
+        return
+    assert isinstance(answer, str)
+    assert all(isinstance(s, ResearchSource) for s in sources)

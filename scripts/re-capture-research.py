@@ -1,7 +1,4 @@
-#!/usr/bin/env -S uv run --script --quiet
-# /// script
-# requires-python = ">=3.12"
-# ///
+#!/usr/bin/env -S uv run --python 3.12 python
 """Capture a raw `pplx research` SSE stream to re-fixtures/research/.
 
 Drives /rest/sse/perplexity_ask the way `verbs/research.py` does (same body via
@@ -22,8 +19,13 @@ Research is session-creating: the body is incognito so the thread never enters
 history, and we still DELETE it by backend_uuid afterwards as the secondary
 guard (CLAUDE.md -> "Endpoint selection principle").
 
-Usage:
-  uv run --python 3.12 scripts/re-capture-research.py "your query" --timeout 600
+Unlike the stdlib-only scripts here this one is not a PEP 723 `--script`: it
+imports the package, so it needs the project environment (curl_cffi and the
+rest) rather than an isolated one.
+
+Usage (from the repo root):
+  uv run --python 3.12 python scripts/re-capture-research.py \\
+    "your query" --timeout 600
 """
 
 from __future__ import annotations
