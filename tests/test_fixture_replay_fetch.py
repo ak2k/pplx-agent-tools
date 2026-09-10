@@ -309,6 +309,71 @@ def test_scrub_redacts_an_email_spanning_a_chunk_boundary(sanitizer: ModuleType)
     assert sanitizer._scrub({"chunks": clean})["chunks"] == clean
 
 
+def _delta_event(offset: int, *chunks: str) -> dict[str, Any]:
+    """One PENDING event shaped like a real capture's ask_text delta."""
+    return {
+        "status": "PENDING",
+        "text_completed": False,
+        "blocks": [
+            {
+                "intended_usage": "ask_text",
+                "markdown_block": {
+                    "chunks": list(chunks),
+                    "chunk_starting_offset": offset,
+                    "progress": "IN_PROGRESS",
+                },
+            }
+        ],
+    }
+
+
+def test_residual_check_catches_an_email_split_across_events(
+    sanitizer: ModuleType, tmp_path: Path
+) -> None:
+    """The answer streams one chunk per event, so an address split between two
+    events is whole in neither and reassembles for the replaying client. The
+    sanitizer must refuse to leave such a fixture on disk.
+    """
+    events = [_delta_event(0, "mail alice@"), _delta_event(1, "corp.example for it")]
+    scrubbed = [sanitizer._scrub(e) for e in events]
+
+    leaks = sanitizer.residual_chunk_emails(scrubbed)
+    assert [(x.block, x.first_event, x.last_event, x.match) for x in leaks] == [
+        ("ask_text", 0, 1, "alice@corp.example")
+    ]
+
+    src = tmp_path / "in.events.jsonl"
+    out = tmp_path / "out.events.jsonl"
+    src.write_text("".join(json.dumps(e, separators=(",", ":")) + "\n" for e in events))
+    assert sanitizer.main([str(src), str(out)]) == 1
+    assert not out.exists(), "a leaking fixture must not be left on disk"
+
+
+def test_residual_check_passes_when_one_event_holds_the_whole_email(
+    sanitizer: ModuleType, tmp_path: Path
+) -> None:
+    """The same address inside one event is scrubbed, and the sentinel it is
+    replaced with — itself email-shaped — must not read as a finding.
+    """
+    events = [_delta_event(0, "mail alice@", "corp.example for it")]
+    scrubbed = [sanitizer._scrub(e) for e in events]
+    assert sanitizer.residual_chunk_emails(scrubbed) == []
+
+    src = tmp_path / "in.events.jsonl"
+    out = tmp_path / "out.events.jsonl"
+    src.write_text("".join(json.dumps(e, separators=(",", ":")) + "\n" for e in events))
+    assert sanitizer.main([str(src), str(out)]) == 0
+    written = out.read_text()
+    assert "alice@corp.example" not in written
+    assert SENTINEL_EMAIL in written
+
+
+@pytest.mark.parametrize("fixture", sorted(FIXTURES.glob("*.events.jsonl")), ids=lambda p: p.name)
+def test_committed_fixtures_have_no_cross_event_email(sanitizer: ModuleType, fixture: Path) -> None:
+    events = [json.loads(line) for line in fixture.read_text().splitlines() if line.strip()]
+    assert sanitizer.residual_chunk_emails(events) == []
+
+
 @pytest.mark.parametrize(
     "label",
     ["../x", "a/b", ".", "..", "", "/abs/path", "..\\x", "../../tests/fixtures/fetch-url/x"],
