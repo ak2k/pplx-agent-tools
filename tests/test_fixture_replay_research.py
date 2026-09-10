@@ -360,6 +360,15 @@ class _UnwritableFile:
         raise OSError(28, "No space left on device")
 
 
+def _unwritable_capture(path: Path) -> _UnwritableFile:
+    """Create the capture for real, then fail on flush.
+
+    The file has to exist or the cleanup skips its `out_path.exists()` chmod
+    entirely, which is the branch these tests are here to cover."""
+    path.touch()
+    return _UnwritableFile()
+
+
 def test_capture_deletes_the_thread_when_the_first_write_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -370,12 +379,39 @@ def test_capture_deletes_the_thread_when_the_first_write_fails(
     _StubResearchClient.deleted = []
     monkeypatch.setattr(capture, "Client", _StubResearchClient)
     monkeypatch.setattr(capture, "OUT_DIR", tmp_path)
-    monkeypatch.setattr(capture, "_create_capture_file", lambda path: _UnwritableFile())
+    monkeypatch.setattr(capture, "_create_capture_file", _unwritable_capture)
 
     with pytest.raises(OSError, match="No space left"):
         capture.main(["q", "--label", "cap"])
 
     assert _StubResearchClient.deleted == [("BU", "RW")]
+
+
+def test_capture_deletes_the_thread_when_the_cleanup_chmod_also_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The disk failure that breaks the write can break the chmod on the same
+    partial capture — and that chmod sits between the run and the delete, so a
+    raise there used to strand the thread it had already identified."""
+    capture = _load_script("re_capture_research", CAPTURE_SCRIPT)
+    _StubResearchClient.deleted = []
+    monkeypatch.setattr(capture, "Client", _StubResearchClient)
+    monkeypatch.setattr(capture, "OUT_DIR", tmp_path)
+    monkeypatch.setattr(capture, "_create_capture_file", _unwritable_capture)
+
+    def _failing_chmod(self: Path, mode: int, **kwargs: object) -> None:
+        raise OSError(5, "Input/output error")
+
+    # Path.chmod, not the script's own creation path: `_create_capture_file`
+    # pins the mode with os.fchmod and stays usable.
+    monkeypatch.setattr(Path, "chmod", _failing_chmod)
+
+    with pytest.raises(OSError) as excinfo:
+        capture.main(["q", "--label", "cap"])
+
+    assert _StubResearchClient.deleted == [("BU", "RW")], "the delete runs regardless"
+    assert "Input/output error" in str(excinfo.value)
+    assert "No space left" in str(excinfo.value.__context__), "the write failure is not lost"
 
 
 def test_capture_file_is_created_unreadable_to_others(tmp_path: Path) -> None:
