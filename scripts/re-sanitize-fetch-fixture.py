@@ -32,9 +32,14 @@ reassembles when a client replays the fixture. `residual_chunk_emails` is the
 gate for that: once every event is scrubbed, each block's chunks are joined in
 stream order across all of them — exactly as a replaying client accumulates
 them, with no reconstruction from `chunk_starting_offset` — and any match other
-than the sentinel refuses. The sanitized events are staged beside the
-destination and moved into place only after the gate passes, so a refusal (or a
-malformed input) leaves an existing fixture untouched instead of destroying it.
+than the sentinel refuses. A `chunks` list holding anything but strings is a
+finding too, not a skip: the join cannot see through it, so the one check that
+covers cross-event addresses would silently not apply. The sanitized events are
+staged under a unique name in the destination's directory and moved into place
+only after the gate passes, so a refusal (or a malformed input) leaves an
+existing fixture untouched instead of destroying it, and two runs writing
+different fixtures in the same directory cannot land on each other's staging
+file.
 
 What is preserved verbatim:
   - blocks[*] (incl. chunk_starting_offset / progress; markdown_block chunks
@@ -57,8 +62,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any, NamedTuple, cast
 
@@ -191,21 +198,52 @@ class ChunkLeak(NamedTuple):
     last_event: int
     match: str
 
+    def describe(self) -> str:
+        return (
+            f"block {self.block!r} chunks join to {self.match!r} "
+            f"across events {self.first_event}-{self.last_event}"
+        )
+
+
+class ChunkShape(NamedTuple):
+    """A `chunks` list carrying something other than strings.
+
+    Reported rather than skipped: the cross-event join is the only check that
+    sees an address split across events, and a list it cannot join is a place
+    that check does not reach. Whether the odd element is itself a secret is
+    beside the point — an unreviewed shape refuses.
+    """
+
+    block: str
+    event: int
+    kind: str
+
+    def describe(self) -> str:
+        return (
+            f"block {self.block!r} has a {self.kind} in its chunks at event "
+            f"{self.event}; the cross-event email join cannot cover it"
+        )
+
 
 def _block_key(index: int, block: dict[str, Any]) -> str:
     usage = block.get("intended_usage")
     return usage if isinstance(usage, str) and usage else f"blocks[{index}]"
 
 
-def _chunk_stream(events: list[dict[str, Any]]) -> dict[str, list[tuple[str, int]]]:
-    """Block key → its chunks paired with the event index, in stream order.
+def _chunk_stream(
+    events: list[dict[str, Any]],
+) -> tuple[dict[str, list[tuple[str, int]]], list[ChunkShape]]:
+    """Events → (block key → its chunks with the event index, in stream order),
+    plus every `chunks` list this walk could not read as text.
 
-    Exactly what a replaying client appends (`extract_chunks_from_event` over
-    the events in order) — nothing is reconstructed from
-    `chunk_starting_offset`, because interpreting the offsets lets the
-    COMPLETED repaint mask a delta that no longer sits at the slot it repaints.
+    The streams are exactly what a replaying client appends
+    (`extract_chunks_from_event` over the events in order) — nothing is
+    reconstructed from `chunk_starting_offset`, because interpreting the offsets
+    lets the COMPLETED repaint mask a delta that no longer sits at the slot it
+    repaints.
     """
     streams: dict[str, list[tuple[str, int]]] = {}
+    shapes: list[ChunkShape] = []
     for event_index, event in enumerate(events):
         blocks = event.get("blocks")
         if not isinstance(blocks, list):
@@ -217,15 +255,22 @@ def _chunk_stream(events: list[dict[str, Any]]) -> dict[str, list[tuple[str, int
             if not isinstance(markdown, dict):
                 continue
             chunks = markdown.get("chunks")
-            if not isinstance(chunks, list) or not all(isinstance(c, str) for c in chunks):
+            if not isinstance(chunks, list):
                 continue
-            stream = streams.setdefault(_block_key(block_index, block), [])
+            key = _block_key(block_index, block)
+            odd = next((c for c in chunks if not isinstance(c, str)), None)
+            if odd is not None:
+                shapes.append(ChunkShape(key, event_index, type(odd).__name__))
+                continue
+            stream = streams.setdefault(key, [])
             stream.extend((chunk, event_index) for chunk in chunks)
-    return streams
+    return streams, shapes
 
 
-def residual_chunk_emails(events: list[dict[str, Any]]) -> list[ChunkLeak]:
-    """Already-scrubbed events → every email surviving a cross-event chunk join.
+def residual_chunk_emails(events: list[dict[str, Any]]) -> list[ChunkLeak | ChunkShape]:
+    """Already-scrubbed events → everything that keeps this fixture from being
+    written: emails surviving a cross-event chunk join, and chunk lists the join
+    could not read.
 
     The sentinel is itself email-shaped, so a match equal to it is what a
     successful scrub looks like, not a finding. Every other match refuses,
@@ -233,8 +278,9 @@ def residual_chunk_emails(events: list[dict[str, Any]]) -> list[ChunkLeak]:
     COMPLETED repaint: refusing is the safe direction, and a seam hit is for a
     human to look at rather than for this check to reason away.
     """
-    leaks: list[ChunkLeak] = []
-    for key, ordered in _chunk_stream(events).items():
+    streams, shapes = _chunk_stream(events)
+    leaks: list[ChunkLeak | ChunkShape] = list(shapes)
+    for key, ordered in streams.items():
         joined = "".join(text for text, _ in ordered)
         spans: list[tuple[int, int, int]] = []
         cursor = 0
@@ -261,14 +307,25 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    # Staged next to the destination and moved into place only once the leak
-    # check passes: the usual invocation re-sanitizes a committed fixture over
-    # itself, where writing first would let a refusal destroy the good file it
-    # was meant to protect.
-    staged = args.output.with_name(args.output.name + ".tmp")
+    # Staged in the destination's own directory (so the move is atomic) under a
+    # name no other run can pick, and moved into place only once the leak check
+    # passes: the usual invocation re-sanitizes a committed fixture over itself,
+    # where writing first would let a refusal destroy the good file it was meant
+    # to protect, and a fixed name lets two concurrent runs write each other's
+    # staging file.
+    fd, staged_name = tempfile.mkstemp(
+        dir=args.output.parent, prefix=args.output.name + ".", suffix=".tmp"
+    )
+    staged = Path(staged_name)
     scrubbed: list[dict[str, Any]] = []
     try:
-        with staged.open("w") as f:
+        with os.fdopen(fd, "w") as f:
+            # mkstemp creates 0600; the fixture it replaces is a committed,
+            # world-readable file, so the mode the umask would have given it is
+            # restored before the move.
+            umask = os.umask(0)
+            os.umask(umask)
+            os.fchmod(f.fileno(), 0o666 & ~umask)
             for lineno, line in enumerate(raw, start=1):
                 stripped = line.strip()
                 if not stripped:
@@ -289,11 +346,7 @@ def main(argv: list[str] | None = None) -> int:
         leaks = residual_chunk_emails(scrubbed)
         if leaks:
             for leak in leaks:
-                print(
-                    f"error: {args.output} withheld: block {leak.block!r} chunks join to "
-                    f"{leak.match!r} across events {leak.first_event}-{leak.last_event}",
-                    file=sys.stderr,
-                )
+                print(f"error: {args.output} withheld: {leak.describe()}", file=sys.stderr)
             return 1
         staged.replace(args.output)
     finally:

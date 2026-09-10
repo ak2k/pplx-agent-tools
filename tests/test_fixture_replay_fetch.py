@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
 import re
 from collections.abc import Iterator
 from pathlib import Path
@@ -535,6 +536,67 @@ def test_residual_check_passes_when_one_event_holds_the_whole_email(
 def test_committed_fixtures_have_no_cross_event_email(sanitizer: ModuleType, fixture: Path) -> None:
     events = [json.loads(line) for line in fixture.read_text().splitlines() if line.strip()]
     assert sanitizer.residual_chunk_emails(events) == []
+
+
+def test_a_non_string_chunk_is_reported_not_skipped(sanitizer: ModuleType, tmp_path: Path) -> None:
+    """A `chunks` list the join cannot read used to be passed over, which turned
+    the one check covering cross-event addresses off for that block without
+    saying so. It is now a finding, and `main()` refuses to write the fixture.
+    """
+    event = _delta_event(0, "mail alice@")
+    event["blocks"][0]["markdown_block"]["chunks"] = ["mail alice@", {"text": "corp.example"}]
+
+    findings = sanitizer.residual_chunk_emails([sanitizer._scrub(event)])
+    assert [(f.block, f.event, f.kind) for f in findings] == [("ask_text", 0, "dict")]
+    assert "ask_text" in findings[0].describe()
+
+    src = tmp_path / "in.events.jsonl"
+    out = tmp_path / "out.events.jsonl"
+    _write_jsonl(src, [event])
+    assert sanitizer.main([str(src), str(out)]) == 1
+    assert not out.exists(), "an unreadable chunk list must not be written"
+    assert list(tmp_path.glob("*.tmp")) == [], "the staged file must not survive a refusal"
+
+
+def test_staging_file_name_is_unique_per_run(
+    sanitizer: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two runs writing different fixtures into one directory must not stage
+    over each other; the fixed sibling `.tmp` name let them.
+    """
+    seen: list[str] = []
+    real_mkstemp = sanitizer.tempfile.mkstemp
+
+    def recording_mkstemp(**kwargs: Any) -> tuple[int, str]:
+        fd, name = real_mkstemp(**kwargs)
+        seen.append(name)
+        return fd, name
+
+    monkeypatch.setattr(sanitizer.tempfile, "mkstemp", recording_mkstemp)
+    for name in ("a", "b"):
+        src = tmp_path / f"{name}.in.jsonl"
+        _write_jsonl(src, [_delta_event(0, "hello")])
+        assert sanitizer.main([str(src), str(tmp_path / f"{name}.events.jsonl")]) == 0
+
+    assert len(set(seen)) == 2, f"staging names collided: {seen}"
+    assert all(Path(p).parent == tmp_path for p in seen), "staging must sit beside the destination"
+    assert list(tmp_path.glob("*.tmp")) == [], "no staging file survives a successful run"
+
+
+def test_written_fixture_is_readable_like_a_committed_file(
+    sanitizer: ModuleType, tmp_path: Path
+) -> None:
+    """The staging file is created 0600; the fixture it becomes is committed and
+    read by every test run, so the mode must not follow the staging file's.
+    """
+    src = tmp_path / "in.events.jsonl"
+    out = tmp_path / "out.events.jsonl"
+    _write_jsonl(src, [_delta_event(0, "hello")])
+    assert sanitizer.main([str(src), str(out)]) == 0
+
+    umask = os.umask(0)
+    os.umask(umask)
+    assert out.stat().st_mode & 0o777 == 0o666 & ~umask
 
 
 @pytest.mark.parametrize(
