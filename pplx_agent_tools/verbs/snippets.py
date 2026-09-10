@@ -256,6 +256,17 @@ def _build_index(
     sqlite_vec.load(conn)
     conn.enable_load_extension(False)
 
+    # vec0 consumes a `rowid IN (...)` pre-filter only through sqlite3_vtab_in,
+    # added in SQLite 3.38. Below that the IN degrades to a post-filter applied
+    # after a GLOBAL top-k, so _hybrid_retrieve would silently return no vector
+    # rows for a url whose paragraphs fall outside that window.
+    if sqlite3.sqlite_version_info < (3, 38):
+        conn.close()
+        raise SchemaError(
+            "pplx snippets needs SQLite 3.38+ so vec0 can pre-filter the KNN "
+            f"by url (found {sqlite3.sqlite_version})"
+        )
+
     conn.execute(
         "CREATE TABLE paragraphs (id INTEGER PRIMARY KEY, url TEXT, text TEXT, words INTEGER)"
     )
@@ -274,6 +285,8 @@ def _build_index(
             "INSERT INTO p_vec(rowid, embedding) VALUES (?, ?)",
             (i, _vec_to_blob(vec)),
         )
+    # Backs the per-url rowid pre-filter in the KNN query.
+    conn.execute("CREATE INDEX paragraphs_url ON paragraphs(url)")
     return conn
 
 
@@ -302,32 +315,26 @@ def _hybrid_retrieve(
         (fts_query, url, k),
     ).fetchall()
 
-    # Vector KNN: sqlite-vec MATCH is a GLOBAL top-K — it picks the k
-    # nearest rows in the whole corpus, THEN the JOIN filters by URL. If
-    # the URL is sparse (few rows) and those rows aren't in the global
-    # top-k, we'd silently get zero vector hits for this URL. Scale k by
-    # the ratio of total_rows / url_rows so the global KNN over-fetches
-    # enough to leave ~k URL-matching rows after the join.
-    total_rows, url_rows = conn.execute(
-        """
-        SELECT
-            (SELECT COUNT(*) FROM paragraphs),
-            (SELECT COUNT(*) FROM paragraphs WHERE url = ?)
-        """,
-        (url,),
-    ).fetchone()
-    if url_rows == 0 or total_rows == 0:
-        vec_rows: list[tuple[int, str, int]] = []
+    # Vector KNN: vec0's MATCH is a GLOBAL top-K, capped at k <= 4096. The
+    # rowid IN (...) constraint is consumed by vec0 during the scan, so k
+    # counts rows for THIS url rather than the whole corpus. The constraint
+    # must sit on p_vec.rowid: on p.id, SQLite applies it AFTER the KNN,
+    # reinstating the global top-K.
+    (url_rows,) = conn.execute("SELECT COUNT(*) FROM paragraphs WHERE url = ?", (url,)).fetchone()
+    if url_rows == 0:
+        # Never rely on vec0's empty-IN semantics for the zero-row case.
+        vec_rows = []
     else:
-        scaled_k = min(total_rows, k * max(1, total_rows // url_rows))
         vec_rows = conn.execute(
             """
             SELECT p.id, p.text, p.words
             FROM p_vec JOIN paragraphs p ON p_vec.rowid = p.id
-            WHERE p_vec.embedding MATCH ? AND p.url = ? AND k = ?
+            WHERE p_vec.embedding MATCH ?
+              AND k = ?
+              AND p_vec.rowid IN (SELECT id FROM paragraphs WHERE url = ?)
             ORDER BY distance
             """,
-            (query_blob, url, scaled_k),
+            (query_blob, k, url),
         ).fetchall()
 
     # RRF merge by row id. score(d) = sum(1/(RRF_K + rank_i(d)))
