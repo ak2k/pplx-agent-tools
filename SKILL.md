@@ -84,6 +84,7 @@ Stdout is results only; stderr carries diagnostics. `2>/dev/null` gives clean pa
 # First-run notes
 
 - `pplx snippets` downloads ~80 MB embedding model on first invocation (cached at `~/.cache/fastembed/`). Subsequent calls are 1–2 s for N≈5 URLs.
+- `pplx snippets` needs SQLite 3.38 or newer; an older build is refused with a clear error rather than quietly returning no semantic matches.
 - `pplx auth import --browser <name>` pops a macOS keychain prompt the first time; click "Always Allow" so future runs are silent.
 
 # Caveats
