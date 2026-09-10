@@ -16,7 +16,8 @@ docs/wire/perplexity-ask-research.md), with two important differences:
      report includes…"); the report itself is a RESEARCH_ANSWER block asset
      (`assets[].research_report.source_content`), so the answer we return is the
      cover note followed by that body. Sources accumulate across SEARCH_RESULTS
-     blocks' `content.web_results`. The latest snapshot's decode is what we return.
+     blocks' `content.web_results`. The latest PARSEABLE snapshot's decode is what
+     we return.
 
 Deep research takes ~90-120s (multi-round, ~40+ sources); the verb supports the
 same `--timeout` → partial-result (exit 6) contract as `fetch --prompt`, with
@@ -80,10 +81,11 @@ class ResearchResult:
     mode: str
     # False iff the stream was cut before COMPLETED (deadline tripped / server cut).
     stream_complete: bool = True
-    # True when the kept snapshot's decoded report is shorter than the longest
-    # decoded report seen in any parseable snapshot of the stream. Frames that
-    # fail to decode are skipped, so this stays a positive signal rather than a
-    # completeness guarantee.
+    # True when the kept snapshot's decoded report body is shorter than the
+    # longest seen in any parseable snapshot, or when the stream's last frame
+    # failed to decode at all. Frames that fail to decode never become the kept
+    # snapshot, so this stays a positive signal rather than a completeness
+    # guarantee.
     content_shortfall: bool = False
     warnings: list[str] = field(default_factory=list)
 
@@ -136,27 +138,40 @@ def research(
         # other model so a stray --council-models doesn't ride along on a research req.
         council_models = None
     body = _build_research_body(query, model_preference, council_models=council_models)
-    # `latest` is what we return (the newest snapshot wins); `best_report` is the
-    # longest DECODED report seen, kept only to detect a shortfall when a late
-    # frame repaints a *smaller* report. Judging by raw frame length instead misses
-    # exactly the production case: the terminal repaint carries more sources and
-    # envelope fields than earlier frames, so it is raw-larger even when its report
-    # body shrank. Decoding every snapshot costs ~0.3s over an 800-frame stream.
-    latest: dict[str, str | None] = {"text": None}
-    best_report: dict[str, int] = {"len": 0}
+    # `latest` is the newest snapshot that DECODED — an unparseable frame never
+    # replaces it, so a garbage terminal repaint costs a warning instead of the
+    # whole ~2-minute run. `best` is the high-water mark used to detect a late
+    # frame repainting a *smaller* report: the report BODY, because cover note and
+    # body share one decoded answer and a repaint that grows the cover while
+    # losing body would otherwise read as growth. Raw frame length is no use
+    # either — the terminal repaint carries more sources and envelope fields than
+    # earlier frames, so it is raw-larger even when its body shrank. `total` is
+    # the fallback for streams that never carry a body block. Decoding every
+    # snapshot costs ~0.3s over an 800-frame stream.
+    latest: dict[str, Any] = {"text": None, "answer": "", "sources": [], "body_len": 0}
+    best: dict[str, int] = {"body": 0, "total": 0}
+    saw: dict[str, bool] = {"body": False, "last_frame_decoded": False}
+    last_raw: dict[str, str | None] = {"text": None}
 
     def _on_event(event: dict[str, Any]) -> None:
         data = event.get("data")
-        if isinstance(data, dict) and isinstance(data.get("text"), str):
-            text = data["text"]
-            latest["text"] = text
-            try:
-                decoded, _ = decode_research_text(text)
-            except SchemaError:
-                # An intermediate frame that fails to parse says nothing about the
-                # kept snapshot, so it must not sink an otherwise-good run.
-                return
-            best_report["len"] = max(best_report["len"], len(decoded))
+        if not isinstance(data, dict) or not isinstance(data.get("text"), str):
+            return
+        text: str = data["text"]
+        last_raw["text"] = text
+        try:
+            cover_parts, report_parts, sources = _decode_parts(text)
+        except SchemaError:
+            saw["last_frame_decoded"] = False
+            return
+        body = "\n\n".join(report_parts).strip()
+        answer = "\n\n".join(cover_parts + report_parts).strip()
+        latest.update(text=text, answer=answer, sources=sources, body_len=len(body))
+        saw["last_frame_decoded"] = True
+        if body:
+            saw["body"] = True
+        best["body"] = max(best["body"], len(body))
+        best["total"] = max(best["total"], len(answer))
 
     state, deadline_tripped = run_ask_stream(
         client,
@@ -183,21 +198,21 @@ def research(
         )
 
     if latest["text"] is None:
+        if last_raw["text"] is not None:
+            # Text arrived but no frame ever parsed — the decode error is the
+            # honest diagnosis, so re-raise it rather than reporting no content.
+            decode_research_text(last_raw["text"])
         if deadline_tripped:
             raise StreamDeadlineError(
                 f"research stream on {ENDPOINT} exceeded {timeout:.1f}s before any content"
             )
         raise SchemaError(f"no schematized text received from {ENDPOINT}")
 
-    answer, sources = decode_research_text(latest["text"])
-    warnings: list[str] = []
-    content_shortfall = False
-    if best_report["len"] > len(answer):
-        content_shortfall = True
-        warnings.append(
-            f"kept snapshot decodes to {len(answer)} chars but an earlier frame "
-            f"carried {best_report['len']}; the report may be truncated"
-        )
+    answer: str = latest["answer"]
+    sources: list[ResearchSource] = latest["sources"]
+    content_shortfall, warnings = _shortfall_verdict(
+        answer_len=len(answer), body_len=latest["body_len"], best=best, saw=saw
+    )
 
     return ResearchResult(
         query=query,
@@ -208,6 +223,35 @@ def research(
         content_shortfall=content_shortfall,
         warnings=warnings,
     )
+
+
+def _shortfall_verdict(
+    *, answer_len: int, body_len: int, best: dict[str, int], saw: dict[str, bool]
+) -> tuple[bool, list[str]]:
+    """Did the kept snapshot lose content? → (flag, warnings).
+
+    Judged on the report BODY whenever any frame carried one, since the cover
+    note moves independently of the report; a stream of FINAL-only snapshots has
+    no body to compare and falls back to the whole decoded answer.
+    """
+    warnings: list[str] = []
+    if saw["body"]:
+        if body_len < best["body"]:
+            warnings.append(
+                f"kept snapshot's report body decodes to {body_len} chars but an earlier "
+                f"frame carried {best['body']}; the report may be truncated"
+            )
+    elif answer_len < best["total"]:
+        warnings.append(
+            f"kept snapshot decodes to {answer_len} chars but an earlier frame "
+            f"carried {best['total']}; the report may be truncated"
+        )
+    if not saw["last_frame_decoded"]:
+        warnings.append(
+            "the last frame of the stream failed to decode; returning the newest "
+            f"parseable snapshot ({answer_len} chars), which may be truncated"
+        )
+    return bool(warnings), warnings
 
 
 def decode_research_text(text: str) -> tuple[str, list[ResearchSource]]:
@@ -226,6 +270,18 @@ def decode_research_text(text: str) -> tuple[str, list[ResearchSource]]:
     Sources prefer the FINAL block's cited `web_results` (citation-aligned with
     the answer's [n] markers); we fall back to the intermediate SEARCH_RESULTS
     rounds when FINAL carries none.
+    """
+    cover_parts, report_parts, sources = _decode_parts(text)
+    return "\n\n".join(cover_parts + report_parts).strip(), sources
+
+
+def _decode_parts(text: str) -> tuple[list[str], list[str], list[ResearchSource]]:
+    """`decode_research_text` before the join: (cover parts, report body parts, sources).
+
+    Split out so a caller can measure the report BODY on its own — the joined
+    answer mixes cover note and body, and a snapshot that grows the cover while
+    losing body keeps the total steady. `report_parts` is already deduplicated
+    against the cover, i.e. exactly what the joined answer contains.
     """
     try:
         blocks = json.loads(text)
@@ -264,7 +320,7 @@ def decode_research_text(text: str) -> tuple[str, list[ResearchSource]]:
 
     cover = "\n\n".join(cover_parts).strip()
     # A body already quoted in the cover note would just be printed twice.
-    answer_parts = cover_parts + [p for p in report_parts if p not in cover]
+    kept_reports = [p for p in report_parts if p not in cover]
     chosen = final_web if final_web else search_web
     sources: list[Source] = []
     seen: set[str] = set()
@@ -273,7 +329,7 @@ def decode_research_text(text: str) -> tuple[str, list[ResearchSource]]:
         if src is not None and src.url not in seen:
             seen.add(src.url)
             sources.append(src)
-    return "\n\n".join(answer_parts).strip(), sources
+    return cover_parts, kept_reports, sources
 
 
 def _report_bodies(blk: dict[str, Any]) -> list[str]:

@@ -553,3 +553,71 @@ def test_research_flags_shortfall_when_the_repaint_grows_in_metadata() -> None:
     assert result.answer == "tiny", "the latest snapshot is still what we return"
     assert result.content_shortfall is True
     assert result.warnings and "truncated" in result.warnings[0]
+
+
+def test_research_flags_body_loss_masked_by_a_growing_cover_note() -> None:
+    """The cover note and the report body live in one decoded answer, so a
+    repaint that GROWS the cover while LOSING report body can keep the total at
+    or above the maximum seen. The report is the body; judge on it."""
+    early = _report_blocks("", "x" * 10_000)
+    repaint = _report_blocks("c" * 1_200, "y" * 9_500)
+    assert len(repaint) > len(early), "the premise: the repaint is total-larger, body-smaller"
+
+    events = [
+        {"data": {"backend_uuid": "BU", "read_write_token": "RW", "text": early}},
+        {"data": {"text": repaint, "status": "COMPLETED"}},
+    ]
+    result = research(_FakeClient(events), "q")
+
+    assert result.stream_complete is True
+    assert result.content_shortfall is True
+    assert result.warnings and "truncated" in result.warnings[0]
+    assert "9500" in result.warnings[0] and "10000" in result.warnings[0]
+
+
+def test_research_no_shortfall_when_only_the_cover_note_shrinks() -> None:
+    """A shorter cover note over an intact report is not a truncated report."""
+    body = "b" * 5_000
+    events = [
+        {
+            "data": {
+                "backend_uuid": "BU",
+                "read_write_token": "RW",
+                "text": _report_blocks("c" * 1_200, body),
+            }
+        },
+        {"data": {"text": _report_blocks("c" * 10, body), "status": "COMPLETED"}},
+    ]
+    result = research(_FakeClient(events), "q")
+
+    assert result.content_shortfall is False
+    assert result.warnings == []
+
+
+def test_research_keeps_the_last_parseable_snapshot_when_the_repaint_is_garbage() -> None:
+    """A malformed terminal repaint used to overwrite a perfectly good snapshot
+    and blow up the whole ~2-minute run with SchemaError."""
+    events = [
+        {
+            "data": {
+                "backend_uuid": "BU",
+                "read_write_token": "RW",
+                "text": _snapshot("the real answer"),
+            }
+        },
+        {"data": {"status": "COMPLETED", "text": "not json"}},
+    ]
+    result = research(_FakeClient(events), "q")
+
+    assert result.answer == "the real answer"
+    assert result.content_shortfall is True
+    assert result.warnings and "decode" in result.warnings[0]
+
+
+def test_research_raises_when_no_frame_ever_parsed() -> None:
+    events = [
+        {"data": {"backend_uuid": "BU", "read_write_token": "RW", "text": "not json"}},
+        {"data": {"text": "still not json", "status": "COMPLETED"}},
+    ]
+    with pytest.raises(SchemaError):
+        research(_FakeClient(events), "q")
