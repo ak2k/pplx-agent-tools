@@ -23,6 +23,7 @@ from .errors import (
     AntiBotError,
     AuthError,
     NetworkError,
+    PplxError,
     RateLimitError,
     SchemaError,
     StreamDeadlineError,
@@ -245,37 +246,49 @@ class Client:
         deadline = (time.monotonic() + max_total_seconds) if max_total_seconds else None
         buffer = ""
         try:
-            for chunk in resp.iter_content(chunk_size=4096):
-                if deadline is not None and time.monotonic() > deadline:
-                    raise StreamDeadlineError(
-                        f"SSE stream on {path} exceeded {max_total_seconds:.1f}s deadline"
-                    )
-                if not chunk:
-                    continue
-                buffer += chunk.decode("utf-8", errors="replace")
-                # Normalize CRLF that SSE protocol uses.
-                buffer = buffer.replace("\r\n", "\n")
-                # Bound memory against a server that trickles bytes without ever
-                # emitting an event terminator (`\n\n`): the per-chunk idle timeout
-                # wouldn't fire on a continuous trickle, so cap the un-dispatched
-                # buffer. A single SSE event over 16 MiB is pathological.
-                if "\n\n" not in buffer and len(buffer) > _MAX_SSE_BUFFER_BYTES:
-                    raise SchemaError(
-                        f"SSE stream on {path} exceeded {_MAX_SSE_BUFFER_BYTES} bytes "
-                        "without an event terminator"
-                    )
-                while "\n\n" in buffer:
-                    raw_event, buffer = buffer.split("\n\n", 1)
-                    parsed = _parse_sse_event(raw_event)
-                    if parsed is not None:
-                        yield parsed
-                        # Re-check deadline between yields so a generator
-                        # consumer that processes events slowly can't outrun
-                        # the bound either.
-                        if deadline is not None and time.monotonic() > deadline:
-                            raise StreamDeadlineError(
-                                f"SSE stream on {path} exceeded {max_total_seconds:.1f}s deadline"
-                            )
+            try:
+                for chunk in resp.iter_content(chunk_size=4096):
+                    if deadline is not None and time.monotonic() > deadline:
+                        raise StreamDeadlineError(
+                            f"SSE stream on {path} exceeded {max_total_seconds:.1f}s deadline"
+                        )
+                    if not chunk:
+                        continue
+                    buffer += chunk.decode("utf-8", errors="replace")
+                    # Normalize CRLF that SSE protocol uses.
+                    buffer = buffer.replace("\r\n", "\n")
+                    # Bound memory against a server that trickles bytes without ever
+                    # emitting an event terminator (`\n\n`): the per-chunk idle timeout
+                    # wouldn't fire on a continuous trickle, so cap the un-dispatched
+                    # buffer. A single SSE event over 16 MiB is pathological.
+                    if "\n\n" not in buffer and len(buffer) > _MAX_SSE_BUFFER_BYTES:
+                        raise SchemaError(
+                            f"SSE stream on {path} exceeded {_MAX_SSE_BUFFER_BYTES} bytes "
+                            "without an event terminator"
+                        )
+                    while "\n\n" in buffer:
+                        raw_event, buffer = buffer.split("\n\n", 1)
+                        parsed = _parse_sse_event(raw_event)
+                        if parsed is not None:
+                            yield parsed
+                            # Re-check deadline between yields so a generator
+                            # consumer that processes events slowly can't outrun
+                            # the bound either.
+                            if deadline is not None and time.monotonic() > deadline:
+                                raise StreamDeadlineError(
+                                    f"SSE stream on {path} exceeded {max_total_seconds:.1f}s deadline"
+                                )
+            except PplxError:
+                # Deadline and schema faults raised in the loop above already carry
+                # their own exit-code contract; only transport faults are reclassified.
+                raise
+            except Exception as e:
+                # A read that dies mid-stream is the same class of failure as a POST
+                # that never connected, so it gets the same typed error and exit code.
+                # Events already yielded are not salvaged: a truncated stream has no
+                # completion signal, and salvage stays reserved for the deadline path
+                # where the caller opted into a bound and expects a partial.
+                raise NetworkError(f"SSE stream on {path} failed mid-stream: {e!s}") from e
         finally:
             with contextlib.suppress(Exception):
                 resp.close()
