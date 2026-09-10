@@ -180,7 +180,7 @@ def test_empty_stream_raises_schema_error() -> None:
 
 def test_sentinels_appear_in_sanitizer_source() -> None:
     """Supplementary text check: the sentinel literals this file asserts on
-    still exist in the script. It cannot show they are USED — the behavioural
+    still exist in the script. It cannot show they are USED — the behavioral
     tests below do that — but it names the drift cheaply when a literal is
     renamed on one side only.
     """
@@ -199,7 +199,7 @@ def test_sentinels_appear_in_sanitizer_source() -> None:
         assert value in script, f"{name} {value!r} not in sanitizer script"
 
 
-# ---------- the sanitizer's behaviour, not its source text ----------
+# ---------- the sanitizer's behavior, not its source text ----------
 #
 # The scripts are not importable modules (hyphenated names, PEP 723 headers),
 # so they are loaded by path. Asserting on `_scrub_node` is what makes a
@@ -293,6 +293,20 @@ def test_scrub_is_idempotent(sanitizer: ModuleType) -> None:
     """
     once = sanitizer._scrub_node(dict(DIRTY_PAYLOAD))
     assert sanitizer._scrub_node(once) == once
+
+
+def test_scrub_redacts_an_email_spanning_a_chunk_boundary(sanitizer: ModuleType) -> None:
+    """`chunks` re-ships the answer in ~23-char slices; per-string scrubbing
+    redacted the whole answer string and kept the same address verbatim across
+    a slice boundary.
+    """
+    out = sanitizer._scrub({"chunks": ["mail alice@", "corp.example for it"]})
+
+    assert "alice@corp.example" not in "".join(out["chunks"])
+    assert SENTINEL_EMAIL in "".join(out["chunks"])
+    # A clean capture keeps its slicing, so re-running the sanitizer is stable.
+    clean = ["hello ", "world"]
+    assert sanitizer._scrub({"chunks": clean})["chunks"] == clean
 
 
 @pytest.mark.parametrize(

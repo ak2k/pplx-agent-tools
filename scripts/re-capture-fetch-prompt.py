@@ -121,9 +121,18 @@ def main(argv: list[str] | None = None) -> int:
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     out_dir = OUT_DIR.resolve()
+    # A symlinked capture directory resolves INTO wherever it points — possibly
+    # tests/fixtures/ — and every destination under it would still pass the
+    # containment check below, landing an unsanitized capture in the tracked tree.
+    if out_dir != OUT_DIR:
+        print(
+            f"re-capture-fetch-prompt: {OUT_DIR} must be a real directory, not a link to {out_dir}",
+            file=sys.stderr,
+        )
+        return 2
     jsonl = (out_dir / f"{args.label}.events.jsonl").resolve()
     raw = (out_dir / f"{args.label}.raw.sse").resolve()
-    # Second line of defence behind `_fixture_label`: symlinks resolve here,
+    # Second line of defense behind `_fixture_label`: symlinks resolve here,
     # and this capture is unsanitized.
     for dest in (jsonl, raw):
         if not dest.is_relative_to(out_dir):

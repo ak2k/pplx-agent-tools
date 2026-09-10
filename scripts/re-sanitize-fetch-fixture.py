@@ -23,10 +23,12 @@ What gets replaced (deterministically, so reruns are diff-free):
     bare number under such a key is replaced wholesale, since an identity
     hides just as well in `{"author_profile": {"account_id": ...}}`
   - thread_url_slug (often the backend_uuid again)
-  - any email-shaped substring in any string value
+  - any email-shaped substring in any string value, including one that only
+    exists across a `chunks` slice boundary (see `_scrub_chunks`)
 
 What is preserved verbatim:
-  - blocks[*] (incl. markdown_block chunks / chunk_starting_offset / progress)
+  - blocks[*] (incl. chunk_starting_offset / progress; markdown_block chunks
+    keep their original slicing unless something in the joined text matched)
   - status, text_completed, final_sse_message
   - thread_title (it's the user's prompt — fixture's whole point)
   - empty strings: the server emits `"uuid":""` for un-started plan steps, and
@@ -48,7 +50,7 @@ import json
 import re
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 # Fixed sentinel values — any test asserting on these can hard-code them.
 SENTINELS = {
@@ -75,7 +77,7 @@ SENTINEL_EMAIL = "redacted@example.invalid"
 # Prefixes whose keys are person-bound by default.
 _REDACTED_KEY_PREFIXES = ("author_", "user_")
 # Exceptions to the prefix rule: these name a request setting, not a person,
-# and redacting them would destroy behaviour the fixture exists to pin.
+# and redacting them would destroy behavior the fixture exists to pin.
 _PRESERVED_PREFIXED_KEYS = frozenset({"user_selected_model"})
 # Keys whose string value is itself a JSON document.
 _EMBEDDED_JSON_KEYS = frozenset({"text"})
@@ -126,24 +128,49 @@ def _scrub_embedded_json(value: str) -> str:
     return json.dumps(scrubbed, separators=(",", ":"))
 
 
+def _scrub_chunks(chunks: list[str]) -> list[str]:
+    """A `chunks` list → scrubbed, scrubbing the JOINED text.
+
+    Perplexity ships the answer twice: whole, and sliced into ~23-char `chunks`.
+    Per-string scrubbing therefore redacts an email in the whole string and
+    keeps it verbatim in `chunks` whenever it straddles a slice boundary.
+    Scrubbing the join closes that. A clean capture keeps its original slicing
+    (nothing matched), so re-running the sanitizer over an already-clean input
+    is byte-for-byte stable.
+    """
+    joined = "".join(chunks)
+    scrubbed = _EMAIL_RE.sub(SENTINEL_EMAIL, joined)
+    if scrubbed == joined:
+        return list(chunks)
+    return [scrubbed]
+
+
 def _scrub_node(node: Any, key: str | None = None) -> Any:
     # The key is consulted BEFORE the type: dispatching on type first let an
     # identity ride out under any non-string value.
     if key is not None and _is_identity_key(key):
         return _redact_identity(key, node)
     if isinstance(node, dict):
-        return {k: _scrub_node(v, k) for k, v in node.items()}
+        out: dict[str, Any] = {}
+        for k, v in node.items():
+            if k == "chunks" and isinstance(v, list) and all(isinstance(i, str) for i in v):
+                out[k] = _scrub_chunks(v)
+            else:
+                out[k] = _scrub_node(v, k)
+        return out
     if isinstance(node, list):
         # The parent key rides along so `{"author_ids": [...]}` scrubs its items.
         return [_scrub_node(v, key) for v in node]
     if isinstance(node, str):
         return _scrub_str(key, node)
-    # Numbers, bools and null carry no identifier we can recognise.
+    # Numbers, bools and null carry no identifier we can recognize.
     return node
 
 
 def _scrub(payload: dict[str, Any]) -> dict[str, Any]:
-    return {k: _scrub_node(v, k) for k, v in payload.items()}
+    # Routed through `_scrub_node` so the top level gets the same key dispatch
+    # as every nested dict rather than a second copy of it.
+    return cast(dict[str, Any], _scrub_node(payload))
 
 
 def main(argv: list[str] | None = None) -> int:
