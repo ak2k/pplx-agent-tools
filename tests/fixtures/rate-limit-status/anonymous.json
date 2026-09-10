@@ -1,0 +1,229 @@
+{
+  "free_queries": {
+    "available": true,
+    "remaining_detail": {
+      "kind": "not_provided"
+    }
+  },
+  "modes": {
+    "agentic_research": {
+      "available": false,
+      "remaining_detail": {
+        "kind": "exact",
+        "remaining": 0
+      }
+    },
+    "labs": {
+      "available": false,
+      "remaining_detail": {
+        "kind": "exact",
+        "remaining": 0
+      }
+    },
+    "pro_search": {
+      "available": false,
+      "remaining_detail": {
+        "kind": "exact",
+        "remaining": 0
+      }
+    },
+    "research": {
+      "available": false,
+      "remaining_detail": {
+        "kind": "exact",
+        "remaining": 0
+      }
+    }
+  },
+  "sources": {
+    "asana_mcp_merge": {
+      "available": false,
+      "remaining_detail": {
+        "kind": "exact",
+        "remaining": 0
+      }
+    },
+    "bmj": {
+      "available": false,
+      "remaining_detail": {
+        "kind": "exact",
+        "remaining": 0
+      }
+    },
+    "box": {
+      "available": false,
+      "remaining_detail": {
+        "kind": "exact",
+        "remaining": 0
+      }
+    },
+    "cbinsights_mcp_cashmere": {
+      "available": false,
+      "remaining_detail": {
+        "kind": "exact",
+        "remaining": 0
+      }
+    },
+    "confluence_mcp_merge": {
+      "available": false,
+      "remaining_detail": {
+        "kind": "exact",
+        "remaining": 0
+      }
+    },
+    "crunchbase": {
+      "available": false,
+      "remaining_detail": {
+        "kind": "exact",
+        "remaining": 0
+      }
+    },
+    "dropbox": {
+      "available": false,
+      "remaining_detail": {
+        "kind": "exact",
+        "remaining": 0
+      }
+    },
+    "factset": {
+      "available": false,
+      "remaining_detail": {
+        "kind": "exact",
+        "remaining": 0
+      }
+    },
+    "gcal": {
+      "available": false,
+      "remaining_detail": {
+        "kind": "exact",
+        "remaining": 0
+      }
+    },
+    "github_mcp_direct": {
+      "available": false,
+      "remaining_detail": {
+        "kind": "exact",
+        "remaining": 0
+      }
+    },
+    "google_drive": {
+      "available": false,
+      "remaining_detail": {
+        "kind": "exact",
+        "remaining": 0
+      }
+    },
+    "jira_mcp_merge": {
+      "available": false,
+      "remaining_detail": {
+        "kind": "exact",
+        "remaining": 0
+      }
+    },
+    "linear_alt": {
+      "available": false,
+      "remaining_detail": {
+        "kind": "exact",
+        "remaining": 0
+      }
+    },
+    "microsoft_teams_mcp_merge": {
+      "available": false,
+      "remaining_detail": {
+        "kind": "exact",
+        "remaining": 0
+      }
+    },
+    "midpage": {
+      "available": false,
+      "remaining_detail": {
+        "kind": "exact",
+        "remaining": 0
+      }
+    },
+    "nejm": {
+      "available": false,
+      "remaining_detail": {
+        "kind": "exact",
+        "remaining": 0
+      }
+    },
+    "notion_mcp": {
+      "available": false,
+      "remaining_detail": {
+        "kind": "exact",
+        "remaining": 0
+      }
+    },
+    "onedrive": {
+      "available": false,
+      "remaining_detail": {
+        "kind": "exact",
+        "remaining": 0
+      }
+    },
+    "openrouter": {
+      "available": false,
+      "remaining_detail": {
+        "kind": "exact",
+        "remaining": 0
+      }
+    },
+    "org": {
+      "available": false,
+      "remaining_detail": {
+        "kind": "exact",
+        "remaining": 0
+      }
+    },
+    "outlook": {
+      "available": false,
+      "remaining_detail": {
+        "kind": "exact",
+        "remaining": 0
+      }
+    },
+    "pitchbook_mcp_cashmere": {
+      "available": false,
+      "remaining_detail": {
+        "kind": "exact",
+        "remaining": 0
+      }
+    },
+    "sharepoint": {
+      "available": false,
+      "remaining_detail": {
+        "kind": "exact",
+        "remaining": 0
+      }
+    },
+    "slack_direct": {
+      "available": false,
+      "remaining_detail": {
+        "kind": "exact",
+        "remaining": 0
+      }
+    },
+    "statista_mcp_cashmere": {
+      "available": false,
+      "remaining_detail": {
+        "kind": "exact",
+        "remaining": 0
+      }
+    },
+    "visualdx": {
+      "available": false,
+      "remaining_detail": {
+        "kind": "exact",
+        "remaining": 0
+      }
+    },
+    "wiley_mcp_cashmere": {
+      "available": false,
+      "remaining_detail": {
+        "kind": "exact",
+        "remaining": 0
+      }
+    }
+  }
+}
