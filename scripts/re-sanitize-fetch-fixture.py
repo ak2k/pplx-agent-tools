@@ -29,9 +29,12 @@ What gets replaced (deterministically, so reruns are diff-free):
 Scrubbing is per-event, but the answer is streamed as one chunk per event, so
 an address split across two events is invisible to every individual scrub and
 reassembles when a client replays the fixture. `residual_chunk_emails` is the
-gate for that: after every event is scrubbed, each block's chunks are rejoined
-across the whole stream and rechecked, and a hit makes the run delete its own
-output and fail rather than commit a leaking fixture.
+gate for that: once every event is scrubbed, each block's chunks are joined in
+stream order across all of them — exactly as a replaying client accumulates
+them, with no reconstruction from `chunk_starting_offset` — and any match other
+than the sentinel refuses. The sanitized events are staged beside the
+destination and moved into place only after the gate passes, so a refusal (or a
+malformed input) leaves an existing fixture untouched instead of destroying it.
 
 What is preserved verbatim:
   - blocks[*] (incl. chunk_starting_offset / progress; markdown_block chunks
@@ -194,17 +197,15 @@ def _block_key(index: int, block: dict[str, Any]) -> str:
     return usage if isinstance(usage, str) and usage else f"blocks[{index}]"
 
 
-def _chunk_slots(events: list[dict[str, Any]]) -> dict[str, dict[int, tuple[str, int]]]:
-    """Rebuild what a replaying client accumulates: block key → offset → chunk.
+def _chunk_stream(events: list[dict[str, Any]]) -> dict[str, list[tuple[str, int]]]:
+    """Block key → its chunks paired with the event index, in stream order.
 
-    Chunks arrive as one-per-event deltas carrying `chunk_starting_offset`, and
-    the COMPLETED event repaints every chunk from offset 0. Writing by offset
-    lets the repaint overwrite the slots it repeats instead of appending a
-    second copy of the answer, whose seam could invent a match no reader sees.
-    Offset-less blocks fall back to append order, which is what a client
-    consuming them in stream order gets.
+    Exactly what a replaying client appends (`extract_chunks_from_event` over
+    the events in order) — nothing is reconstructed from
+    `chunk_starting_offset`, because interpreting the offsets lets the
+    COMPLETED repaint mask a delta that no longer sits at the slot it repaints.
     """
-    slots: dict[str, dict[int, tuple[str, int]]] = {}
+    streams: dict[str, list[tuple[str, int]]] = {}
     for event_index, event in enumerate(events):
         blocks = event.get("blocks")
         if not isinstance(blocks, list):
@@ -218,25 +219,22 @@ def _chunk_slots(events: list[dict[str, Any]]) -> dict[str, dict[int, tuple[str,
             chunks = markdown.get("chunks")
             if not isinstance(chunks, list) or not all(isinstance(c, str) for c in chunks):
                 continue
-            slot = slots.setdefault(_block_key(block_index, block), {})
-            offset = markdown.get("chunk_starting_offset")
-            start = (
-                offset if isinstance(offset, int) and not isinstance(offset, bool) else len(slot)
-            )
-            for n, chunk in enumerate(chunks):
-                slot[start + n] = (chunk, event_index)
-    return slots
+            stream = streams.setdefault(_block_key(block_index, block), [])
+            stream.extend((chunk, event_index) for chunk in chunks)
+    return streams
 
 
 def residual_chunk_emails(events: list[dict[str, Any]]) -> list[ChunkLeak]:
     """Already-scrubbed events → every email surviving a cross-event chunk join.
 
     The sentinel is itself email-shaped, so a match equal to it is what a
-    successful scrub looks like, not a finding.
+    successful scrub looks like, not a finding. Every other match refuses,
+    including one formed only at the seam between the last delta and the
+    COMPLETED repaint: refusing is the safe direction, and a seam hit is for a
+    human to look at rather than for this check to reason away.
     """
     leaks: list[ChunkLeak] = []
-    for key, slot in _chunk_slots(events).items():
-        ordered = [slot[i] for i in sorted(slot)]
+    for key, ordered in _chunk_stream(events).items():
         joined = "".join(text for text, _ in ordered)
         spans: list[tuple[int, int, int]] = []
         cursor = 0
@@ -263,32 +261,43 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
+    # Staged next to the destination and moved into place only once the leak
+    # check passes: the usual invocation re-sanitizes a committed fixture over
+    # itself, where writing first would let a refusal destroy the good file it
+    # was meant to protect.
+    staged = args.output.with_name(args.output.name + ".tmp")
     scrubbed: list[dict[str, Any]] = []
-    with args.output.open("w") as f:
-        for lineno, line in enumerate(raw, start=1):
-            stripped = line.strip()
-            if not stripped:
-                continue
-            try:
-                event = json.loads(stripped)
-            except json.JSONDecodeError as e:
-                print(f"error: invalid JSON on line {lineno} of {args.input}: {e}", file=sys.stderr)
-                return 1
-            event = _scrub(event)
-            scrubbed.append(event)
-            f.write(json.dumps(event, separators=(",", ":")))
-            f.write("\n")
+    try:
+        with staged.open("w") as f:
+            for lineno, line in enumerate(raw, start=1):
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                try:
+                    event = json.loads(stripped)
+                except json.JSONDecodeError as e:
+                    print(
+                        f"error: invalid JSON on line {lineno} of {args.input}: {e}",
+                        file=sys.stderr,
+                    )
+                    return 1
+                event = _scrub(event)
+                scrubbed.append(event)
+                f.write(json.dumps(event, separators=(",", ":")))
+                f.write("\n")
 
-    leaks = residual_chunk_emails(scrubbed)
-    if leaks:
-        args.output.unlink(missing_ok=True)
-        for leak in leaks:
-            print(
-                f"error: {args.output} withheld: block {leak.block!r} chunks join to "
-                f"{leak.match!r} across events {leak.first_event}-{leak.last_event}",
-                file=sys.stderr,
-            )
-        return 1
+        leaks = residual_chunk_emails(scrubbed)
+        if leaks:
+            for leak in leaks:
+                print(
+                    f"error: {args.output} withheld: block {leak.block!r} chunks join to "
+                    f"{leak.match!r} across events {leak.first_event}-{leak.last_event}",
+                    file=sys.stderr,
+                )
+            return 1
+        staged.replace(args.output)
+    finally:
+        staged.unlink(missing_ok=True)
     print(f"wrote {args.output} ({len(scrubbed)} events)")
     return 0
 

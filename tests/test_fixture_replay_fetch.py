@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import re
 from collections.abc import Iterator
 from pathlib import Path
 from types import ModuleType
@@ -327,14 +328,49 @@ def _delta_event(offset: int, *chunks: str) -> dict[str, Any]:
     }
 
 
+SPLIT_CHUNKS = ("mail alice@", "corp.example for it")
+
+
+def _split_email_stream() -> list[dict[str, Any]]:
+    """Two ask_text deltas splitting an address, then the COMPLETED repaint.
+
+    The real captures end this way: the final event repeats every chunk from
+    offset 0, and `_scrub_chunks` collapses that repeat to one scrubbed chunk —
+    which is exactly the event that must not be allowed to stand in for the
+    deltas still carrying the address in halves.
+    """
+    first, second = SPLIT_CHUNKS
+    deltas = [_delta_event(0, first), _delta_event(1, second)]
+    deltas[1]["text_completed"] = True
+    repaint = {
+        "status": "COMPLETED",
+        "text_completed": True,
+        "blocks": [
+            {
+                "intended_usage": "ask_text",
+                "markdown_block": {
+                    "chunks": list(SPLIT_CHUNKS),
+                    "chunk_starting_offset": 0,
+                    "progress": "DONE",
+                },
+            }
+        ],
+    }
+    return [*deltas, repaint]
+
+
+def _write_jsonl(path: Path, events: list[dict[str, Any]]) -> None:
+    path.write_text("".join(json.dumps(e, separators=(",", ":")) + "\n" for e in events))
+
+
 def test_residual_check_catches_an_email_split_across_events(
     sanitizer: ModuleType, tmp_path: Path
 ) -> None:
     """The answer streams one chunk per event, so an address split between two
     events is whole in neither and reassembles for the replaying client. The
-    sanitizer must refuse to leave such a fixture on disk.
+    sanitizer must refuse to write such a fixture.
     """
-    events = [_delta_event(0, "mail alice@"), _delta_event(1, "corp.example for it")]
+    events = _split_email_stream()
     scrubbed = [sanitizer._scrub(e) for e in events]
 
     leaks = sanitizer.residual_chunk_emails(scrubbed)
@@ -344,9 +380,80 @@ def test_residual_check_catches_an_email_split_across_events(
 
     src = tmp_path / "in.events.jsonl"
     out = tmp_path / "out.events.jsonl"
-    src.write_text("".join(json.dumps(e, separators=(",", ":")) + "\n" for e in events))
+    _write_jsonl(src, events)
     assert sanitizer.main([str(src), str(out)]) == 1
-    assert not out.exists(), "a leaking fixture must not be left on disk"
+    assert not out.exists(), "a leaking fixture must not be written"
+    assert list(tmp_path.glob("*.tmp")) == [], "the staged file must not survive a refusal"
+
+
+def test_refused_run_leaves_an_existing_fixture_untouched(
+    sanitizer: ModuleType, tmp_path: Path
+) -> None:
+    """The usual invocation re-sanitizes a committed fixture over itself, so a
+    refusal must not destroy the good file it exists to protect.
+    """
+    src = tmp_path / "in.events.jsonl"
+    out = tmp_path / "out.events.jsonl"
+    _write_jsonl(src, _split_email_stream())
+    out.write_text('{"status":"COMPLETED"}\n')
+    prior = out.read_bytes()
+
+    assert sanitizer.main([str(src), str(out)]) == 1
+    assert out.read_bytes() == prior
+
+    # A malformed input reaches the same guarantee by a different path.
+    src.write_text("{not json\n")
+    assert sanitizer.main([str(src), str(out)]) == 1
+    assert out.read_bytes() == prior
+
+
+def test_verb_replay_proves_the_split_email_reassembles(
+    sanitizer: ModuleType, tmp_path: Path
+) -> None:
+    """Independent of the check's design: scrub per event only (what the gate
+    exists to backstop), replay through the verb, and read the answer it hands
+    an agent. Then the real `main()` must refuse that same input.
+    """
+    events = _split_email_stream()
+    per_event_only = tmp_path / "per-event.events.jsonl"
+    _write_jsonl(per_event_only, [sanitizer._scrub(e) for e in events])
+
+    result = _fetch_with_prompt(
+        FixtureClient(per_event_only),
+        "https://example.com",
+        "summarize",
+        "example.com",
+        max_chars=None,
+    )
+    assert "alice@corp.example" in result.content, (
+        "per-event scrubbing alone leaves the address readable — this is why the gate exists"
+    )
+
+    src = tmp_path / "in.events.jsonl"
+    out = tmp_path / "out.events.jsonl"
+    _write_jsonl(src, events)
+    assert sanitizer.main([str(src), str(out)]) == 1
+    assert not out.exists()
+
+
+def test_a_written_fixture_replays_without_a_readable_address(
+    sanitizer: ModuleType, tmp_path: Path
+) -> None:
+    """The end-to-end property, stated without reference to the check: anything
+    `main()` is willing to write must hand the verb an answer carrying no
+    address but the sentinel.
+    """
+    src = tmp_path / "in.events.jsonl"
+    out = tmp_path / "out.events.jsonl"
+    _write_jsonl(src, [_delta_event(0, "mail alice@", "corp.example for it")])
+    assert sanitizer.main([str(src), str(out)]) == 0
+
+    result = _fetch_with_prompt(
+        FixtureClient(out), "https://example.com", "summarize", "example.com", max_chars=None
+    )
+    assert re.findall(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", result.content) == [
+        SENTINEL_EMAIL
+    ]
 
 
 def test_residual_check_passes_when_one_event_holds_the_whole_email(
