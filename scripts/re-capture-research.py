@@ -132,17 +132,21 @@ def main(argv: list[str] | None = None) -> int:
         with out_file as f:
             for event in client.sse_post(ENDPOINT, body, max_total_seconds=args.timeout):
                 data: Any = event.get("data")
-                f.write(json.dumps(data, separators=(",", ":")))
-                f.write("\n")
-                f.flush()
-                count += 1
+                # Read the thread ids off the frame BEFORE writing it: a full
+                # disk on the first flush would otherwise reach the `finally`
+                # with both still None, and the thread this run created would
+                # survive with nothing left that knows its id.
                 if isinstance(data, dict):
                     if backend_uuid is None and isinstance(data.get("backend_uuid"), str):
                         backend_uuid = data["backend_uuid"]
                     if read_write_token is None and isinstance(data.get("read_write_token"), str):
                         read_write_token = data["read_write_token"]
-                    if data.get("status") in ("COMPLETED", "FAILED"):
-                        print(f"  frame {count}: status={data.get('status')}", file=sys.stderr)
+                f.write(json.dumps(data, separators=(",", ":")))
+                f.write("\n")
+                f.flush()
+                count += 1
+                if isinstance(data, dict) and data.get("status") in ("COMPLETED", "FAILED"):
+                    print(f"  frame {count}: status={data.get('status')}", file=sys.stderr)
                 if count % 10 == 0:
                     print(f"  {count} frames...", file=sys.stderr)
     finally:
