@@ -7,6 +7,8 @@ from collections.abc import Iterator
 from typing import Any
 
 import pytest
+from hypothesis import HealthCheck, given, settings
+from hypothesis import strategies as st
 
 from pplx_agent_tools.errors import SchemaError, StreamDeadlineError
 from pplx_agent_tools.render import render_research_json, render_research_text
@@ -20,6 +22,23 @@ from pplx_agent_tools.verbs.research import (
 )
 
 from ._doubles import _TestClientBase
+
+# JSON-like recursive values, mirroring tests/test_fuzz_robustness.py — bounded
+# leaves keep individual inputs small (breadth of shape, not size).
+_json_leaf = st.one_of(
+    st.none(),
+    st.booleans(),
+    st.integers(min_value=-(2**31), max_value=2**31 - 1),
+    st.text(max_size=30),
+)
+_json_value = st.recursive(
+    _json_leaf,
+    lambda children: st.one_of(
+        st.lists(children, max_size=5),
+        st.dictionaries(st.text(min_size=1, max_size=15), children, max_size=5),
+    ),
+    max_leaves=15,
+)
 
 
 def _snapshot(answer: str = "QUIC is a protocol. [1]") -> str:
@@ -343,3 +362,347 @@ def test_research_passes_model_preference_into_body() -> None:
     research(client, "q", mode="agentic_research")
     assert captured["model_preference"] == "pplx_agentic_research"
     assert captured["is_incognito"] is True
+
+
+# ---------- report body (RESEARCH_ANSWER asset) ----------
+
+
+def _report_blocks(cover: str, body: str, *, inline: str = "") -> str:
+    """The real deep-research shape: a RESEARCH_ANSWER block whose report body is
+    an asset, plus a FINAL block holding only the cover note."""
+    blocks = [
+        {
+            "step_type": "RESEARCH_ANSWER",
+            "content": {"goal_id": "8", "answer": inline, "title": "T", "url": "https://asset"},
+            "assets": [
+                {
+                    "asset_type": "RESEARCH_REPORT",
+                    "research_report": {"name": "T", "source_content": body},
+                }
+            ],
+            "uuid": "9",
+        },
+        {"step_type": "FINAL", "content": {"answer": cover}, "uuid": "10"},
+    ]
+    return json.dumps(blocks)
+
+
+def test_decode_includes_report_body_after_cover_note() -> None:
+    """The FINAL block only carries a cover note; dropping the RESEARCH_ANSWER
+    asset is what made `research` return a summary that described a missing
+    report."""
+    answer, _ = decode_research_text(
+        _report_blocks("I compiled a report. The full report includes tables.", "# Report\nbody")
+    )
+    assert answer == "I compiled a report. The full report includes tables.\n\n# Report\nbody"
+
+
+def test_decode_falls_back_to_inline_research_answer() -> None:
+    answer, _ = decode_research_text(_report_blocks("cover", "", inline="# Inline body"))
+    assert answer == "cover\n\n# Inline body"
+
+
+def test_decode_does_not_duplicate_body_quoted_in_cover() -> None:
+    answer, _ = decode_research_text(_report_blocks("cover: # Report\nbody", "# Report\nbody"))
+    assert answer == "cover: # Report\nbody"
+
+
+def test_decode_partial_research_answer_without_body() -> None:
+    blocks = [{"step_type": "RESEARCH_ANSWER", "content": {"answer": ""}, "assets": []}]
+    answer, _ = decode_research_text(json.dumps(blocks))
+    assert answer == ""
+
+
+# ---------- completion predicate + shortfall flag ----------
+
+
+def test_research_reads_past_text_completed_to_the_repaint() -> None:
+    """`text_completed` fires before the terminal COMPLETED repaint. Research
+    keeps whole snapshots, so it must consume the repaint, not stop early."""
+    events = [
+        {"data": {"backend_uuid": "BU", "read_write_token": "RW", "text": _snapshot("early")}},
+        {"data": {"text": _snapshot("early"), "text_completed": True}},
+        {"data": {"text": _snapshot("final repaint"), "status": "COMPLETED"}},
+    ]
+    result = research(_FakeClient(events), "q")
+    assert result.answer == "final repaint"
+    assert result.stream_complete is True
+    assert result.content_shortfall is False
+
+
+def test_research_flags_content_shortfall_when_final_snapshot_shrinks() -> None:
+    long_answer = "x" * 500
+    events = [
+        {
+            "data": {
+                "backend_uuid": "BU",
+                "read_write_token": "RW",
+                "text": _snapshot(long_answer),
+            }
+        },
+        {"data": {"text": _snapshot("tiny"), "status": "COMPLETED"}},
+    ]
+    result = research(_FakeClient(events), "q")
+    # The stream DID complete — the honest signal is a separate flag, not a lie
+    # about stream_complete.
+    assert result.stream_complete is True
+    assert result.content_shortfall is True
+    assert result.answer == "tiny"  # the newest snapshot is still what we return
+    assert result.warnings and "truncated" in result.warnings[0]
+
+
+def test_research_no_shortfall_when_snapshots_grow() -> None:
+    result = research(_FakeClient(_complete_events()), "q")
+    assert result.content_shortfall is False
+    assert result.warnings == []
+
+
+def test_render_text_content_shortfall_marker() -> None:
+    result = ResearchResult("q", "short", [], "research", content_shortfall=True)
+    assert "content: may be incomplete" in render_research_text(result)
+
+
+def test_render_json_reports_content_shortfall() -> None:
+    result = ResearchResult("q", "short", [], "research", content_shortfall=True)
+    assert render_research_json(result)["content_shortfall"] is True
+    assert render_research_json(ResearchResult("q", "a", [], "research"))["content_shortfall"] is (
+        False
+    )
+
+
+def test_research_incomplete_when_stream_ends_at_text_completed() -> None:
+    """A stream that stops at `text_completed` never sent the repaint research
+    waits for, so its answer is partial and must say so. The shared default
+    predicate treated this same stream as a clean finish (exit 0)."""
+    client = _FakeClient(
+        [
+            {
+                "data": {
+                    "backend_uuid": "BU",
+                    "read_write_token": "RW",
+                    "text": _snapshot("partial"),
+                }
+            },
+            {"data": {"text": _snapshot("partial"), "text_completed": True}},
+        ]
+    )
+    result = research(client, "q")
+
+    assert result.stream_complete is False
+    assert result.answer == "partial"
+    assert result.content_shortfall is False
+    assert client.deleted == [("BU", "RW")], "the incognito thread is still cleaned up"
+
+
+def test_decode_research_answer_survives_null_content() -> None:
+    """The report body is an ASSET, so a RESEARCH_ANSWER block with a null
+    `content` still carries a full report. Running the `content` isinstance guard
+    ahead of the step dispatch dropped it — the shipped bug, reproduced."""
+    blocks = [
+        {
+            "step_type": "RESEARCH_ANSWER",
+            "content": None,
+            "assets": [{"research_report": {"source_content": "# Report\nbody"}}],
+        },
+        {"step_type": "FINAL", "content": {"answer": "cover"}},
+    ]
+    answer, _ = decode_research_text(json.dumps(blocks))
+    assert answer == "cover\n\n# Report\nbody"
+
+
+def test_research_shortfall_survives_an_unparseable_longest_frame() -> None:
+    """A snapshot that fails to decode is skipped by the shortfall tracker: it
+    says nothing about the kept snapshot and must not sink the run, even though
+    its raw text is by far the largest in the stream."""
+    events = [
+        {"data": {"backend_uuid": "BU", "read_write_token": "RW", "text": "not json " * 600}},
+        {"data": {"text": _snapshot("the real answer"), "status": "COMPLETED"}},
+    ]
+    result = research(_FakeClient(events), "q")
+
+    assert result.answer == "the real answer"
+    assert result.content_shortfall is False
+    assert result.warnings == []
+
+
+def _padded_snapshot(answer: str, *, pad_results: int) -> str:
+    """A snapshot whose raw size is inflated by SEARCH_RESULTS metadata.
+
+    Models the production repaint: the COMPLETED frame carries more sources and
+    envelope fields than earlier frames, so its RAW length grows even when its
+    report body shrinks."""
+    blocks = [
+        {
+            "step_type": "SEARCH_RESULTS",
+            "content": {
+                "web_results": [
+                    {"url": f"https://pad/{i}", "name": f"pad {i}", "snippet": "s" * 40}
+                    for i in range(pad_results)
+                ]
+            },
+        },
+        {
+            "step_type": "FINAL",
+            "content": {
+                "answer": json.dumps(
+                    {"answer": answer, "web_results": [{"url": "https://cited", "name": "Cited"}]}
+                )
+            },
+        },
+    ]
+    return json.dumps(blocks)
+
+
+def test_research_flags_shortfall_when_the_repaint_grows_in_metadata() -> None:
+    """The terminal repaint can carry MORE raw bytes than earlier frames (extra
+    SEARCH_RESULTS, envelope fields) while its report body shrinks or vanishes.
+    Judging by raw frame size never compared those two, so the drop shipped as
+    exit 0."""
+    early = _padded_snapshot("x" * 500, pad_results=0)
+    repaint = _padded_snapshot("tiny", pad_results=12)
+    assert len(repaint) > len(early), "the premise: the repaint is raw-larger, body-smaller"
+
+    events = [
+        {"data": {"backend_uuid": "BU", "read_write_token": "RW", "text": early}},
+        {"data": {"text": repaint, "status": "COMPLETED"}},
+    ]
+    result = research(_FakeClient(events), "q")
+
+    assert result.stream_complete is True
+    assert result.answer == "tiny", "the latest snapshot is still what we return"
+    assert result.content_shortfall is True
+    assert result.warnings and "truncated" in result.warnings[0]
+
+
+def test_research_flags_body_loss_masked_by_a_growing_cover_note() -> None:
+    """The cover note and the report body live in one decoded answer, so a
+    repaint that GROWS the cover while LOSING report body can keep the total at
+    or above the maximum seen. The report is the body; judge on it."""
+    early = _report_blocks("", "x" * 10_000)
+    repaint = _report_blocks("c" * 1_200, "y" * 9_500)
+    assert len(repaint) > len(early), "the premise: the repaint is total-larger, body-smaller"
+
+    events = [
+        {"data": {"backend_uuid": "BU", "read_write_token": "RW", "text": early}},
+        {"data": {"text": repaint, "status": "COMPLETED"}},
+    ]
+    result = research(_FakeClient(events), "q")
+
+    assert result.stream_complete is True
+    assert result.content_shortfall is True
+    assert result.warnings and "truncated" in result.warnings[0]
+    assert "9500" in result.warnings[0] and "10000" in result.warnings[0]
+
+
+def test_research_no_shortfall_when_only_the_cover_note_shrinks() -> None:
+    """A shorter cover note over an intact report is not a truncated report."""
+    body = "b" * 5_000
+    events = [
+        {
+            "data": {
+                "backend_uuid": "BU",
+                "read_write_token": "RW",
+                "text": _report_blocks("c" * 1_200, body),
+            }
+        },
+        {"data": {"text": _report_blocks("c" * 10, body), "status": "COMPLETED"}},
+    ]
+    result = research(_FakeClient(events), "q")
+
+    assert result.content_shortfall is False
+    assert result.warnings == []
+
+
+def test_research_keeps_the_last_parseable_snapshot_when_the_repaint_is_garbage() -> None:
+    """A malformed terminal repaint used to overwrite a perfectly good snapshot
+    and blow up the whole ~2-minute run with SchemaError."""
+    events = [
+        {
+            "data": {
+                "backend_uuid": "BU",
+                "read_write_token": "RW",
+                "text": _snapshot("the real answer"),
+            }
+        },
+        {"data": {"status": "COMPLETED", "text": "not json"}},
+    ]
+    result = research(_FakeClient(events), "q")
+
+    assert result.answer == "the real answer"
+    assert result.content_shortfall is True
+    assert result.warnings and "decode" in result.warnings[0]
+
+
+def test_research_raises_when_no_frame_ever_parsed() -> None:
+    events = [
+        {"data": {"backend_uuid": "BU", "read_write_token": "RW", "text": "not json"}},
+        {"data": {"text": "still not json", "status": "COMPLETED"}},
+    ]
+    with pytest.raises(SchemaError):
+        research(_FakeClient(events), "q")
+
+
+def test_research_no_shortfall_when_the_cover_note_quotes_the_whole_body() -> None:
+    """The join drops a body already quoted in the cover note, but the report is
+    still fully there — measuring the post-dedupe parts read that complete answer
+    as a body of zero and flagged it."""
+    body = "# Report\n" + "b" * 5_000
+    events = [
+        {
+            "data": {
+                "backend_uuid": "BU",
+                "read_write_token": "RW",
+                "text": _report_blocks("cover", body),
+            }
+        },
+        {"data": {"text": _report_blocks("Here it is: " + body, body), "status": "COMPLETED"}},
+    ]
+    result = research(_FakeClient(events), "q")
+
+    assert result.content_shortfall is False
+    assert result.warnings == []
+    assert result.answer == "Here it is: " + body, "the body is not repeated after the cover"
+
+
+# ---------- decode totality ----------
+
+
+def test_research_survives_a_malformed_assets_field_mid_stream() -> None:
+    """Decoding now runs inside the stream callback, which catches SchemaError
+    only — a decode that raised TypeError escaped the stream loop before the
+    thread cleanup ran and lost the COMPLETED frame that followed."""
+    bad = json.dumps([{"step_type": "RESEARCH_ANSWER", "assets": True, "content": None}])
+    client = _FakeClient(
+        [
+            {"data": {"backend_uuid": "BU", "read_write_token": "RW", "text": bad}},
+            {"data": {"text": _snapshot("the real answer"), "status": "COMPLETED"}},
+        ]
+    )
+    result = research(client, "q")
+
+    assert result.answer == "the real answer"
+    assert client.deleted == [("BU", "RW")], "the incognito thread is still cleaned up"
+
+
+@pytest.mark.parametrize("assets", [True, 3, "str", {"a": 1}, None, [1, "x", None]])
+def test_decode_tolerates_any_assets_shape(assets: Any) -> None:
+    blocks = [
+        {"step_type": "RESEARCH_ANSWER", "assets": assets, "content": {"answer": "inline"}},
+        {"step_type": "FINAL", "content": {"answer": "cover"}},
+    ]
+    answer, _ = decode_research_text(json.dumps(blocks))
+    assert answer == "cover\n\ninline"
+
+
+@given(_json_value)
+@settings(suppress_health_check=[HealthCheck.too_slow])
+def test_decode_research_text_returns_or_raises_schema(payload: Any) -> None:
+    """Totality: over ANY JSON input, decode returns a (str, list[Source]) pair
+    or raises SchemaError. A TypeError/AttributeError/KeyError here reaches the
+    stream callback, which only guards against SchemaError."""
+    try:
+        answer, sources = decode_research_text(json.dumps(payload))
+    except SchemaError:
+        return
+    assert isinstance(answer, str)
+    assert all(isinstance(s, ResearchSource) for s in sources)

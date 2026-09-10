@@ -17,7 +17,7 @@ from .errors import EXIT_OK, EXIT_PARTIAL
 from .render import render_research_json, render_research_text
 from .verbs.research import DEFAULT_MODE, ResearchResult, research
 
-# Research is slower than copilot ask (~10-60s); give it a longer default leash.
+# Research is slower than copilot ask (measured ~90-120s); longer default leash.
 _DEFAULT_TIMEOUT_SECONDS = 300.0
 
 
@@ -93,6 +93,16 @@ def _finalize(result: ResearchResult) -> int:
         print(
             "warning: research stream did not reach COMPLETED (deadline or cut); "
             "partial answer returned (exit 6)",
+            file=sys.stderr,
+        )
+        return EXIT_PARTIAL
+    if result.content_shortfall:
+        # Stream finished, answer didn't: a plausible-looking short report is
+        # the failure mode worth an exit code. Which of the several causes fired
+        # is in `result.warnings`, which run_verb prints — stay generic here
+        # rather than asserting one of them.
+        print(
+            "warning: research answer may be incomplete; see the warnings above for why (exit 6)",
             file=sys.stderr,
         )
         return EXIT_PARTIAL

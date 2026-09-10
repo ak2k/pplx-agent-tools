@@ -46,7 +46,7 @@ def base_ask_params(
     by `ask`, `research`, and `fetch --prompt`. Callers add their own extras (e.g.
     `compare_model_preferences` for Model Council).
 
-    `params.mode` stays "copilot" — the *model* is the real behaviour selector (see
+    `params.mode` stays "copilot" — the *model* is the real behavior selector (see
     verbs/research.py for the model-as-mode finding). `is_incognito` defaults True
     so created threads never enter history. `timezone` is hard-coded "UTC" rather
     than host-detected: detection leaks location, and `time.tzname` yields
@@ -110,7 +110,10 @@ def extract_web_results(event: dict[str, Any]) -> list[Any]:
     data = event.get("data")
     if not isinstance(data, dict):
         return []
-    for block in data.get("blocks") or []:
+    blocks = data.get("blocks")
+    if not isinstance(blocks, list):
+        return []
+    for block in blocks:
         if not isinstance(block, dict) or block.get("intended_usage") != "web_results":
             continue
         wrb = block.get("web_result_block")
@@ -132,8 +135,11 @@ def extract_chunks_from_event(event: dict[str, Any]) -> list[str]:
     data = event.get("data")
     if not isinstance(data, dict):
         return []
+    blocks = data.get("blocks")
+    if not isinstance(blocks, list):
+        return []
     out: list[str] = []
-    for block in data.get("blocks") or []:
+    for block in blocks:
         if not isinstance(block, dict):
             continue
         if block.get("intended_usage") != "ask_text":
@@ -169,6 +175,7 @@ def run_ask_stream(
     timeout: float | None,
     progress: bool,
     label: str,
+    is_complete: Callable[[dict[str, Any]], bool] = event_marks_completed,
 ) -> tuple[AskStreamState, bool]:
     """Drive the SSE call with retry/deadline; return (state, deadline_tripped).
 
@@ -178,6 +185,11 @@ def run_ask_stream(
     `AskStreamState`. Propagates a terminal `RateLimitError` (exit 3) when retries
     are exhausted; a tripped deadline returns with `deadline_tripped=True` so the
     caller can salvage whatever `on_event` accumulated.
+
+    `is_complete` decides which event ends the stream. The default accepts the
+    early `text_completed` flag, which is right for delta-accumulating callers
+    (stopping there avoids double-counting the COMPLETED repaint). Snapshot
+    callers need the repaint and override it — see verbs/research.py.
     """
     state = AskStreamState()
     deadline_tripped = False
@@ -208,6 +220,7 @@ def run_ask_stream(
                 remaining_seconds=remaining,
                 progress=progress,
                 on_event=on_event,
+                is_complete=is_complete,
             )
             break
         except StreamDeadlineError:
@@ -237,6 +250,7 @@ def _drive_one(
     remaining_seconds: float | None,
     progress: bool,
     on_event: Callable[[dict[str, Any]], None],
+    is_complete: Callable[[dict[str, Any]], bool],
 ) -> None:
     event_count = 0
     try:
@@ -256,7 +270,7 @@ def _drive_one(
             if _event_marks_failed(event):
                 state.failed = True
                 return
-            if event_marks_completed(event):
+            if is_complete(event):
                 state.saw_completed = True
                 return
     finally:

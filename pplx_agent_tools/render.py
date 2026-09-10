@@ -340,6 +340,9 @@ def render_research_text(result: ResearchResult) -> str:
     if not result.stream_complete:
         parts.append("")
         parts.append("stream: incomplete (deadline or cut)")
+    if result.content_shortfall:
+        parts.append("")
+        parts.append("content: may be incomplete (see warnings)")
     return "\n".join(parts)
 
 
@@ -359,6 +362,7 @@ def render_research_json(result: ResearchResult) -> dict[str, Any]:
                 for s in result.sources
             ],
             "stream_complete": result.stream_complete,
+            "content_shortfall": result.content_shortfall,
         },
         warnings=result.warnings,
     )

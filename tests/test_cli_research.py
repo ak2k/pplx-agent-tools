@@ -62,3 +62,21 @@ def test_json_output(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixt
     rc = cli_research.main(["q", "--json"])
     assert rc == EXIT_OK
     assert '"_verb": "research"' in capsys.readouterr().out
+
+
+def test_content_shortfall_exits_six(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    """A COMPLETED stream whose kept snapshot shrank is the plausible-looking
+    wrong answer, so it gets the partial exit code even though the stream is."""
+    _stub(
+        monkeypatch,
+        ResearchResult("q", "short report", [], "research", True, content_shortfall=True),
+    )
+    rc = cli_research.main(["what is quic", "--timeout", "0"])
+    cap = capsys.readouterr()
+
+    assert rc == EXIT_PARTIAL
+    assert "short report" in cap.out
+    assert "may be incomplete" in cap.err
+    assert "did not reach COMPLETED" not in cap.err
