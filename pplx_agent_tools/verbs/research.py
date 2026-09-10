@@ -164,8 +164,11 @@ def research(
         except SchemaError:
             saw["last_frame_decoded"] = False
             return
+        # The body measure is the report asset itself, NOT what survives the
+        # join's cover dedupe: a cover note that quotes the report in full would
+        # otherwise measure zero and read as a total loss of the report.
         body = "\n\n".join(report_parts).strip()
-        answer = "\n\n".join(cover_parts + report_parts).strip()
+        answer = _join_answer(cover_parts, report_parts)
         latest.update(text=text, answer=answer, sources=sources, body_len=len(body))
         saw["last_frame_decoded"] = True
         if body:
@@ -272,7 +275,19 @@ def decode_research_text(text: str) -> tuple[str, list[ResearchSource]]:
     rounds when FINAL carries none.
     """
     cover_parts, report_parts, sources = _decode_parts(text)
-    return "\n\n".join(cover_parts + report_parts).strip(), sources
+    return _join_answer(cover_parts, report_parts), sources
+
+
+def _join_answer(cover_parts: list[str], report_parts: list[str]) -> str:
+    """Cover note parts + report body parts → the answer we return.
+
+    Dropping a body the cover note already quotes verbatim is a RENDERING
+    concern and lives only here — the report is present either way, so no
+    caller should read the drop as missing content.
+    """
+    cover = "\n\n".join(cover_parts).strip()
+    kept_reports = [p for p in report_parts if p not in cover]
+    return "\n\n".join(cover_parts + kept_reports).strip()
 
 
 def _decode_parts(text: str) -> tuple[list[str], list[str], list[ResearchSource]]:
@@ -280,8 +295,8 @@ def _decode_parts(text: str) -> tuple[list[str], list[str], list[ResearchSource]
 
     Split out so a caller can measure the report BODY on its own — the joined
     answer mixes cover note and body, and a snapshot that grows the cover while
-    losing body keeps the total steady. `report_parts` is already deduplicated
-    against the cover, i.e. exactly what the joined answer contains.
+    losing body keeps the total steady. The parts are raw: `_join_answer` owns
+    every rendering decision made on top of them.
     """
     try:
         blocks = json.loads(text)
@@ -318,9 +333,6 @@ def _decode_parts(text: str) -> tuple[list[str], list[str], list[ResearchSource]
             if isinstance(wr, list):
                 search_web.extend(wr)
 
-    cover = "\n\n".join(cover_parts).strip()
-    # A body already quoted in the cover note would just be printed twice.
-    kept_reports = [p for p in report_parts if p not in cover]
     chosen = final_web if final_web else search_web
     sources: list[Source] = []
     seen: set[str] = set()
@@ -329,7 +341,7 @@ def _decode_parts(text: str) -> tuple[list[str], list[str], list[ResearchSource]
         if src is not None and src.url not in seen:
             seen.add(src.url)
             sources.append(src)
-    return cover_parts, kept_reports, sources
+    return cover_parts, report_parts, sources
 
 
 def _report_bodies(blk: dict[str, Any]) -> list[str]:

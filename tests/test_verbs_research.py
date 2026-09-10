@@ -621,3 +621,25 @@ def test_research_raises_when_no_frame_ever_parsed() -> None:
     ]
     with pytest.raises(SchemaError):
         research(_FakeClient(events), "q")
+
+
+def test_research_no_shortfall_when_the_cover_note_quotes_the_whole_body() -> None:
+    """The join drops a body already quoted in the cover note, but the report is
+    still fully there — measuring the post-dedupe parts read that complete answer
+    as a body of zero and flagged it."""
+    body = "# Report\n" + "b" * 5_000
+    events = [
+        {
+            "data": {
+                "backend_uuid": "BU",
+                "read_write_token": "RW",
+                "text": _report_blocks("cover", body),
+            }
+        },
+        {"data": {"text": _report_blocks("Here it is: " + body, body), "status": "COMPLETED"}},
+    ]
+    result = research(_FakeClient(events), "q")
+
+    assert result.content_shortfall is False
+    assert result.warnings == []
+    assert result.answer == "Here it is: " + body, "the body is not repeated after the cover"
