@@ -14,6 +14,12 @@ Response shape (observed 2026-06-22):
 
 `remaining_detail.kind` is "not_provided" (Pro: effectively unmetered) or "exact"
 with a `remaining` integer (metered connectors, e.g. an exhausted source at 0).
+
+Anonymous / expired-session shape (observed 2026-09-09): the endpoint still
+answers 200, with `free_queries` available and every mode and source
+`{"available": false, "remaining_detail": {"kind": "exact", "remaining": 0}}`.
+Nothing in the payload marks it as anonymous, so it decodes as a legitimately
+exhausted account. See tests/fixtures/rate-limit-status/anonymous.json.
 """
 
 from __future__ import annotations
@@ -43,7 +49,13 @@ class QuotaResult:
 
 
 def quota(client: Client) -> QuotaResult:
-    """Fetch current rate-limit / availability status. Stateless GET."""
+    """Fetch current rate-limit / availability status. Creates no thread.
+
+    Pre-flights `/api/auth/session` because the anonymous payload (see module
+    docstring) is indistinguishable from an exhausted account: without it an
+    expired cookie renders as "you have used everything up" and exits 0.
+    """
+    client.auth_session()
     raw = client.get_json(ENDPOINT)
     return decode_quota(raw)
 

@@ -205,7 +205,8 @@ def test_fetch_all_errors_within_host_dont_skip_remaining() -> None:
 
     by_url = {row[0]: row for row in out}
     assert by_url["https://example.com/ok-1"][2] is None  # no error
-    assert "forced fail" in by_url["https://example.com/fail-2"][2]  # captured
+    err = by_url["https://example.com/fail-2"][2]
+    assert err is not None and "forced fail" in err  # captured
     assert by_url["https://example.com/ok-3"][2] is None  # NOT skipped
 
 

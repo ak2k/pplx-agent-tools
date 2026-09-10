@@ -177,7 +177,8 @@
             chmod -R u+w .
             export HOME=$TMPDIR
             export PYTEST_CACHE_DIR=$TMPDIR/.pytest_cache
-            pytest -q
+            # --cov so the pyproject `fail_under` floor gates CI, not just local runs.
+            pytest -q --cov
             touch $out
           '';
 
@@ -208,7 +209,7 @@
                 export HOME=$TMPDIR
                 # Point basedpyright at the dev venv so third-party imports resolve.
                 export PYTHONPATH="${devEnv}/lib/python3.12/site-packages"
-                basedpyright --pythonpath ${devEnv}/bin/python pplx_agent_tools
+                basedpyright --pythonpath ${devEnv}/bin/python pplx_agent_tools tests
                 touch $out
               '';
 

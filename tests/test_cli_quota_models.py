@@ -6,14 +6,26 @@ runner + rendering without touching curl_cffi or real cookies.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
 
 from pplx_agent_tools import cli_models, cli_quota, cli_runner
-from pplx_agent_tools.errors import EXIT_OK
+from pplx_agent_tools.errors import EXIT_AUTH, EXIT_OK, AuthError
 from pplx_agent_tools.verbs.models import ModeInfo, ModelInfo, ModelsResult
 from pplx_agent_tools.verbs.quota import QuotaItem, QuotaResult
+from tests._doubles import _TestClientBase
+
+
+class _ExpiredClient(_TestClientBase):
+    """Session pre-flight fails; the rate-limit endpoint must never be hit."""
+
+    def auth_session(self) -> dict[str, Any]:
+        raise AuthError("session expired or unauthenticated; re-import cookies")
+
+    def get_json(self, path: str) -> Any:
+        raise AssertionError(f"GET {path} issued with an invalid session")
 
 
 @pytest.fixture(autouse=True)
@@ -25,6 +37,17 @@ def _stub_client(monkeypatch: pytest.MonkeyPatch) -> None:
         cli_runner.Client,
         "from_default_cookies",
         classmethod(lambda cls, **_: _Dummy()),
+    )
+
+
+@pytest.fixture
+def _expired_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Overrides the autouse `_stub_client` (same scope, requested second) so the
+    runner hands the verb a client whose session pre-flight fails."""
+    monkeypatch.setattr(
+        cli_runner.Client,
+        "from_default_cookies",
+        classmethod(lambda cls, **_: _ExpiredClient()),
     )
 
 
@@ -52,6 +75,28 @@ def test_quota_json_exit_zero(
     rc = cli_quota.main(["--json"])
     assert rc == EXIT_OK
     assert '"_verb": "quota"' in capsys.readouterr().out
+
+
+def test_quota_expired_session_exit_two(
+    _expired_session: None, capsys: pytest.CaptureFixture
+) -> None:
+    rc = cli_quota.main([])
+    captured = capsys.readouterr()
+    assert rc == EXIT_AUTH
+    assert captured.out == ""
+    assert "pplx quota: session expired or unauthenticated" in captured.err
+
+
+def test_quota_expired_session_json_error_envelope(
+    _expired_session: None, capsys: pytest.CaptureFixture
+) -> None:
+    rc = cli_quota.main(["--json"])
+    assert rc == EXIT_AUTH
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["_verb"] == "quota"
+    assert payload["error"]["type"] == "AuthError"
+    assert payload["error"]["exit_code"] == EXIT_AUTH
+    assert "modes" not in payload
 
 
 def test_models_exit_zero(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
