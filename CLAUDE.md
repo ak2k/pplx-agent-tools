@@ -41,7 +41,7 @@ preserve all shapes bump the **patch**.
 - Run tests: `uv run --extra dev pytest -q`
 - Lint + format check: `uv run --extra dev ruff check . && uv run --extra dev ruff format --check .`
 - Typecheck: `uv run --extra dev basedpyright pplx_agent_tools/ tests/`
-- Coverage: `uv run --extra dev pytest --cov` (gated at `fail_under = 60`)
+- Coverage: `uv run --extra dev pytest --cov` (gated at `fail_under = 80`)
 
 **CI is `nix flake check`** — it builds `checks.{lint,typecheck,deadcode,tests}`:
 `ruff check` + `ruff format --check` (lint), `basedpyright` (typecheck), `vulture`
