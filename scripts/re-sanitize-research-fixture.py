@@ -118,21 +118,21 @@ def _is_identity_key(key: str) -> bool:
 
 
 def _redact_identity(key: str, value: Any) -> Any:
-    """An `author_*`/`user_*` value → its sentinel, whatever its JSON type.
+    """Replace an `author_*`/`user_*` value outright, whatever its JSON type.
 
-    Gating this on `str` let an identity ride out under a dict, list or int.
-    Scalars are replaced outright; a list is redacted element-wise (it inherits
-    the key's meaning — a list of user ids is still user ids); a dict recurses
-    through `_scrub`, keeping the shape while still applying the SENTINELS,
-    email and signed-URL rules inside it. `None` stays `None`: a null carries no
-    identity, and substituting one would invent a field the wire never sent.
+    A non-empty value under an identity key IS the identity, so nothing under it
+    is inspected: recursing into a dict "keeping the shape" left a profile object
+    whose own keys match neither SENTINELS nor the prefix rule fully intact. A
+    list is redacted element-wise, which applies this same rule to each element.
+
+    Empty containers, empty strings and null carry shape but no secret, so they
+    ride out untouched; substituting them would churn the fixture and invent
+    fields the wire never sent.
     """
+    if value is None or (isinstance(value, (str, list, dict)) and not value):
+        return value
     if isinstance(value, list):
         return [_redact_identity(key, item) for item in value]
-    if isinstance(value, dict):
-        return _scrub(value)
-    if value is None:
-        return None
     return SENTINELS.get(key, "REDACTED")
 
 

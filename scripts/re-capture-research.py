@@ -32,11 +32,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
@@ -66,6 +67,25 @@ def label_arg(value: str) -> str:
     if any(part in ("", ".", "..") for part in value.split(".")):
         raise argparse.ArgumentTypeError(f"label must not contain a . or .. component: {value!r}")
     return value
+
+
+def _create_capture_file(path: Path) -> TextIO:
+    """Exclusive-create the capture, readable only by its owner.
+
+    Exclusive because two captures of the same query inside one second derive the
+    same filename and "w" truncated the first away. 0600 at CREATION because the
+    very first frame carries a live read_write_token and the stream then writes
+    for 90-120s — a chmod at the end guards only the leftovers.
+    """
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        # os.open's mode is masked by umask, which can clear bits but not set
+        # them; fchmod is what actually pins 0600.
+        os.fchmod(fd, 0o600)
+    except OSError:
+        os.close(fd)
+        raise
+    return os.fdopen(fd, "w")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -99,10 +119,8 @@ def main(argv: list[str] | None = None) -> int:
     council = list(_DEFAULT_COUNCIL_MODELS) if model == _COUNCIL_MODEL else None
     body = _build_research_body(args.query, model, council_models=council)
 
-    # Exclusive create, before the request: two captures of the same query inside
-    # one second derive the same filename, and "w" truncated the first one away.
     try:
-        out_file = out_path.open("x")
+        out_file = _create_capture_file(out_path)
     except FileExistsError:
         print(f"capture already exists, refusing to overwrite: {out_path}", file=sys.stderr)
         return 2

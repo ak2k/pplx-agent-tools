@@ -217,8 +217,7 @@ def test_sanitizer_redacts_identity_keys_of_every_type() -> None:
 
     assert out["user_id"] == "REDACTED", "an int id is still an id"
     assert out["user_aliases"] == ["REDACTED", "REDACTED"]
-    assert out["author_profile"]["backend_uuid"] == san.SENTINELS["backend_uuid"]
-    assert "a@b.example" not in out["author_profile"]["bio"]
+    assert out["author_profile"] == "REDACTED", "a nested identity object goes wholesale"
     assert out["user_deleted_at"] is None, "a null carries no identity — don't invent a field"
     assert out["user_selected_model"] == "pplx_alpha", "PREFIX_EXEMPT: a model id, not an identity"
 
@@ -299,3 +298,43 @@ def test_sentinels_match_sanitizer_script() -> None:
     assert SENTINEL_RW_TOKEN in script, (
         f"SENTINEL_RW_TOKEN {SENTINEL_RW_TOKEN!r} not in sanitizer script"
     )
+
+
+def test_sanitizer_redacts_a_nested_identity_object_outright() -> None:
+    """A dict under an identity key used to recurse "keeping the shape" — so a
+    profile object whose own keys match neither SENTINELS nor the prefix rule
+    rode out whole, ids and all."""
+    san = _sanitizer()
+    out = san._scrub(
+        {
+            "user_profile": {"id": 481516, "username": "X", "display_name": "Y"},
+            "user_roles": [{"id": 1, "name": "admin"}],
+            "user_empty": {},
+            "user_blank": "",
+            "user_none": None,
+        }
+    )
+
+    assert out["user_profile"] == "REDACTED", "the whole object goes, not its matching leaves"
+    assert out["user_roles"] == ["REDACTED"]
+    # Empty containers and blanks carry shape but no secret; substituting them
+    # would churn the fixture and hide the wire shape.
+    assert out["user_empty"] == {}
+    assert out["user_blank"] == ""
+    assert out["user_none"] is None
+
+
+def test_capture_file_is_created_unreadable_to_others(tmp_path: Path) -> None:
+    """The capture holds a live read_write_token from its first frame, so the
+    mode has to be right at creation — the finally-block chmod only lands after
+    a 90-120 s stream has finished writing it."""
+    capture = _load_script("re_capture_research", CAPTURE_SCRIPT)
+    path = tmp_path / "capture.events.jsonl"
+
+    with capture._create_capture_file(path) as f:
+        f.write("{}\n")
+        f.flush()
+        assert path.stat().st_mode & 0o777 == 0o600, "mode is wrong WHILE the stream runs"
+
+    with pytest.raises(FileExistsError):
+        capture._create_capture_file(path)  # exclusive create is preserved
