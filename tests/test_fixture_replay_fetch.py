@@ -38,7 +38,15 @@ from typing import Any
 import pytest
 
 from pplx_agent_tools import cli_fetch, cli_runner
-from pplx_agent_tools.errors import EXIT_GENERIC, EXIT_NETWORK, EXIT_OK, NetworkError
+from pplx_agent_tools.errors import (
+    EXIT_GENERIC,
+    EXIT_NETWORK,
+    EXIT_OK,
+    NetworkError,
+    SchemaError,
+    StreamDeadlineError,
+    exit_code,
+)
 from pplx_agent_tools.verbs.fetch import _fetch_with_prompt
 from tests._doubles import _TestClientBase
 
@@ -169,14 +177,62 @@ def test_empty_stream_raises_schema_error() -> None:
     because we have nothing to return and no signal that the stream
     finished. Distinct from the deadline-trip case (StreamDeadlineError).
     """
-    from pplx_agent_tools.errors import SchemaError
-    from pplx_agent_tools.verbs.fetch import _fetch_with_prompt
-
     client = FixtureClient(FIXTURES / "empty-stream.events.jsonl")
-    with pytest.raises(SchemaError, match="no markdown_block content"):
+    with pytest.raises(SchemaError, match="closed with no content"):
         _fetch_with_prompt(
             client, "https://example.com", "summarize", "example.com", max_chars=None
         )
+
+
+class StarvedStreamClient(_TestClientBase):
+    """Trips the overall deadline before the first event, like a server that
+    accepts the request and then says nothing."""
+
+    def sse_post(  # type: ignore[override]
+        self,
+        path: str,
+        body: dict[str, Any],
+        *,
+        max_total_seconds: float | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        raise StreamDeadlineError(f"SSE stream on {path} exceeded its deadline")
+
+    def delete_thread(self, entry_uuid: str, read_write_token: str) -> bool:  # type: ignore[override]
+        return True
+
+
+def test_deadline_and_closed_empty_texts_are_distinguishable() -> None:
+    """Both leave the agent with no answer, but only the deadline is worth
+    retrying with a larger --timeout, so the text and the exit code say which
+    one happened. Same wording as ask and research."""
+    with pytest.raises(StreamDeadlineError) as deadline:
+        _fetch_with_prompt(
+            StarvedStreamClient(),
+            "https://example.com",
+            "summarize",
+            "example.com",
+            max_chars=None,
+            timeout=30,
+        )
+
+    with pytest.raises(SchemaError) as closed:
+        _fetch_with_prompt(
+            FixtureClient(FIXTURES / "empty-stream.events.jsonl"),
+            "https://example.com",
+            "summarize",
+            "example.com",
+            max_chars=None,
+        )
+
+    assert str(deadline.value) == (
+        "fetch --prompt stream on /rest/sse/perplexity_ask exceeded 30.0s deadline "
+        "before the first content arrived"
+    )
+    assert str(closed.value) == (
+        "fetch --prompt stream on /rest/sse/perplexity_ask closed with no content"
+    )
+    assert exit_code(deadline.value) == EXIT_NETWORK
+    assert exit_code(closed.value) == EXIT_GENERIC
 
 
 def test_sentinels_appear_in_sanitizer_source() -> None:
@@ -704,3 +760,6 @@ def test_midstream_network_error_exits_four_without_traceback(
     assert payload["error"]["exit_code"] == EXIT_NETWORK
     assert "Traceback" not in err
     assert err.startswith("pplx fetch: ")
+    # The stream carried the thread ids before it died, so the incognito thread
+    # it created is this process's to delete.
+    assert client.deleted == [(SENTINEL_BACKEND_UUID, SENTINEL_RW_TOKEN)]

@@ -7,7 +7,15 @@ from typing import Any
 
 import pytest
 
-from pplx_agent_tools.errors import RateLimitError, SchemaError, StreamDeadlineError
+from pplx_agent_tools.errors import (
+    EXIT_GENERIC,
+    EXIT_NETWORK,
+    NetworkError,
+    RateLimitError,
+    SchemaError,
+    StreamDeadlineError,
+    exit_code,
+)
 from pplx_agent_tools.render import render_ask_json, render_ask_text
 from pplx_agent_tools.verbs._ask_common import (
     extract_chunks_from_event,
@@ -41,10 +49,17 @@ def _web_results_event(results: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 class _FakeClient(_TestClientBase):
-    def __init__(self, events: list[dict[str, Any]], *, raise_deadline: bool = False) -> None:
+    def __init__(
+        self,
+        events: list[dict[str, Any]],
+        *,
+        raise_deadline: bool = False,
+        raise_network: bool = False,
+    ) -> None:
         super().__init__()
         self._events = events
         self._raise_deadline = raise_deadline
+        self._raise_network = raise_network
         self.deleted: list[tuple[str, str]] = []
 
     def sse_post(  # type: ignore[override]
@@ -53,6 +68,8 @@ class _FakeClient(_TestClientBase):
         yield from self._events
         if self._raise_deadline:
             raise StreamDeadlineError("simulated deadline")
+        if self._raise_network:
+            raise NetworkError("simulated mid-stream connection reset")
 
     def delete_thread(self, entry_uuid: str, read_write_token: str) -> bool:  # type: ignore[override]
         self.deleted.append((entry_uuid, read_write_token))
@@ -128,6 +145,39 @@ def test_ask_deadline_before_any_content_raises() -> None:
     client = _FakeClient([], raise_deadline=True)
     with pytest.raises(StreamDeadlineError):
         ask(client, "hi", timeout=30)
+
+
+def test_ask_midstream_network_error_reaps_thread_then_raises() -> None:
+    """The thread ids arrived before the transport died, so the incognito thread
+    exists and only this process knows how to delete it."""
+    client = _FakeClient([_chunk_event("partial")], raise_network=True)
+
+    with pytest.raises(NetworkError) as excinfo:
+        ask(client, "hi")
+
+    assert not isinstance(excinfo.value, StreamDeadlineError)
+    assert exit_code(excinfo.value) == EXIT_NETWORK
+    assert client.deleted == [("BU", "RW")]
+
+
+def test_ask_deadline_and_closed_empty_texts_are_distinguishable() -> None:
+    """Both end with no answer, but only the deadline is worth retrying with a
+    larger --timeout, so the text and the exit code have to say which it was."""
+    starved = _FakeClient([], raise_deadline=True)
+    with pytest.raises(StreamDeadlineError) as deadline:
+        ask(starved, "hi", timeout=30)
+
+    empty = _FakeClient([{"data": {"foo": "bar"}}])
+    with pytest.raises(SchemaError) as closed:
+        ask(empty, "hi")
+
+    assert str(deadline.value) == (
+        "ask stream on /rest/sse/perplexity_ask exceeded 30.0s deadline "
+        "before the first content arrived"
+    )
+    assert str(closed.value) == "ask stream on /rest/sse/perplexity_ask closed with no content"
+    assert exit_code(deadline.value) == EXIT_NETWORK
+    assert exit_code(closed.value) == EXIT_GENERIC
 
 
 def test_ask_model_passthrough_to_body() -> None:

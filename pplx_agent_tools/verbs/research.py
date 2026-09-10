@@ -30,9 +30,9 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
-from ..errors import SchemaError, StreamDeadlineError
+from ..errors import SchemaError
 from ..wire import Client
-from ._ask_common import Source, base_ask_params, run_ask_stream, to_source
+from ._ask_common import Source, base_ask_params, no_content_error, run_ask_stream, to_source
 
 ENDPOINT = "/rest/sse/perplexity_ask"
 DEFAULT_MODE = "research"
@@ -194,6 +194,9 @@ def research(
     if not keep_thread and state.backend_uuid and state.read_write_token:
         client.delete_thread(state.backend_uuid, state.read_write_token)
 
+    if state.transport_error is not None:
+        raise state.transport_error
+
     if state.failed:
         raise SchemaError(
             f"research request on {ENDPOINT} returned status=FAILED; mode {mode!r} may "
@@ -205,11 +208,9 @@ def research(
             # Text arrived but no frame ever parsed — the decode error is the
             # honest diagnosis, so re-raise it rather than reporting no content.
             decode_research_text(last_raw["text"])
-        if deadline_tripped:
-            raise StreamDeadlineError(
-                f"research stream on {ENDPOINT} exceeded {timeout:.1f}s before any content"
-            )
-        raise SchemaError(f"no schematized text received from {ENDPOINT}")
+        raise no_content_error(
+            label="research", endpoint=ENDPOINT, timeout=timeout, deadline_tripped=deadline_tripped
+        )
 
     answer: str = latest["answer"]
     sources: list[ResearchSource] = latest["sources"]

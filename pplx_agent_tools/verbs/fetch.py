@@ -26,9 +26,14 @@ from urllib.parse import urljoin, urlparse
 
 from curl_cffi import requests as cf_requests
 
-from ..errors import NetworkError, SchemaError, StreamDeadlineError
+from ..errors import NetworkError, SchemaError
 from ..wire import Client
-from ._ask_common import base_ask_params, extract_chunks_from_event, run_ask_stream
+from ._ask_common import (
+    base_ask_params,
+    extract_chunks_from_event,
+    no_content_error,
+    run_ask_stream,
+)
 
 _PROMPT_ENDPOINT = "/rest/sse/perplexity_ask"
 
@@ -301,6 +306,9 @@ def _fetch_with_prompt(
     if not keep_thread and state.backend_uuid and state.read_write_token:
         client.delete_thread(state.backend_uuid, state.read_write_token)
 
+    if state.transport_error is not None:
+        raise state.transport_error
+
     if state.failed:
         raise SchemaError(
             f"fetch --prompt on {_PROMPT_ENDPOINT} returned status=FAILED; model "
@@ -309,12 +317,12 @@ def _fetch_with_prompt(
 
     content = "".join(chunks).strip()
     if not content and not state.saw_completed:
-        if deadline_tripped:
-            raise StreamDeadlineError(
-                f"SSE stream on {_PROMPT_ENDPOINT} exceeded {timeout:.1f}s "
-                f"deadline before any content arrived"
-            )
-        raise SchemaError(f"no markdown_block content received from {_PROMPT_ENDPOINT}")
+        raise no_content_error(
+            label="fetch --prompt",
+            endpoint=_PROMPT_ENDPOINT,
+            timeout=timeout,
+            deadline_tripped=deadline_tripped,
+        )
 
     truncated = False
     if max_chars and len(content) > max_chars:

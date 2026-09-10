@@ -19,13 +19,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from ..errors import SchemaError, StreamDeadlineError
+from ..errors import SchemaError
 from ..wire import Client
 from ._ask_common import (
     Source,
     base_ask_params,
     extract_chunks_from_event,
     extract_web_results,
+    no_content_error,
     run_ask_stream,
     to_source,
 )
@@ -89,6 +90,9 @@ def ask(
     if not keep_thread and state.backend_uuid and state.read_write_token:
         client.delete_thread(state.backend_uuid, state.read_write_token)
 
+    if state.transport_error is not None:
+        raise state.transport_error
+
     if state.failed:
         raise SchemaError(
             f"ask request on {ENDPOINT} returned status=FAILED; model {model!r} may be "
@@ -97,11 +101,9 @@ def ask(
 
     content = "".join(chunks).strip()
     if not content and not state.saw_completed:
-        if deadline_tripped:
-            raise StreamDeadlineError(
-                f"ask stream on {ENDPOINT} exceeded {timeout:.1f}s before any content"
-            )
-        raise SchemaError(f"no content received from {ENDPOINT}")
+        raise no_content_error(
+            label="ask", endpoint=ENDPOINT, timeout=timeout, deadline_tripped=deadline_tripped
+        )
 
     return AskResult(
         query=query,

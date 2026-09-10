@@ -10,7 +10,14 @@ import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from pplx_agent_tools.errors import SchemaError, StreamDeadlineError
+from pplx_agent_tools.errors import (
+    EXIT_GENERIC,
+    EXIT_NETWORK,
+    NetworkError,
+    SchemaError,
+    StreamDeadlineError,
+    exit_code,
+)
 from pplx_agent_tools.render import render_research_json, render_research_text
 from pplx_agent_tools.verbs.research import (
     ResearchResult,
@@ -64,10 +71,17 @@ def _snapshot(answer: str = "QUIC is a protocol. [1]") -> str:
 class _FakeClient(_TestClientBase):
     """Yields canned research SSE events; records delete_thread calls."""
 
-    def __init__(self, events: list[dict[str, Any]], *, raise_deadline: bool = False) -> None:
+    def __init__(
+        self,
+        events: list[dict[str, Any]],
+        *,
+        raise_deadline: bool = False,
+        raise_network: bool = False,
+    ) -> None:
         super().__init__()
         self._events = events
         self._raise_deadline = raise_deadline
+        self._raise_network = raise_network
         self.deleted: list[tuple[str, str]] = []
 
     def sse_post(  # type: ignore[override]
@@ -76,6 +90,8 @@ class _FakeClient(_TestClientBase):
         yield from self._events
         if self._raise_deadline:
             raise StreamDeadlineError("simulated deadline")
+        if self._raise_network:
+            raise NetworkError("simulated mid-stream connection reset")
 
     def delete_thread(self, entry_uuid: str, read_write_token: str) -> bool:  # type: ignore[override]
         self.deleted.append((entry_uuid, read_write_token))
@@ -257,6 +273,44 @@ def test_research_deadline_before_any_content_raises() -> None:
     client = _FakeClient([], raise_deadline=True)
     with pytest.raises(StreamDeadlineError):
         research(client, "q", timeout=30)
+
+
+def test_research_midstream_network_error_reaps_thread_then_raises() -> None:
+    """A research run is minutes long, so a transport failure part-way through
+    is a likely exit — and the thread ids are already in hand when it happens."""
+    client = _FakeClient(
+        [{"data": {"backend_uuid": "BU", "read_write_token": "RW", "text": _snapshot()}}],
+        raise_network=True,
+    )
+
+    with pytest.raises(NetworkError) as excinfo:
+        research(client, "q")
+
+    assert not isinstance(excinfo.value, StreamDeadlineError)
+    assert exit_code(excinfo.value) == EXIT_NETWORK
+    assert client.deleted == [("BU", "RW")]
+
+
+def test_research_deadline_and_closed_empty_texts_are_distinguishable() -> None:
+    """Same wording as ask and fetch --prompt: the deadline says retry longer,
+    the closed-empty stream says do not."""
+    starved = _FakeClient([], raise_deadline=True)
+    with pytest.raises(StreamDeadlineError) as deadline:
+        research(starved, "q", timeout=30)
+
+    empty = _FakeClient([{"data": {"status": "COMPLETED"}}])
+    with pytest.raises(SchemaError) as closed:
+        research(empty, "q")
+
+    assert str(deadline.value) == (
+        "research stream on /rest/sse/perplexity_ask exceeded 30.0s deadline "
+        "before the first content arrived"
+    )
+    assert str(closed.value) == (
+        "research stream on /rest/sse/perplexity_ask closed with no content"
+    )
+    assert exit_code(deadline.value) == EXIT_NETWORK
+    assert exit_code(closed.value) == EXIT_GENERIC
 
 
 def test_research_completed_without_text_raises_schema() -> None:
