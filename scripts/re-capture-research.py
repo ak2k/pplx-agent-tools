@@ -132,30 +132,42 @@ def main(argv: list[str] | None = None) -> int:
         with out_file as f:
             for event in client.sse_post(ENDPOINT, body, max_total_seconds=args.timeout):
                 data: Any = event.get("data")
-                f.write(json.dumps(data, separators=(",", ":")))
-                f.write("\n")
-                f.flush()
-                count += 1
+                # Read the thread ids off the frame BEFORE writing it: a full
+                # disk on the first flush would otherwise reach the `finally`
+                # with both still None, and the thread this run created would
+                # survive with nothing left that knows its id.
                 if isinstance(data, dict):
                     if backend_uuid is None and isinstance(data.get("backend_uuid"), str):
                         backend_uuid = data["backend_uuid"]
                     if read_write_token is None and isinstance(data.get("read_write_token"), str):
                         read_write_token = data["read_write_token"]
-                    if data.get("status") in ("COMPLETED", "FAILED"):
-                        print(f"  frame {count}: status={data.get('status')}", file=sys.stderr)
+                f.write(json.dumps(data, separators=(",", ":")))
+                f.write("\n")
+                f.flush()
+                count += 1
+                if isinstance(data, dict) and data.get("status") in ("COMPLETED", "FAILED"):
+                    print(f"  frame {count}: status={data.get('status')}", file=sys.stderr)
                 if count % 10 == 0:
                     print(f"  {count} frames...", file=sys.stderr)
     finally:
-        # A mid-stream failure still created the thread, and the partial capture
-        # on disk still holds a live read_write_token at the default umask.
-        if out_path.exists():
-            out_path.chmod(0o600)
-        print(f"wrote {out_path} ({count} events)", file=sys.stderr)
-        if backend_uuid and read_write_token:
-            ok = client.delete_thread(backend_uuid, read_write_token)
-            print(f"thread cleanup: {'deleted' if ok else 'FAILED'}", file=sys.stderr)
-        else:
-            print("warning: no backend_uuid/read_write_token seen; no cleanup", file=sys.stderr)
+        try:
+            # A mid-stream failure still created the thread, and the partial capture
+            # on disk still holds a live read_write_token at the default umask.
+            if out_path.exists():
+                out_path.chmod(0o600)
+            print(f"wrote {out_path} ({count} events)", file=sys.stderr)
+        finally:
+            # The thread outlives this process, so once its ids are known the
+            # delete is unconditional: the same full disk that failed the write
+            # can fail the chmod above, and a raise there must not strand it.
+            if backend_uuid and read_write_token:
+                ok = client.delete_thread(backend_uuid, read_write_token)
+                print(f"thread cleanup: {'deleted' if ok else 'FAILED'}", file=sys.stderr)
+            else:
+                print(
+                    "warning: no backend_uuid/read_write_token seen; no cleanup",
+                    file=sys.stderr,
+                )
     return 0
 
 

@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
 
-from ..errors import RateLimitError, StreamDeadlineError
+from ..errors import NetworkError, PplxError, RateLimitError, SchemaError, StreamDeadlineError
 from ..wire import Client
 
 _RATE_LIMIT_MAX_ATTEMPTS = 3
@@ -37,6 +37,10 @@ class AskStreamState:
     read_write_token: str | None = None
     saw_completed: bool = False
     failed: bool = False  # server emitted status=FAILED (e.g. model incompatible with mode)
+    # A mid-stream transport failure, carried instead of raised: the thread
+    # identifiers above are already known here, so the caller has to reach its
+    # delete_thread call before this surfaces or the incognito thread leaks.
+    transport_error: NetworkError | None = None
 
 
 def base_ask_params(
@@ -184,7 +188,10 @@ def run_ask_stream(
     `read_write_token` and the completion / FAILED signals into the returned
     `AskStreamState`. Propagates a terminal `RateLimitError` (exit 3) when retries
     are exhausted; a tripped deadline returns with `deadline_tripped=True` so the
-    caller can salvage whatever `on_event` accumulated.
+    caller can salvage whatever `on_event` accumulated, and a mid-stream
+    `NetworkError` returns with `state.transport_error` set for the same reason:
+    both exits happen after the thread identifiers are known, and every caller
+    must run its cleanup before the failure surfaces.
 
     `is_complete` decides which event ends the stream. The default accepts the
     early `text_completed` flag, which is right for delta-accumulating callers
@@ -226,6 +233,10 @@ def run_ask_stream(
         except StreamDeadlineError:
             deadline_tripped = True
             break
+        except NetworkError as e:
+            # Ordered after StreamDeadlineError, which subclasses this.
+            state.transport_error = e
+            break
         except RateLimitError as e:
             last_rate_limit = e
             if attempt >= _RATE_LIMIT_MAX_ATTEMPTS:
@@ -239,6 +250,27 @@ def run_ask_stream(
                 )
                 time.sleep(sleep_s)
     return state, deadline_tripped
+
+
+def no_content_error(
+    *, label: str, endpoint: str, timeout: float | None, deadline_tripped: bool
+) -> PplxError:
+    """The error for an ask-family stream that produced no usable content.
+
+    Both texts live here so the three verbs cannot drift apart on the one
+    distinction an agent acts on: a deadline that tripped before the first
+    content is worth retrying with a larger --timeout (exit 4), whereas a stream
+    the server closed empty is not (exit 1).
+    """
+    if deadline_tripped:
+        # `timeout` is None only when the budget was spent by an earlier retry
+        # rather than by a caller-supplied bound.
+        budget = f"{timeout:.1f}s" if timeout is not None else "its"
+        return StreamDeadlineError(
+            f"{label} stream on {endpoint} exceeded {budget} deadline "
+            f"before the first content arrived"
+        )
+    return SchemaError(f"{label} stream on {endpoint} closed with no content")
 
 
 def _drive_one(

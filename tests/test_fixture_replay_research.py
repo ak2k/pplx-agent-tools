@@ -32,7 +32,7 @@ import json
 from collections.abc import Iterator
 from pathlib import Path
 from types import ModuleType
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 
@@ -322,6 +322,96 @@ def test_sanitizer_redacts_a_nested_identity_object_outright() -> None:
     assert out["user_empty"] == {}
     assert out["user_blank"] == ""
     assert out["user_none"] is None
+
+
+class _StubResearchClient:
+    """Stands in for `wire.Client` inside the capture script: yields canned
+    frames, records the thread it is asked to delete. No network, no cookies."""
+
+    deleted: ClassVar[list[tuple[str, str]]] = []
+
+    @classmethod
+    def from_default_cookies(cls, profile: str | None = None) -> _StubResearchClient:
+        return cls()
+
+    def sse_post(
+        self, path: str, body: dict[str, Any], *, max_total_seconds: float | None = None
+    ) -> Iterator[dict[str, Any]]:
+        yield {"event": "message", "data": {"backend_uuid": "BU", "read_write_token": "RW"}}
+
+    def delete_thread(self, entry_uuid: str, read_write_token: str) -> bool:
+        type(self).deleted.append((entry_uuid, read_write_token))
+        return True
+
+
+class _UnwritableFile:
+    """A capture file whose first flush fails, like a full disk."""
+
+    def __enter__(self) -> _UnwritableFile:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        return None
+
+    def write(self, text: str) -> int:
+        return len(text)
+
+    def flush(self) -> None:
+        raise OSError(28, "No space left on device")
+
+
+def _unwritable_capture(path: Path) -> _UnwritableFile:
+    """Create the capture for real, then fail on flush.
+
+    The file has to exist or the cleanup skips its `out_path.exists()` chmod
+    entirely, which is the branch these tests are here to cover."""
+    path.touch()
+    return _UnwritableFile()
+
+
+def test_capture_deletes_the_thread_when_the_first_write_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The frame carrying the thread ids is the same frame being written, so
+    reading them after the write left the cleanup blind to a failed flush and
+    the created thread outlived the run."""
+    capture = _load_script("re_capture_research", CAPTURE_SCRIPT)
+    _StubResearchClient.deleted = []
+    monkeypatch.setattr(capture, "Client", _StubResearchClient)
+    monkeypatch.setattr(capture, "OUT_DIR", tmp_path)
+    monkeypatch.setattr(capture, "_create_capture_file", _unwritable_capture)
+
+    with pytest.raises(OSError, match="No space left"):
+        capture.main(["q", "--label", "cap"])
+
+    assert _StubResearchClient.deleted == [("BU", "RW")]
+
+
+def test_capture_deletes_the_thread_when_the_cleanup_chmod_also_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The disk failure that breaks the write can break the chmod on the same
+    partial capture — and that chmod sits between the run and the delete, so a
+    raise there used to strand the thread it had already identified."""
+    capture = _load_script("re_capture_research", CAPTURE_SCRIPT)
+    _StubResearchClient.deleted = []
+    monkeypatch.setattr(capture, "Client", _StubResearchClient)
+    monkeypatch.setattr(capture, "OUT_DIR", tmp_path)
+    monkeypatch.setattr(capture, "_create_capture_file", _unwritable_capture)
+
+    def _failing_chmod(self: Path, mode: int, **kwargs: object) -> None:
+        raise OSError(5, "Input/output error")
+
+    # Path.chmod, not the script's own creation path: `_create_capture_file`
+    # pins the mode with os.fchmod and stays usable.
+    monkeypatch.setattr(Path, "chmod", _failing_chmod)
+
+    with pytest.raises(OSError) as excinfo:
+        capture.main(["q", "--label", "cap"])
+
+    assert _StubResearchClient.deleted == [("BU", "RW")], "the delete runs regardless"
+    assert "Input/output error" in str(excinfo.value)
+    assert "No space left" in str(excinfo.value.__context__), "the write failure is not lost"
 
 
 def test_capture_file_is_created_unreadable_to_others(tmp_path: Path) -> None:

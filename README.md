@@ -15,6 +15,7 @@ Single binary, subcommand-style (`pplx <verb>`):
 - `pplx search <query>...` — ranked web hits via `/rest/realtime/search-web`. Native multi-query. Each hit carries `title`, `snippet`, and a longer `summary` field.
 - `pplx fetch <url>` — local fetch (`curl_cffi` chrome impersonation + `trafilatura`). With `--prompt`, routes URL+prompt through Perplexity's chat endpoint for LLM extraction in one round-trip.
 - `pplx snippets <query> <url>...` — hybrid retrieval (FTS5 BM25 + `fastembed` semantic vectors, RRF-merged) over locally-fetched URLs. Per-URL and total token budgets.
+  - Needs SQLite 3.38 or newer; an older build is refused with a clear error rather than quietly returning no semantic matches.
 - `pplx auth {check, refresh, import}` — cookie management. `import --browser <name>` lifts cookies from a local browser via `rookiepy` (Brave/Chrome/Chromium/Firefox/Safari/Edge/Arc/Vivaldi/Opera/LibreWolf/Zen).
 
 Each verb: text output by default, `-j` for JSON. Stable exit codes for agent retry semantics (2 = auth, 3 = rate limit, 4 = network, 5 = anti-bot). Single-shot CLIs; no daemon (the daemon model is a deferred Phase 2).
