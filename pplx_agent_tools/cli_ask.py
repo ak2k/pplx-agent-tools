@@ -14,6 +14,7 @@ from collections.abc import Sequence
 from .cli_runner import resolve_model, resolve_timeout, run_verb
 from .cli_types import PplxArgumentParser, duration
 from .errors import EXIT_OK, EXIT_PARTIAL
+from .grounding import Ungrounded
 from .render import grounding_summary, render_ask_json, render_ask_text
 from .verbs._ask_common import COPILOT_STALL_SECONDS
 from .verbs.ask import DEFAULT_MODEL, AskResult, ask
@@ -89,7 +90,7 @@ def build_parser() -> PplxArgumentParser:
 
 
 def _finalize(result: AskResult) -> int:
-    if result.grounding is not None and result.grounding.grounded is False:
+    if isinstance(result.grounding, Ungrounded):
         print(
             f"warning: ask answer not grounded in its sources: "
             f"{grounding_summary(result.grounding)}",

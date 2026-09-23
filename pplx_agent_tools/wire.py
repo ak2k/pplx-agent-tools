@@ -13,17 +13,12 @@ from __future__ import annotations
 import codecs
 import contextlib
 import json
-import os
-import socket
-import stat
 import sys
-import threading
 import time
 from collections.abc import Callable, Iterator
-from pathlib import Path
 from typing import Any
 
-from curl_cffi import CurlECode, CurlError, CurlInfo
+from curl_cffi import CurlECode, CurlError
 from curl_cffi import requests as cf_requests
 
 from .auth import cookie_pair_ok
@@ -50,8 +45,6 @@ DEFAULT_SSE_READ_TIMEOUT = 60.0
 # Hard cap on un-dispatched SSE buffer (a single event with no `\n\n` terminator).
 # Defends against a server that trickles bytes forever without a terminator.
 _MAX_SSE_BUFFER_BYTES = 16 * 1024 * 1024
-# How often the stall watchdog rechecks its window, so how late past it it fires.
-_WATCHDOG_POLL_SECONDS = 1.0
 
 
 class Client:
@@ -251,8 +244,8 @@ class Client:
 
         `stall_window()`, when given, is read at every stall check and replaces
         `stall_seconds` there, so a consumer can tighten the window mid-stream.
-        The transport's low-speed abort keeps the `stall_seconds` sizing, so a
-        watchdog thread enforces the current window on a fully silent stream.
+        The transport's low-speed abort keeps the `stall_seconds` sizing, so the
+        tightened window is enforced when the next frame or heartbeat arrives.
 
         Raises the same typed errors as the GET path (auth/rate-limit/etc.) on
         connection or status-code failure.
@@ -262,19 +255,13 @@ class Client:
             path, self._timeout, max_total_seconds, stall_seconds
         )
         try:
-            # The watchdog starts with the read, by which point `last_progress` is set.
-            resp = _watched(
-                self._session.post(
-                    url,
-                    cookies=self._cookies,
-                    json=body,
-                    headers={"accept": "text/event-stream"},
-                    stream=True,
-                    timeout=(connect_timeout, read_timeout),
-                ),
-                path,
-                stall_window,
-                lambda: last_progress,
+            resp = self._session.post(
+                url,
+                cookies=self._cookies,
+                json=body,
+                headers={"accept": "text/event-stream"},
+                stream=True,
+                timeout=(connect_timeout, read_timeout),
             )
         except Exception as e:
             raise NetworkError(f"POST {path} failed: {e!s}") from e
@@ -470,137 +457,6 @@ def _json_body(resp: Any, path: str) -> JsonValue:
         return from_parser(resp.json())
     except Exception as e:
         raise SchemaError(f"non-JSON response from {path}") from e
-
-
-def _stall_error(path: str, window: float) -> StreamStallError:
-    return StreamStallError(
-        f"SSE stream on {path} stalled: no new content for {window:.1f}s", window
-    )
-
-
-class _StallWatchdog:
-    """Ends a fully silent stream once `stall_window()` passes without progress.
-
-    The stall check in `sse_post` runs only when bytes arrive, and curl's
-    low-speed abort is fixed when the request starts, so a window tightened
-    mid-stream would otherwise wait out the original abort. `fired` holds the
-    expired window once the transfer's socket has been shut down.
-    """
-
-    def __init__(
-        self,
-        resp: Any,
-        stall_window: Callable[[], float | None],
-        last_progress: Callable[[], float],
-    ) -> None:
-        self._resp = resp
-        self._stall_window = stall_window
-        self._last_progress = last_progress
-        self._stopped = threading.Event()
-        self._thread = threading.Thread(target=self._run, name="pplx-sse-watchdog", daemon=True)
-        self.fired: float | None = None
-
-    def start(self) -> None:
-        self._thread.start()
-
-    def stop(self) -> None:
-        self._stopped.set()
-
-    def _run(self) -> None:
-        while not self._stopped.wait(_WATCHDOG_POLL_SECONDS):
-            window = self._stall_window()
-            if not window or time.monotonic() - self._last_progress() <= window:
-                continue
-            # Set before the shutdown: the consumer's read fails the moment it lands.
-            self.fired = window
-            if not _shutdown_stream_socket(self._resp):
-                self.fired = None
-            return
-
-
-class _WatchedResponse:
-    """A streaming response whose `iter_content` runs under a `_StallWatchdog`.
-
-    A stream the watchdog cut ends in whatever transport error curl reports for
-    the dead socket (or a clean end); either is reported as the stall it is.
-    """
-
-    def __init__(
-        self,
-        resp: Any,
-        path: str,
-        stall_window: Callable[[], float | None],
-        last_progress: Callable[[], float],
-    ) -> None:
-        self._resp = resp
-        self._path = path
-        self._stall_window = stall_window
-        self._last_progress = last_progress
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._resp, name)
-
-    def iter_content(self, chunk_size: int | None = None) -> Iterator[bytes]:
-        watchdog = _StallWatchdog(self._resp, self._stall_window, self._last_progress)
-        watchdog.start()
-        try:
-            yield from self._resp.iter_content(chunk_size=chunk_size)
-        except Exception as e:
-            if watchdog.fired is not None:
-                raise _stall_error(self._path, watchdog.fired) from e
-            raise
-        finally:
-            watchdog.stop()
-        if watchdog.fired is not None:
-            raise _stall_error(self._path, watchdog.fired)
-
-
-def _watched(
-    resp: Any,
-    path: str,
-    stall_window: Callable[[], float | None] | None,
-    last_progress: Callable[[], float],
-) -> Any:
-    return (
-        resp if stall_window is None else _WatchedResponse(resp, path, stall_window, last_progress)
-    )
-
-
-def _shutdown_stream_socket(resp: Any) -> bool:
-    """Shut down the socket under a streaming curl_cffi response; True on success.
-
-    curl_cffi has no call that aborts a transfer blocked in a read, and curl
-    reports no socket fd mid-transfer, so the fd is found by its address pair.
-    Shutting it down (rather than closing it) leaves the fd to curl, whose read
-    then fails at once.
-    """
-    try:
-        curl = resp.curl
-        local_port = curl.getinfo(CurlInfo.LOCAL_PORT)
-        peer = (curl.getinfo(CurlInfo.PRIMARY_IP).decode(), curl.getinfo(CurlInfo.PRIMARY_PORT))
-        fds = [int(entry.name) for entry in Path("/dev/fd").iterdir()]
-    except Exception:
-        return False
-    for fd in fds:
-        try:
-            if not stat.S_ISSOCK(os.fstat(fd).st_mode):
-                continue
-            sock = socket.socket(fileno=os.dup(fd))
-        except OSError:
-            continue
-        try:
-            if (
-                sock.family in (socket.AF_INET, socket.AF_INET6)
-                and sock.getsockname()[1] == local_port
-                and sock.getpeername()[:2] == peer
-            ):
-                sock.shutdown(socket.SHUT_RDWR)
-                return True
-        except OSError:
-            pass
-        finally:
-            sock.close()
-    return False
 
 
 def _silence_bounds(

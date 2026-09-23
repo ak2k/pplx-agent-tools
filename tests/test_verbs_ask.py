@@ -20,9 +20,16 @@ from pplx_agent_tools.errors import (
     StreamDeadlineError,
     exit_code,
 )
-from pplx_agent_tools.grounding import Grounding
+from pplx_agent_tools.grounding import (
+    Grounded,
+    Grounding,
+    Unchecked,
+    Ungrounded,
+    check_grounding,
+)
 from pplx_agent_tools.render import grounding_summary, render_ask_json, render_ask_text
 from pplx_agent_tools.verbs._ask_common import (
+    Source,
     apply_chunk_patch,
     extract_chunks_from_event,
     extract_web_results,
@@ -259,10 +266,10 @@ def test_ask_attaches_grounding_verdict() -> None:
         {"data": {"status": "COMPLETED"}},
     ]
     result = ask(_FakeClient(events), "q")
-    assert result.grounding is not None
-    assert result.grounding.grounded is False
-    assert result.grounding.unsupported == ["4.2", "3,100"]
-    assert ask(_FakeClient(events), "q", grounded_check=False).grounding is None
+    assert isinstance(result.grounding, Ungrounded)
+    assert result.grounding.ungrounded_terms == ("4.2", "3,100")
+    disabled = ask(_FakeClient(events), "q", grounded_check=False).grounding
+    assert disabled == Unchecked("disabled")
 
 
 def test_ask_partial_on_deadline() -> None:
@@ -376,46 +383,123 @@ def test_render_ask_with_sources() -> None:
     assert j["sources"][0] == {"url": "https://a", "title": "A", "snippet": "snip"}
 
 
-_UNGROUNDED = Grounding(False, ["every cited URL is a site root"], ["4.0", "$55"], 2)
+def _src(url: str, snippet: str) -> list[Source]:
+    return [Source(url, "t", snippet)]
 
 
-def test_render_ask_ungrounded() -> None:
-    result = AskResult("q", "Answer.", "turbo", grounding=_UNGROUNDED)
-    marker = [ln for ln in render_ask_text(result).splitlines() if ln.startswith("grounded:")]
-    assert marker == ["grounded: no (every cited URL is a site root; unsupported: 4.0, $55)"]
-    j = render_ask_json(result)
-    assert j["grounded"] is False
-    assert j["grounding_reasons"] == ["every cited URL is a site root"]
-    assert j["ungrounded_terms"] == ["4.0", "$55"]
-    assert j["checked_terms"] == 2
+_LOW_SUPPORT = "figures/names appear in a cited source's title or snippet"
+# Every variant (and every ungrounded reason) with the exact JSON it renders to.
+_VARIANTS: list[tuple[str, Grounding, dict[str, Any]]] = [
+    (
+        "grounded",
+        check_grounding("It costs $45, $60 and $75.", "q", _src("https://a.test/p", "$45, $60")),
+        {
+            "grounded": True,
+            "grounding_reasons": [],
+            "ungrounded_terms": ["$75"],
+            "checked_terms": 3,
+        },
+    ),
+    (
+        "no_sources",
+        check_grounding("It sold 4,500 units in 2023.", "q", []),
+        {
+            "grounded": False,
+            "grounding_reasons": ["no sources"],
+            "ungrounded_terms": ["4,500", "2023"],
+            "checked_terms": 2,
+        },
+    ),
+    (
+        "site_roots",
+        check_grounding("It is 4.0.", "q", _src("https://a.test/", "rated 4.0")),
+        {
+            "grounded": False,
+            "grounding_reasons": ["every cited URL is a site root"],
+            "ungrounded_terms": [],
+            "checked_terms": 1,
+        },
+    ),
+    (
+        "low_support",
+        check_grounding(
+            "Figures: 101, 202, 303, 404 and 505.", "q", _src("https://a.test/p", "101")
+        ),
+        {
+            "grounded": False,
+            "grounding_reasons": [f"1 of 5 {_LOW_SUPPORT}"],
+            "ungrounded_terms": ["202", "303", "404", "505"],
+            "checked_terms": 5,
+        },
+    ),
+    (
+        "site_roots+low_support",
+        check_grounding("It is 4.0 and costs $55.", "q", _src("https://a.test/", "s")),
+        {
+            "grounded": False,
+            "grounding_reasons": ["every cited URL is a site root", f"0 of 2 {_LOW_SUPPORT}"],
+            "ungrounded_terms": ["4.0", "$55"],
+            "checked_terms": 2,
+        },
+    ),
+    (
+        "no_checkable_terms",
+        check_grounding("Yes.", "q", []),
+        {
+            "grounded": None,
+            "grounding_reasons": ["no checkable figures or names"],
+            "ungrounded_terms": [],
+            "checked_terms": 0,
+        },
+    ),
+    (
+        "disabled",
+        Unchecked("disabled"),
+        {
+            "grounded": None,
+            "grounding_reasons": ["check disabled"],
+            "ungrounded_terms": [],
+            "checked_terms": 0,
+        },
+    ),
+]
 
 
 @pytest.mark.parametrize(
-    "grounding", [Grounding(True, [], [], 3), Grounding(None, ["no checkable figures or names"])]
+    ("name", "grounding", "expected"), _VARIANTS, ids=[v[0] for v in _VARIANTS]
 )
-def test_render_ask_grounded_or_unchecked_has_no_marker(grounding: Grounding) -> None:
+def test_render_ask_grounding_variants(
+    name: str, grounding: Grounding, expected: dict[str, Any]
+) -> None:
     result = AskResult("q", "Answer.", "turbo", grounding=grounding)
-    assert "grounded:" not in render_ask_text(result)
     j = render_ask_json(result)
-    assert j["grounded"] is grounding.grounded
-    assert j["grounding_reasons"] == grounding.reasons
+    assert {k: j[k] for k in expected} == expected
+    marker = [ln for ln in render_ask_text(result).splitlines() if ln.startswith("grounded:")]
+    if isinstance(grounding, Ungrounded):
+        reasons = "; ".join(expected["grounding_reasons"])
+        terms = ", ".join(expected["ungrounded_terms"])
+        assert marker == [
+            f"grounded: no ({reasons}; unsupported: {terms})"
+            if terms
+            else f"grounded: no ({reasons})"
+        ]
+    else:
+        assert marker == []
 
 
-def test_render_ask_json_check_disabled_keeps_the_shape() -> None:
+def test_variant_table_covers_every_variant() -> None:
+    assert {type(g) for _, g, _ in _VARIANTS} == {Grounded, Ungrounded, Unchecked}
+
+
+def test_render_ask_json_check_disabled_is_the_default() -> None:
     j = render_ask_json(AskResult("q", "Answer.", "turbo"))
     assert j["grounded"] is None
     assert j["grounding_reasons"] == ["check disabled"]
-    assert j["ungrounded_terms"] == []
-    assert j["checked_terms"] == 0
-
-
-def test_grounding_summary_without_terms_is_the_reasons_alone() -> None:
-    g = Grounding(False, ["every cited URL is a site root", "no sources"], [], 0)
-    assert grounding_summary(g) == "every cited URL is a site root; no sources"
 
 
 def test_grounding_summary_caps_listed_terms() -> None:
-    g = Grounding(False, ["r"], [str(n) for n in range(100, 112)], 12)
+    g = check_grounding(" ".join(f"x {n}," for n in range(100, 112)), "q", [])
+    assert isinstance(g, Ungrounded)
     assert grounding_summary(g).endswith("106, 107 (+4 more)")
 
 

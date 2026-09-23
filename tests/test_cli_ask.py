@@ -8,7 +8,8 @@ import pytest
 
 from pplx_agent_tools import cli_ask, cli_runner
 from pplx_agent_tools.errors import EXIT_OK, EXIT_PARTIAL
-from pplx_agent_tools.grounding import Grounding
+from pplx_agent_tools.grounding import Unchecked, check_grounding
+from pplx_agent_tools.verbs._ask_common import Source
 from pplx_agent_tools.verbs.ask import AskResult
 
 
@@ -58,7 +59,7 @@ def test_json_output(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixt
     assert "claude48opusthinking" in out
 
 
-_UNGROUNDED = Grounding(False, ["every cited URL is a site root"], ["4.0"], 1)
+_UNGROUNDED = check_grounding("It is 4.0.", "q", [Source("https://a.test/", "t", "s")])
 
 
 @pytest.mark.parametrize("json_flag", [[], ["--json"]])
@@ -72,7 +73,8 @@ def test_ungrounded_warns_and_keeps_exit_zero(
     warnings = [ln for ln in cap.err.splitlines() if "not grounded" in ln]
     assert warnings == [
         "warning: ask answer not grounded in its sources: "
-        "every cited URL is a site root; unsupported: 4.0"
+        "every cited URL is a site root; 0 of 1 figures/names appear in a cited "
+        "source's title or snippet; unsupported: 4.0"
     ]
 
 
@@ -85,7 +87,8 @@ def test_ungrounded_partial_keeps_exit_six(
 
 
 def test_grounded_is_silent(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
-    _stub(monkeypatch, AskResult("q", "A", "turbo", True, grounding=Grounding(True, [], [], 1)))
+    grounded = check_grounding("It costs $45.", "q", [Source("https://a.test/p", "t", "$45")])
+    _stub(monkeypatch, AskResult("q", "A", "turbo", True, grounding=grounded))
     assert cli_ask.main(["q"]) == EXIT_OK
     assert "not grounded" not in capsys.readouterr().err
 
@@ -93,7 +96,7 @@ def test_grounded_is_silent(monkeypatch: pytest.MonkeyPatch, capsys: pytest.Capt
 def test_nothing_to_check_is_silent(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
 ) -> None:
-    unchecked = Grounding(None, ["no checkable figures or names"])
+    unchecked = Unchecked("no_checkable_terms")
     _stub(monkeypatch, AskResult("q", "Yes.", "turbo", True, grounding=unchecked))
     assert cli_ask.main(["q"]) == EXIT_OK
     cap = capsys.readouterr()

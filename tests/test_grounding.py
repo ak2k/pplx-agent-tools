@@ -9,9 +9,10 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from pplx_agent_tools.grounding import (
-    REASON_NO_SOURCES,
-    REASON_NO_TERMS,
-    REASON_SITE_ROOTS,
+    Grounded,
+    Grounding,
+    Unchecked,
+    Ungrounded,
     _clean_markdown,
     _extract_names,
     _figure_supported,
@@ -19,6 +20,11 @@ from pplx_agent_tools.grounding import (
     check_grounding,
 )
 from pplx_agent_tools.verbs._ask_common import Source
+
+
+def _unsupported(g: Grounding) -> list[str]:
+    return [] if isinstance(g, Unchecked) else list(g.ungrounded_terms)
+
 
 # ---------- figure normalization ----------
 
@@ -105,7 +111,7 @@ def test_sign_is_part_of_the_value() -> None:
 def test_absurdly_long_numerals_are_ignored() -> None:
     assert _parse_figures("Revenue was " + "9" * 1_000_001 + " units.") == []
     g = check_grounding("Revenue was " + "9" * 1_000_001 + " units.", "q", [Source("u", "t", "s")])
-    assert g.grounded is None
+    assert g == Unchecked("no_checkable_terms")
 
 
 # ---------- name extraction ----------
@@ -147,7 +153,7 @@ def test_names_keep_connectors_inside_only() -> None:
 
 
 def _name_verdict(answer: str, snippet: str) -> list[str]:
-    return check_grounding(answer, "q", [Source("https://x.test/a", "t", snippet)]).unsupported
+    return _unsupported(check_grounding(answer, "q", [Source("https://x.test/a", "t", snippet)]))
 
 
 def test_name_words_must_be_adjacent() -> None:
@@ -164,7 +170,7 @@ def test_name_does_not_match_across_sources() -> None:
         Source("https://x.test/b", "Bull", "s"),
     ]
     g = check_grounding("It is sponsored by Red Bull here.", "q", sources)
-    assert g.unsupported == ["Red Bull"]
+    assert _unsupported(g) == ["Red Bull"]
 
 
 def test_sentence_initial_name_supported_by_its_fallback() -> None:
@@ -197,18 +203,17 @@ def test_fabricated_row_cited_to_landing_pages_is_ungrounded() -> None:
         Source("https://www.vivino.com", "Vivino", "Wine app and marketplace"),
     ]
     g = check_grounding(_CAPARZO_ANSWER, _CAPARZO_QUERY, sources)
-    assert g.grounded is False
-    assert REASON_SITE_ROOTS in g.reasons
-    assert any(r.startswith("0 of 5 ") for r in g.reasons)
-    assert sorted(g.unsupported) == sorted(["4.0", "1,234", "$55", "100", "Wine Spectator"])
-    assert g.checked == 5
+    assert isinstance(g, Ungrounded)
+    assert g.reasons == ("site_roots", "low_support")
+    assert sorted(g.ungrounded_terms) == sorted(["4.0", "1,234", "$55", "100", "Wine Spectator"])
+    assert len(g.checked_terms) == 5
 
 
 def test_fabricated_row_is_ungrounded_even_with_deep_links() -> None:
     sources = [Source("https://www.vivino.com/explore?q=caparzo", "Explore wines", "Find wine.")]
     g = check_grounding(_CAPARZO_ANSWER, _CAPARZO_QUERY, sources)
-    assert g.grounded is False
-    assert REASON_SITE_ROOTS not in g.reasons
+    assert isinstance(g, Ungrounded)
+    assert "site_roots" not in g.reasons
 
 
 def test_figure_in_snippet_in_another_format_is_grounded() -> None:
@@ -221,62 +226,60 @@ def test_figure_in_snippet_in_another_format_is_grounded() -> None:
         )
     ]
     g = check_grounding(answer, "What is the population of Tokyo?", sources)
-    assert g.grounded is True
-    assert g.reasons == []
-    assert g.unsupported == []
-    assert g.checked == 2
+    assert isinstance(g, Grounded)
+    assert g.ungrounded_terms == ()
+    assert len(g.checked_terms) == 2
 
 
 def test_site_root_citations_alone_make_an_answer_ungrounded() -> None:
     answer = "The Eiffel Tower is 330 meters tall [1]."
     sources = [Source("https://www.toureiffel.paris/", "Eiffel Tower", "The tower is 330 m tall.")]
     g = check_grounding(answer, "how tall is it", sources)
-    assert g.grounded is False
-    assert g.reasons == [REASON_SITE_ROOTS]
-    assert g.unsupported == []
+    assert isinstance(g, Ungrounded)
+    assert g.reasons == ("site_roots",)
+    assert g.ungrounded_terms == ()
 
 
 def test_no_sources_with_checkable_terms_is_ungrounded() -> None:
     g = check_grounding("It sold 4,500 units in 2023.", "sales", [])
-    assert g.grounded is False
-    assert g.reasons == [REASON_NO_SOURCES]
-    assert g.unsupported == ["4,500", "2023"]
+    assert isinstance(g, Ungrounded)
+    assert g.reasons == ("no_sources",)
+    assert g.ungrounded_terms == ("4,500", "2023")
 
 
 def test_no_checkable_terms_is_null_not_true() -> None:
     g = check_grounding("Yes, it is dynamically typed [1].", "is python dynamic?", [])
-    assert g.grounded is None
-    assert g.reasons == [REASON_NO_TERMS]
-    assert g.checked == 0
+    assert g == Unchecked("no_checkable_terms")
 
 
 def test_query_terms_and_small_counts_are_not_checked() -> None:
     answer = "There are 3 reasons the Caparzo 2019 scores well [1]."
     g = check_grounding(answer, "Caparzo 2019", [Source("https://x.test/a", "t", "s")])
-    assert g.grounded is None
+    assert g == Unchecked("no_checkable_terms")
 
 
 def test_low_support_fraction_threshold() -> None:
     answer = "Figures: 101, 202, 303, 404 and 505."
     one_of_five = [Source("https://x.test/a", "t", "only 101 here")]
     g = check_grounding(answer, "q", one_of_five)
-    assert g.grounded is False
-    assert g.reasons == ["1 of 5 figures/names appear in a cited source's title or snippet"]
+    assert isinstance(g, Ungrounded)
+    assert g.reasons == ("low_support",)
+    assert len(g.ungrounded_terms) == 4
     two_of_five = [Source("https://x.test/a", "t", "only 101 and 202 here")]
-    assert check_grounding(answer, "q", two_of_five).grounded is True
+    assert isinstance(check_grounding(answer, "q", two_of_five), Grounded)
 
 
 def test_one_incidental_small_number_does_not_ground_a_fabricated_row() -> None:
     sources = [Source("https://www.vivino.com/toplists/x", "Top 4 wines", "Buy wine online")]
     g = check_grounding(_CAPARZO_ANSWER, _CAPARZO_QUERY, sources)
-    assert g.grounded is False
-    assert "4.0" in g.unsupported
+    assert isinstance(g, Ungrounded)
+    assert "4.0" in g.ungrounded_terms
 
 
 @pytest.mark.parametrize("url", ["http://[::1", "https://[bad/", "::::", "http://[::1]:99999/x"])
 def test_malformed_source_urls_do_not_raise(url: str) -> None:
     g = check_grounding("It costs $45 [1].", "price", [Source(url, "t", "$45")])
-    assert g.grounded is True
+    assert isinstance(g, Grounded)
 
 
 # Fragments that exercise the parsers' edge cases more often than random text.
@@ -316,6 +319,27 @@ _huge = _text.map(lambda t: f"{t}{'9' * 1_000_001} {t}")
     ),
 )
 def test_check_grounding_is_total(answer: str, query: str, sources: list[Source]) -> None:
-    g = check_grounding(answer, query, sources)
-    assert g.grounded in (True, False, None)
-    assert len(g.unsupported) <= g.checked
+    assert isinstance(check_grounding(answer, query, sources), (Grounded, Ungrounded, Unchecked))
+
+
+def test_verdicts_reject_contradictory_fields() -> None:
+    """The variants cannot hold a combination their tag contradicts."""
+    g = check_grounding("Figures: 101, 202, 303, 404 and 505.", "q", [])
+    assert isinstance(g, Ungrounded)
+    terms = g.checked_terms
+    for bad in (
+        lambda: Grounded(terms, terms),
+        lambda: Grounded((), ()),
+        lambda: Grounded(terms, (terms[0], terms[0])),
+        lambda: Ungrounded((), terms, terms),
+        lambda: Ungrounded(("low_support", "low_support"), terms, terms),
+        lambda: Ungrounded(("low_support",), terms, ()),
+        lambda: Ungrounded(("site_roots",), terms, terms),
+        lambda: Ungrounded(("no_sources",), terms, terms[:1]),
+        lambda: Ungrounded(("no_sources", "site_roots"), terms, terms),
+    ):
+        with pytest.raises(ValueError):
+            bad()
+    assert Grounded(terms, terms[:1]).tag == "grounded"
+    assert Ungrounded(("site_roots",), terms, ()).tag == "ungrounded"
+    assert Unchecked("disabled").tag == "unchecked"

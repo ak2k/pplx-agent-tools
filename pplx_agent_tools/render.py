@@ -20,8 +20,17 @@ from __future__ import annotations
 
 from typing import Any
 
+from typing_extensions import assert_never
+
 from . import __version__
-from .grounding import Grounding
+from .grounding import (
+    Grounded,
+    Grounding,
+    Unchecked,
+    UncheckedReason,
+    Ungrounded,
+    UngroundedReason,
+)
 from .verbs.ask import AskResult
 from .verbs.fetch import FetchResult
 from .verbs.models import ModelsResult
@@ -302,13 +311,40 @@ def render_models_json(result: ModelsResult) -> dict[str, Any]:
 _MAX_LISTED_TERMS = 8
 
 
-def grounding_summary(g: Grounding) -> str:
+def _ungrounded_reason_text(g: Ungrounded, reason: UngroundedReason) -> str:
+    match reason:
+        case "no_sources":
+            return "no sources"
+        case "site_roots":
+            return "every cited URL is a site root"
+        case "low_support":
+            checked = len(g.checked_terms)
+            supported = checked - len(g.ungrounded_terms)
+            return (
+                f"{supported} of {checked} figures/names appear in a cited source's "
+                "title or snippet"
+            )
+        case _:
+            assert_never(reason)
+
+
+def _unchecked_reason_text(reason: UncheckedReason) -> str:
+    match reason:
+        case "disabled":
+            return "check disabled"
+        case "no_checkable_terms":
+            return "no checkable figures or names"
+        case _:
+            assert_never(reason)
+
+
+def grounding_summary(g: Ungrounded) -> str:
     """Why an answer is ungrounded, shared by the stdout marker and the
     stderr warning so the two cannot drift."""
-    terms = g.unsupported[:_MAX_LISTED_TERMS]
-    more = len(g.unsupported) - len(terms)
+    terms = g.ungrounded_terms[:_MAX_LISTED_TERMS]
+    more = len(g.ungrounded_terms) - len(terms)
     listed = ", ".join(terms) + (f" (+{more} more)" if more > 0 else "")
-    reasons = "; ".join(g.reasons)
+    reasons = "; ".join(_ungrounded_reason_text(g, r) for r in g.reasons)
     return f"{reasons}; unsupported: {listed}" if listed else reasons
 
 
@@ -325,29 +361,45 @@ def render_ask_text(result: AskResult) -> str:
             if s.title:
                 parts.append(f"    {s.url}")
     g = result.grounding
-    if g is not None and g.grounded is False:
-        parts.append("")
-        parts.append(f"grounded: no ({grounding_summary(g)})")
+    match g:
+        case Ungrounded():
+            parts.append("")
+            parts.append(f"grounded: no ({grounding_summary(g)})")
+        case Grounded() | Unchecked():
+            pass
+        case _:
+            assert_never(g)
     if not result.stream_complete:
         parts.append("")
         parts.append(_incomplete_marker(result.cut_by))
     return "\n".join(parts)
 
 
-def _grounding_json(g: Grounding | None) -> dict[str, Any]:
-    if g is None:
-        return {
-            "grounded": None,
-            "grounding_reasons": ["check disabled"],
-            "ungrounded_terms": [],
-            "checked_terms": 0,
-        }
-    return {
-        "grounded": g.grounded,
-        "grounding_reasons": g.reasons,
-        "ungrounded_terms": g.unsupported,
-        "checked_terms": g.checked,
-    }
+def _grounding_json(g: Grounding) -> dict[str, Any]:
+    match g:
+        case Grounded():
+            return {
+                "grounded": True,
+                "grounding_reasons": [],
+                "ungrounded_terms": list(g.ungrounded_terms),
+                "checked_terms": len(g.checked_terms),
+            }
+        case Ungrounded():
+            return {
+                "grounded": False,
+                "grounding_reasons": [_ungrounded_reason_text(g, r) for r in g.reasons],
+                "ungrounded_terms": list(g.ungrounded_terms),
+                "checked_terms": len(g.checked_terms),
+            }
+        case Unchecked():
+            return {
+                "grounded": None,
+                "grounding_reasons": [_unchecked_reason_text(g.reason)],
+                "ungrounded_terms": [],
+                "checked_terms": 0,
+            }
+        case _:
+            assert_never(g)
 
 
 def render_ask_json(result: AskResult) -> dict[str, Any]:

@@ -1,3 +1,4 @@
+# pyright: strict
 """Grounding check: do an answer's figures and names appear in its cited sources?
 
 Pure and local. The evidence is only what the ask stream carries per source
@@ -30,6 +31,7 @@ import unicodedata
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
+from typing import Literal, NewType, TypeAlias
 from urllib.parse import urlsplit
 
 from .verbs._ask_common import Source
@@ -41,9 +43,11 @@ from .verbs._ask_common import Source
 # not clear an otherwise unsupported five-term row of figures.
 MIN_SUPPORTED_FRACTION = Decimal("0.2")
 
-REASON_NO_TERMS = "no checkable figures or names"
-REASON_NO_SOURCES = "no sources"
-REASON_SITE_ROOTS = "every cited URL is a site root"
+UngroundedReason = Literal["no_sources", "site_roots", "low_support"]
+UncheckedReason = Literal["disabled", "no_checkable_terms"]
+
+Term = NewType("Term", str)
+"""A figure or name as written in the answer. Only `_extract_terms` makes one."""
 
 _SCALES = {
     "k": Decimal(1_000),
@@ -109,14 +113,75 @@ class _Figure:
 
 
 @dataclass(frozen=True)
-class Grounding:
-    """`grounded` is None when the answer has nothing to check."""
+class _FigureTerm:
+    term: Term
+    figure: _Figure
 
-    grounded: bool | None
-    reasons: list[str] = field(default_factory=list)
-    # Checkable terms found in no source's title or snippet, as written.
-    unsupported: list[str] = field(default_factory=list)
-    checked: int = 0
+
+@dataclass(frozen=True)
+class _NameTerm:
+    term: Term
+    # The name without a first word that may be capitalized only by position.
+    fallback: str | None
+
+
+def _supported_enough(checked: int, ungrounded: int) -> bool:
+    return Decimal(checked - ungrounded) > MIN_SUPPORTED_FRACTION * checked
+
+
+def _validate_terms(checked: tuple[Term, ...], ungrounded: tuple[Term, ...]) -> None:
+    if not checked or len(set(checked)) != len(checked):
+        raise ValueError("checked_terms must be non-empty and distinct")
+    if not set(ungrounded) <= set(checked) or len(set(ungrounded)) != len(ungrounded):
+        raise ValueError("ungrounded_terms must be distinct checked terms")
+
+
+@dataclass(frozen=True)
+class Grounded:
+    """Enough of the answer's terms appear in its sources."""
+
+    checked_terms: tuple[Term, ...]
+    # Checked terms found in no source's title or snippet.
+    ungrounded_terms: tuple[Term, ...]
+    tag: Literal["grounded"] = field(default="grounded", init=False)
+
+    def __post_init__(self) -> None:
+        _validate_terms(self.checked_terms, self.ungrounded_terms)
+        if not _supported_enough(len(self.checked_terms), len(self.ungrounded_terms)):
+            raise ValueError("too few supported terms for a grounded verdict")
+
+
+@dataclass(frozen=True)
+class Ungrounded:
+    """The answer's terms are unsupported, or its citations cannot support them."""
+
+    reasons: tuple[UngroundedReason, ...]
+    checked_terms: tuple[Term, ...]
+    ungrounded_terms: tuple[Term, ...]
+    tag: Literal["ungrounded"] = field(default="ungrounded", init=False)
+
+    def __post_init__(self) -> None:
+        _validate_terms(self.checked_terms, self.ungrounded_terms)
+        if not self.reasons or len(set(self.reasons)) != len(self.reasons):
+            raise ValueError("reasons must be non-empty and distinct")
+        if "no_sources" in self.reasons:
+            if self.reasons != ("no_sources",) or self.ungrounded_terms != self.checked_terms:
+                raise ValueError("with no sources, every checked term is ungrounded")
+            return
+        low = not _supported_enough(len(self.checked_terms), len(self.ungrounded_terms))
+        if low != ("low_support" in self.reasons):
+            raise ValueError("low_support must match the supported fraction")
+
+
+@dataclass(frozen=True)
+class Unchecked:
+    """No verdict: the check was disabled, or the answer has nothing to check."""
+
+    reason: UncheckedReason
+    tag: Literal["unchecked"] = field(default="unchecked", init=False)
+
+
+Grounding: TypeAlias = "Grounded | Ungrounded | Unchecked"
 
 
 def _parse_figures(text: str) -> list[_Figure]:
@@ -262,27 +327,30 @@ def _name_supported(name: str, fallback: str | None, evidence: str) -> bool:
     return any(n is not None and _phrase(n) in evidence for n in (name, fallback))
 
 
-def check_grounding(answer: str, query: str, sources: Sequence[Source]) -> Grounding:
-    """Verdict on whether `answer`'s figures and names appear in `sources`."""
+def _extract_terms(answer: str, query: str) -> list[_FigureTerm | _NameTerm]:
+    """The answer's checkable terms, figures first, each once."""
     text = _clean_markdown(answer)
     query_values = {f.value for f in _parse_figures(query)}
     query_words = _words(query)
-
-    figures: dict[Decimal, _Figure] = {}
+    figures: dict[Decimal, _FigureTerm] = {}
     for fig in _parse_figures(text):
         if fig.value not in query_values and _is_checkable_figure(fig):
-            figures.setdefault(fig.value, fig)
-    names: dict[str, tuple[str, str | None]] = {}
+            figures.setdefault(fig.value, _FigureTerm(Term(fig.text), fig))
+    names: dict[str, _NameTerm] = {}
     for name, fallback in _extract_names(text):
         if not _words(name) <= query_words:
-            names.setdefault(_fold(name), (name, fallback))
+            names.setdefault(_fold(name), _NameTerm(Term(name), fallback))
+    return [*figures.values(), *names.values()]
 
-    checked = len(figures) + len(names)
-    if checked == 0:
-        return Grounding(grounded=None, reasons=[REASON_NO_TERMS])
-    all_terms = [f.text for f in figures.values()] + [n for n, _ in names.values()]
+
+def check_grounding(answer: str, query: str, sources: Sequence[Source]) -> Grounding:
+    """Verdict on whether `answer`'s figures and names appear in `sources`."""
+    terms = _extract_terms(answer, query)
+    if not terms:
+        return Unchecked("no_checkable_terms")
+    checked = tuple(t.term for t in terms)
     if not sources:
-        return Grounding(False, [REASON_NO_SOURCES], all_terms, checked)
+        return Ungrounded(("no_sources",), checked, checked)
 
     evidence = " \n ".join(f"{s.title or ''} \n {s.snippet or ''}" for s in sources)
     # Small counts ("Top 4 wines") are everywhere in titles and would
@@ -292,15 +360,20 @@ def check_grounding(answer: str, query: str, sources: Sequence[Source]) -> Groun
     evidence_phrases = "\n".join(
         _phrase(field) for s in sources for field in (s.title or "", s.snippet or "")
     )
-    unsupported = [f.text for f in figures.values() if not _figure_supported(f, evidence_figures)]
-    unsupported += [n for n, fb in names.values() if not _name_supported(n, fb, evidence_phrases)]
-
-    reasons: list[str] = []
-    if all(_is_site_root(s.url) for s in sources):
-        reasons.append(REASON_SITE_ROOTS)
-    supported = checked - len(unsupported)
-    if Decimal(supported) <= MIN_SUPPORTED_FRACTION * checked:
-        reasons.append(
-            f"{supported} of {checked} figures/names appear in a cited source's title or snippet"
+    ungrounded = tuple(
+        t.term
+        for t in terms
+        if not (
+            _figure_supported(t.figure, evidence_figures)
+            if isinstance(t, _FigureTerm)
+            else _name_supported(t.term, t.fallback, evidence_phrases)
         )
-    return Grounding(not reasons, reasons, unsupported, checked)
+    )
+    reasons: list[UngroundedReason] = []
+    if all(_is_site_root(s.url) for s in sources):
+        reasons.append("site_roots")
+    if not _supported_enough(len(checked), len(ungrounded)):
+        reasons.append("low_support")
+    if reasons:
+        return Ungrounded(tuple(reasons), checked, ungrounded)
+    return Grounded(checked, ungrounded)

@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..errors import NetworkError, SchemaError
-from ..grounding import Grounding, check_grounding
+from ..grounding import Grounding, Unchecked, check_grounding
 from ..wire import Client
 from ._ask_common import (
     COPILOT_SETTLE_SECONDS,
@@ -61,8 +61,7 @@ class AskResult:
     warnings: list[str] = field(default_factory=list)
     # "stall" | "deadline" when that bound cut the stream; None otherwise.
     cut_by: str | None = None
-    # None when the caller disabled the check.
-    grounding: Grounding | None = None
+    grounding: Grounding = field(default_factory=lambda: Unchecked("disabled"))
 
 
 def ask(
@@ -155,7 +154,9 @@ def ask(
         cut_by=None if sources_lost else cutoff_cause(state),
         sources=sources,
         warnings=[SOURCES_FRAME_MISSING] if sources_lost else cutoff_warnings(state),
-        grounding=check_grounding(content, query, sources) if grounded_check else None,
+        grounding=(
+            check_grounding(content, query, sources) if grounded_check else Unchecked("disabled")
+        ),
     )
 
 
