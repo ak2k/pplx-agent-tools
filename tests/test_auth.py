@@ -4,15 +4,20 @@ from __future__ import annotations
 
 import json
 import stat
+import sys
+import types
 from pathlib import Path
 
 import pytest
+from hypothesis import given
+from hypothesis import strategies as st
 
 from pplx_agent_tools.auth import (
     DEFAULT_PROFILE,
     SUPPORTED_BROWSERS,
     _normalize,
     default_cookies_path,
+    import_from_browser,
     load_cookies,
     resolve_profile,
     save_cookies,
@@ -58,9 +63,8 @@ def test_normalize_flat_dict() -> None:
     assert out == {"a": "1", "b": "2"}
 
 
-def test_normalize_flat_dict_coerces_values_to_str() -> None:
-    out = _normalize({"x": 42}, source="t")
-    assert out == {"x": "42"}
+def test_normalize_allows_empty_value() -> None:
+    assert _normalize({"x": ""}, source="t") == {"x": ""}
 
 
 def test_normalize_cookie_editor_array() -> None:
@@ -271,3 +275,110 @@ def test_save_cookies_then_load_roundtrip(monkeypatch: pytest.MonkeyPatch, tmp_p
     monkeypatch.delenv("PPLX_COOKIES", raising=False)
     save_cookies({"session-token": "abc123", "csrf": "xyz"})
     assert load_cookies() == {"session-token": "abc123", "csrf": "xyz"}
+
+
+# ---------- cookie-pair boundary (property) ----------
+
+# Text biased toward the characters that split or inject a Cookie header.
+_hostile_text = st.text(alphabet=st.sampled_from(["a", "b", "=", ";", "\r", "\n", "\x00", " "]))
+_json_scalar = st.one_of(
+    st.none(),
+    st.booleans(),
+    st.integers(),
+    st.floats(allow_nan=False),
+    st.text(max_size=10),
+    _hostile_text,
+)
+_json_any = st.recursive(
+    _json_scalar,
+    lambda kids: st.one_of(
+        st.lists(kids, max_size=3), st.dictionaries(st.text(max_size=5), kids, max_size=3)
+    ),
+    max_leaves=8,
+)
+_cookie_key = st.one_of(st.text(max_size=8), _hostile_text)
+_dict_shape = st.dictionaries(_cookie_key, _json_any, max_size=5)
+_entry_shape = st.one_of(
+    _json_any,
+    st.fixed_dictionaries({"name": st.one_of(_cookie_key, _json_any), "value": _json_any}),
+)
+_list_shape = st.lists(_entry_shape, max_size=5)
+
+
+def _assert_clean(out: dict[str, str]) -> None:
+    assert out
+    for name, value in out.items():
+        assert type(name) is str and type(value) is str
+        assert name
+        for s in (name, value):
+            assert not any(c in s for c in "\r\n;")
+
+
+@given(st.one_of(_dict_shape, _list_shape, _json_any))
+def test_normalize_yields_clean_pairs_or_auth_error(payload: object) -> None:
+    try:
+        out = _normalize(payload, source="prop")
+    except AuthError:
+        return
+    _assert_clean(out)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"a": None},
+        {"a": {"x": 1}},
+        {"a": 1},
+        {"a": "v\r\nX-Injected: 1"},
+        {"a": "v;b=c"},
+        {"c\r\nX": "v"},
+        {"": "v"},
+        [{"name": "a", "value": None}],
+        [{"name": "a", "value": 1}],
+        [{"name": "a;b", "value": "v"}],
+    ],
+)
+def test_normalize_rejects_non_string_or_header_breaking(payload: object) -> None:
+    with pytest.raises(AuthError):
+        _normalize(payload, source="t")
+
+
+def test_normalize_error_omits_cookie_value() -> None:
+    with pytest.raises(AuthError) as ei:
+        _normalize({"a": "secret;x"}, source="t")
+    assert "secret" not in str(ei.value)
+
+
+# ---------- import_from_browser: rows pass the same gate ----------
+
+
+def _fake_rookiepy(monkeypatch: pytest.MonkeyPatch, rows: object) -> None:
+    mod = types.ModuleType("rookiepy")
+    mod.brave = lambda _domains: rows  # pyright: ignore[reportAttributeAccessIssue]
+    monkeypatch.setitem(sys.modules, "rookiepy", mod)
+
+
+def test_import_from_browser_saves_rows(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    _fake_rookiepy(monkeypatch, [{"name": "a", "value": "1", "domain": ".perplexity.ai"}])
+    dest = import_from_browser("brave")
+    assert json.loads(dest.read_text()) == {"a": "1"}
+
+
+def test_import_from_browser_refuses_bad_row(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    _fake_rookiepy(monkeypatch, [{"name": "a", "value": "x\r\ny"}])
+    with pytest.raises(AuthError):
+        import_from_browser("brave")
+    assert not default_cookies_path().exists()
+
+
+def test_import_from_browser_empty_says_sign_in(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    _fake_rookiepy(monkeypatch, [])
+    with pytest.raises(AuthError, match="sign in"):
+        import_from_browser("brave")

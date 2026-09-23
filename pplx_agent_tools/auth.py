@@ -1,3 +1,4 @@
+# pyright: strict
 """Cookie loading + perms enforcement for pplx-agent-tools.
 
 Resolution chain (first match wins):
@@ -10,6 +11,9 @@ Accepts two on-disk shapes:
   - Cookie-Editor array: [{"name": "...", "value": "...", "domain": "...", ...}, ...]
 
 Both are flattened to {name: value} for curl_cffi's session cookies kwarg.
+Every name and value must be a string that cannot split the Cookie header
+(no control characters or ';'; names also no '='). Anything else is refused
+with AuthError rather than coerced.
 
 Cookie files must be mode 0600. World-readable files are refused; group-readable
 files are auto-chmodded with a warning to stderr.
@@ -23,7 +27,7 @@ import stat
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import cast
 
 from .errors import AuthError
 
@@ -73,7 +77,7 @@ def load_cookies(profile: str | None = None) -> dict[str, str]:
 
     if inline := os.environ.get("PPLX_COOKIES"):
         try:
-            data = json.loads(inline)
+            data: object = json.loads(inline)
         except json.JSONDecodeError as e:
             raise AuthError(f"$PPLX_COOKIES is not valid JSON: {e.msg}") from e
         return _normalize(data, source="$PPLX_COOKIES")
@@ -129,7 +133,7 @@ def _load_from_file(path: Path) -> dict[str, str]:
     _enforce_perms(path)
     try:
         with path.open("r", encoding="utf-8") as fh:
-            data = json.load(fh)
+            data: object = json.load(fh)
     except OSError as e:
         raise AuthError(f"cookie file unreadable: {path}: {e.strerror}") from e
     except json.JSONDecodeError as e:
@@ -164,24 +168,47 @@ def _enforce_perms(path: Path) -> None:
             raise AuthError(f"could not tighten perms on cookie file: {path}: {e.strerror}") from e
 
 
-def _normalize(data: Any, *, source: str) -> dict[str, str]:
-    """Coerce flat-dict or Cookie-Editor-array into {name: value}.
+def _header_safe(s: str, *, extra: str = "") -> bool:
+    return not any(c in extra or c == ";" or ord(c) < 0x20 or ord(c) == 0x7F for c in s)
+
+
+def _cookie_pair(name: object, value: object, *, where: str) -> tuple[str, str]:
+    """The single gate every cookie passes before reaching the HTTP layer.
+
+    Errors name the location only, never the value: these are session secrets.
+    """
+    if not isinstance(name, str) or not name or not _header_safe(name, extra="="):
+        raise AuthError(
+            f"{where}: cookie name must be a non-empty string without ';', '=' or control characters"
+        )
+    if not isinstance(value, str) or not _header_safe(value):
+        raise AuthError(
+            f"{where}: value of cookie {name!r} must be a string without ';' or control characters"
+        )
+    return name, value
+
+
+def _normalize(data: object, *, source: str) -> dict[str, str]:
+    """Parse flat-dict or Cookie-Editor-array into {name: value}.
 
     `source` is used only in error messages to identify where the data came from.
-    Never include cookie values in errors — only the source label.
     """
+    flat: dict[str, str] = {}
     if isinstance(data, dict):
-        flat = {str(k): str(v) for k, v in data.items()}
+        for k, v in cast("dict[object, object]", data).items():
+            name, value = _cookie_pair(k, v, where=f"cookie data in {source}")
+            flat[name] = value
     elif isinstance(data, list):
-        flat = {}
-        for i, entry in enumerate(data):
+        for i, entry in enumerate(cast("list[object]", data)):
             if not isinstance(entry, dict):
                 raise AuthError(f"cookie entry {i} in {source} is not an object")
-            name = entry.get("name")
-            value = entry.get("value")
-            if not isinstance(name, str) or value is None:
+            fields = cast("dict[object, object]", entry)
+            if "name" not in fields or "value" not in fields:
                 raise AuthError(f"cookie entry {i} in {source} missing 'name' or 'value'")
-            flat[name] = str(value)
+            name, value = _cookie_pair(
+                fields["name"], fields["value"], where=f"cookie entry {i} in {source}"
+            )
+            flat[name] = value
     else:
         raise AuthError(
             f"cookie data in {source} must be an object or array, got {type(data).__name__}"
@@ -218,21 +245,15 @@ def import_from_browser(browser: str, profile: str | None = None) -> Path:
         )
 
     try:
-        rows = fn([_COOKIE_DOMAIN])
+        rows: object = fn([_COOKIE_DOMAIN])
     except Exception as e:
         raise AuthError(f"rookiepy.{browser} failed: {e}") from e
 
-    cookies: dict[str, str] = {}
-    for row in rows or []:
-        name = row.get("name")
-        value = row.get("value")
-        if isinstance(name, str) and value is not None:
-            cookies[name] = str(value)
-
-    if not cookies:
+    if not rows:
         raise AuthError(
             f"no cookies for *.{_COOKIE_DOMAIN} in {browser}; "
             f"sign in at perplexity.ai in {browser} first"
         )
+    cookies = _normalize(rows, source=f"rookiepy.{browser}")
 
     return save_cookies(cookies, profile=profile)
