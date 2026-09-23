@@ -497,7 +497,7 @@ def test_non_timeout_transport_error_after_content_exits_network(
 def test_hard_cap_with_data_still_flowing_returns_a_deadline_partial(
     clock: _Clock, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    client = _StreamClient([(60, _snapshot(f"report v{i}")) for i in range(40)], clock)
+    client = _StreamClient([(60, _snapshot(f"report v{i}")) for i in range(70)], clock)
     rc = _run_cli(monkeypatch, cli_research.main, ["q"], client)
     cap = capsys.readouterr()
     assert rc == EXIT_PARTIAL

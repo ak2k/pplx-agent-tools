@@ -20,9 +20,9 @@ from .verbs._ask_common import DEFAULT_STALL_SECONDS
 from .verbs.research import DEFAULT_MODE, ResearchResult, research
 
 # A hard cap, not the expected duration: a focused question finishes in
-# ~90-120s but a broad one runs for many minutes, and a hung backend is caught
-# by the stall guard long before this.
-_DEFAULT_TIMEOUT_SECONDS = 1800.0
+# ~90-120s but a broad one can run past 30 minutes, and a hung backend is
+# caught by the stall guard long before this.
+_DEFAULT_TIMEOUT_SECONDS = 3600.0
 
 
 def build_parser() -> argparse.ArgumentParser:
