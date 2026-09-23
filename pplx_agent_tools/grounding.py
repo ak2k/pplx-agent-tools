@@ -43,8 +43,11 @@ from .verbs._ask_common import Source
 # supported. Snippets are ~200-character excerpts, so a genuine answer routinely
 # carries terms absent from them (live answers measured 31-52% supported, and a
 # long 50-term table 16%); three independently confirmed terms are real
-# evidence however many more the snippets could not hold. A single incidental
-# overlap must still not clear an otherwise unsupported five-term row.
+# evidence however many more the snippets could not hold. Figures echoed from
+# the query count toward the fraction but not the floor: sources about the
+# subject carry them, so an answer could restate three and fabricate the rest.
+# A single incidental overlap must still not clear an otherwise unsupported
+# five-term row.
 MIN_SUPPORTED_FRACTION = Decimal("0.2")
 MIN_SUPPORTED_TERMS = 3
 
@@ -121,6 +124,8 @@ class _Figure:
 class _FigureTerm:
     term: Term
     figure: _Figure
+    # The query states the same value.
+    echoed: bool
 
 
 @dataclass(frozen=True)
@@ -130,16 +135,24 @@ class _NameTerm:
     fallback: str | None
 
 
-def _supported_enough(checked: int, ungrounded: int) -> bool:
-    supported = checked - ungrounded
-    return supported >= MIN_SUPPORTED_TERMS or Decimal(supported) > MIN_SUPPORTED_FRACTION * checked
+def _supported_enough(
+    checked: tuple[Term, ...], ungrounded: tuple[Term, ...], echoed: tuple[Term, ...]
+) -> bool:
+    supported = len(checked) - len(ungrounded)
+    novel_supported = len(set(checked) - set(ungrounded) - set(echoed))
+    return novel_supported >= MIN_SUPPORTED_TERMS or Decimal(
+        supported
+    ) > MIN_SUPPORTED_FRACTION * len(checked)
 
 
-def _validate_terms(checked: tuple[Term, ...], ungrounded: tuple[Term, ...]) -> None:
+def _validate_terms(
+    checked: tuple[Term, ...], ungrounded: tuple[Term, ...], echoed: tuple[Term, ...]
+) -> None:
     if not checked or len(set(checked)) != len(checked):
         raise ValueError("checked_terms must be non-empty and distinct")
-    if not set(ungrounded) <= set(checked) or len(set(ungrounded)) != len(ungrounded):
-        raise ValueError("ungrounded_terms must be distinct checked terms")
+    for name, subset in (("ungrounded_terms", ungrounded), ("echoed_terms", echoed)):
+        if not set(subset) <= set(checked) or len(set(subset)) != len(subset):
+            raise ValueError(f"{name} must be distinct checked terms")
 
 
 @dataclass(frozen=True)
@@ -149,11 +162,13 @@ class Grounded:
     checked_terms: tuple[Term, ...]
     # Checked terms found in no source's title or snippet.
     ungrounded_terms: tuple[Term, ...]
+    # Checked figures the query also states.
+    echoed_terms: tuple[Term, ...] = ()
     tag: Literal["grounded"] = field(default="grounded", init=False)
 
     def __post_init__(self) -> None:
-        _validate_terms(self.checked_terms, self.ungrounded_terms)
-        if not _supported_enough(len(self.checked_terms), len(self.ungrounded_terms)):
+        _validate_terms(self.checked_terms, self.ungrounded_terms, self.echoed_terms)
+        if not _supported_enough(self.checked_terms, self.ungrounded_terms, self.echoed_terms):
             raise ValueError("too few supported terms for a grounded verdict")
 
 
@@ -164,17 +179,18 @@ class Ungrounded:
     reasons: tuple[UngroundedReason, ...]
     checked_terms: tuple[Term, ...]
     ungrounded_terms: tuple[Term, ...]
+    echoed_terms: tuple[Term, ...] = ()
     tag: Literal["ungrounded"] = field(default="ungrounded", init=False)
 
     def __post_init__(self) -> None:
-        _validate_terms(self.checked_terms, self.ungrounded_terms)
+        _validate_terms(self.checked_terms, self.ungrounded_terms, self.echoed_terms)
         if not self.reasons or len(set(self.reasons)) != len(self.reasons):
             raise ValueError("reasons must be non-empty and distinct")
         if "no_sources" in self.reasons:
             if self.reasons != ("no_sources",) or self.ungrounded_terms != self.checked_terms:
                 raise ValueError("with no sources, every checked term is ungrounded")
             return
-        low = not _supported_enough(len(self.checked_terms), len(self.ungrounded_terms))
+        low = not _supported_enough(self.checked_terms, self.ungrounded_terms, self.echoed_terms)
         if low != ("low_support" in self.reasons):
             raise ValueError("low_support must match the supported fraction")
 
@@ -343,10 +359,12 @@ def _extract_terms(answer: str, query: str) -> list[_FigureTerm | _NameTerm]:
     """The answer's checkable terms, figures first, each once."""
     text = _clean_markdown(answer)
     query_words = _words(query)
+    query_values = {f.value for f in _parse_figures(query)}
     figures: dict[Decimal, _FigureTerm] = {}
     for fig in _parse_figures(text):
         if _is_checkable_figure(fig):
-            figures.setdefault(fig.value, _FigureTerm(_term(fig.text), fig))
+            echoed = fig.value in query_values
+            figures.setdefault(fig.value, _FigureTerm(_term(fig.text), fig, echoed))
     names: dict[str, _NameTerm] = {}
     for name, fallback in _extract_names(text):
         if not _words(name) <= query_words:
@@ -360,8 +378,9 @@ def check_grounding(answer: str, query: str, sources: Sequence[Source]) -> Groun
     if not terms:
         return Unchecked("no_checkable_terms")
     checked = tuple(t.term for t in terms)
+    echoed = tuple(t.term for t in terms if isinstance(t, _FigureTerm) and t.echoed)
     if not sources:
-        return Ungrounded(("no_sources",), checked, checked)
+        return Ungrounded(("no_sources",), checked, checked, echoed)
 
     evidence = " \n ".join(f"{s.title or ''} \n {s.snippet or ''}" for s in sources)
     # Small counts ("Top 4 wines") are everywhere in titles and would
@@ -383,8 +402,8 @@ def check_grounding(answer: str, query: str, sources: Sequence[Source]) -> Groun
     reasons: list[UngroundedReason] = []
     if all(_is_site_root(s.url) for s in sources):
         reasons.append("site_roots")
-    if not _supported_enough(len(checked), len(ungrounded)):
+    if not _supported_enough(checked, ungrounded, echoed):
         reasons.append("low_support")
     if reasons:
-        return Ungrounded(tuple(reasons), checked, ungrounded)
-    return Grounded(checked, ungrounded)
+        return Ungrounded(tuple(reasons), checked, ungrounded, echoed)
+    return Grounded(checked, ungrounded, echoed)

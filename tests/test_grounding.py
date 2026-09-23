@@ -14,6 +14,7 @@ from pplx_agent_tools import grounding
 from pplx_agent_tools.grounding import (
     Grounded,
     Grounding,
+    Term,
     Unchecked,
     Ungrounded,
     _clean_markdown,
@@ -325,6 +326,20 @@ def test_three_supported_terms_ground_a_long_answer() -> None:
     assert isinstance(check_grounding(_figures_answer(50), "q", _snippet_with(3)), Grounded)
 
 
+def test_query_echoes_do_not_reach_the_absolute_floor() -> None:
+    """Restated query figures the sources contain still count toward the
+    fraction, but not toward the three-term floor."""
+    query = "Was revenue $100 million in 2023, with 5,000 staff?"
+    answer = "Yes: $100 million in 2023 with 5,000 staff. " + _figures_answer(20)
+    sources = [Source("https://x.test/a", "t", "revenue $100 million in 2023, 5,000 staff")]
+    g = check_grounding(answer, query, sources)
+    assert isinstance(g, Ungrounded)
+    assert g.reasons == ("low_support",)
+    assert len(g.checked_terms) == 23
+    assert len(g.ungrounded_terms) == 20
+    assert g.echoed_terms == ("$100 million", "2023", "5,000")
+
+
 def test_two_supported_terms_do_not_ground_a_long_answer() -> None:
     g = check_grounding(_figures_answer(50), "q", _snippet_with(2))
     assert isinstance(g, Ungrounded)
@@ -426,6 +441,11 @@ def test_verdicts_reject_contradictory_fields() -> None:
     ):
         with pytest.raises(ValueError):
             bad()
+    with pytest.raises(ValueError):
+        Grounded(long, long[3:], echoed_terms=long[:1])
+    with pytest.raises(ValueError):
+        Grounded(long, long[3:], echoed_terms=(Term("not checked"),))
+    assert Ungrounded(("low_support",), long, long[3:], echoed_terms=long[:1]).tag == "ungrounded"
     assert Grounded(long, long[3:]).tag == "grounded"
     assert Ungrounded(("low_support",), long, long[2:]).tag == "ungrounded"
     assert Grounded(terms, terms[:1]).tag == "grounded"
