@@ -155,6 +155,12 @@ strict = [
     "pplx_agent_tools/cli_runner.py",
     "pplx_agent_tools/errors.py",
     "pplx_agent_tools/netguard.py",
+    # Decoders of untrusted JSON: strict here is a proof only because the inputs
+    # are `object`/`JsonValue`, never `Any` (which strict accepts silently).
+    "pplx_agent_tools/jsonval.py",
+    "pplx_agent_tools/verbs/search.py",
+    "pplx_agent_tools/verbs/quota.py",
+    "pplx_agent_tools/verbs/models.py",
 ]
 # Third-party deps without stubs: curl_cffi (Rust bindings), rookiepy (Rust),
 # trafilatura (older lib, no inline annotations). Silence stub-missing noise
