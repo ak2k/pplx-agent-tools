@@ -307,6 +307,31 @@ def test_low_support_fraction_threshold() -> None:
     assert isinstance(check_grounding(answer, "q", two_of_five), Grounded)
 
 
+def _figures_answer(n: int) -> str:
+    return "Figures: " + ", ".join(str(1000 + 7 * i) for i in range(n)) + "."
+
+
+def _snippet_with(n: int) -> list[Source]:
+    return [Source("https://x.test/a", "t", " ".join(str(1000 + 7 * i) for i in range(n)))]
+
+
+def test_three_supported_terms_ground_a_long_answer() -> None:
+    """Short snippets cannot hold every figure of a long table, so several
+    confirmed terms ground it even below one in five."""
+    g = check_grounding(_figures_answer(50), "q", _snippet_with(8))
+    assert isinstance(g, Grounded)
+    assert len(g.checked_terms) == 50
+    assert len(g.ungrounded_terms) == 42
+    assert isinstance(check_grounding(_figures_answer(50), "q", _snippet_with(3)), Grounded)
+
+
+def test_two_supported_terms_do_not_ground_a_long_answer() -> None:
+    g = check_grounding(_figures_answer(50), "q", _snippet_with(2))
+    assert isinstance(g, Ungrounded)
+    assert g.reasons == ("low_support",)
+    assert len(g.ungrounded_terms) == 48
+
+
 def test_one_incidental_small_number_does_not_ground_a_fabricated_row() -> None:
     sources = [Source("https://www.vivino.com/toplists/x", "Top 4 wines", "Buy wine online")]
     g = check_grounding(_CAPARZO_ANSWER, _CAPARZO_QUERY, sources)
@@ -391,6 +416,18 @@ def test_verdicts_reject_contradictory_fields() -> None:
     ):
         with pytest.raises(ValueError):
             bad()
+    no_sources = check_grounding(_figures_answer(50), "q", [])
+    assert isinstance(no_sources, Ungrounded)
+    long = no_sources.checked_terms
+    for bad in (
+        # 3 of 50 supported: under one in five but at the absolute floor.
+        lambda: Ungrounded(("low_support",), long, long[3:]),
+        lambda: Grounded(long, long[2:]),
+    ):
+        with pytest.raises(ValueError):
+            bad()
+    assert Grounded(long, long[3:]).tag == "grounded"
+    assert Ungrounded(("low_support",), long, long[2:]).tag == "ungrounded"
     assert Grounded(terms, terms[:1]).tag == "grounded"
     assert Ungrounded(("site_roots",), terms, ()).tag == "ungrounded"
     assert Unchecked("disabled").tag == "unchecked"

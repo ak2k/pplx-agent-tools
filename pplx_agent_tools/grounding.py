@@ -39,12 +39,14 @@ from urllib.parse import urlsplit
 
 from .verbs._ask_common import Source
 
-# At or below one in five terms supported, the answer counts as ungrounded.
-# Snippets are ~200-character excerpts, so a genuine answer routinely carries
-# terms absent from them (live answers measured 31-52% supported) and a
-# stricter bar would flag real answers; but a single incidental overlap must
-# not clear an otherwise unsupported five-term row of figures.
+# Ungrounded when at most one in five terms AND fewer than three terms are
+# supported. Snippets are ~200-character excerpts, so a genuine answer routinely
+# carries terms absent from them (live answers measured 31-52% supported, and a
+# long 50-term table 16%); three independently confirmed terms are real
+# evidence however many more the snippets could not hold. A single incidental
+# overlap must still not clear an otherwise unsupported five-term row.
 MIN_SUPPORTED_FRACTION = Decimal("0.2")
+MIN_SUPPORTED_TERMS = 3
 
 UngroundedReason = Literal["no_sources", "site_roots", "low_support"]
 UncheckedReason = Literal["disabled", "no_checkable_terms"]
@@ -129,7 +131,8 @@ class _NameTerm:
 
 
 def _supported_enough(checked: int, ungrounded: int) -> bool:
-    return Decimal(checked - ungrounded) > MIN_SUPPORTED_FRACTION * checked
+    supported = checked - ungrounded
+    return supported >= MIN_SUPPORTED_TERMS or Decimal(supported) > MIN_SUPPORTED_FRACTION * checked
 
 
 def _validate_terms(checked: tuple[Term, ...], ungrounded: tuple[Term, ...]) -> None:
