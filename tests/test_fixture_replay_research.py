@@ -47,6 +47,7 @@ import pytest
 
 from pplx_agent_tools.verbs._ask_common import event_marks_completed
 from pplx_agent_tools.verbs.research import decode_research_text, research
+from tests._account_metadata import account_values
 from tests._doubles import _TestClientBase
 
 FIXTURES = Path(__file__).parent / "fixtures" / "research"
@@ -440,6 +441,27 @@ def test_sanitizer_keeps_every_cited_final_source() -> None:
     assert final_web("no citations yet") == web[: san.MAX_WEB_RESULTS]
 
 
+@pytest.mark.parametrize(
+    ("answer", "highest"),
+    [
+        ("plain [2] and [17]", 17),
+        ("grouped [3, 18]", 18),
+        ("ranged [12-19]", 19),
+        ("en-dash range [12\u201320]", 20),
+        ("footnote [^21]", 21),
+        ("web-prefixed [web:22] and [web:4]", 22),
+        ("lenticular \u301023\u3011", 23),
+        ("lenticular with a tail \u301024\u2020L30-L39\u3011", 24),
+        ("mixed [2] [web:13] \u301016\u3011 [11, 15]", 16),
+        ("not citations: [x], [12a], a[b]", 0),
+    ],
+)
+def test_sanitizer_citation_forms_drive_the_cap(answer: str, highest: int) -> None:
+    san = _sanitizer()
+    blocks = [{"step_type": "FINAL", "content": {"answer": json.dumps({"answer": answer})}}]
+    assert san._max_citation(blocks) == highest
+
+
 def test_sanitizer_caps_repeated_steps_but_not_the_answer() -> None:
     san = _sanitizer()
     steps = [{"step_type": "THOUGHT", "content": {"n": i}} for i in range(9)]
@@ -473,14 +495,33 @@ def test_committed_fixtures_carry_no_account_metadata(
     weather_fixture: Path, ocio_fixture: Path
 ) -> None:
     san = _sanitizer()
+    seen = 0
     for path in (weather_fixture, ocio_fixture):
         for payload in _payloads(path):
-            for parent in ("_extras", "telemetry_data"):
-                meta = payload.get(parent) if isinstance(payload, dict) else None
-                if not isinstance(meta, dict):
-                    continue
-                for key in san.ACCOUNT_KEYS:
-                    assert meta.get(key) in (None, san.SENTINEL_ACCOUNT_VALUE), (path, key)
+            for parent, key, value in account_values(payload, san.ACCOUNT_KEYS):
+                assert value in (None, san.SENTINEL_ACCOUNT_VALUE), (path.name, parent, key)
+                seen += 1
+    assert seen, "the walk found no account metadata at all; it is not looking"
+
+
+def test_sanitizer_redacts_account_metadata_inside_embedded_json() -> None:
+    """`text` is a JSON string, and FINAL's `content.answer` a JSON string inside
+    it; a copy of the metadata there is invisible to a top-level check."""
+    san = _sanitizer()
+    real = {"subscription_tier": "max", "payment_tier": "paid", "country": "US"}
+    inner = {"answer": "a [1]", "_extras": real}
+    blocks = [
+        {"step_type": "THOUGHT", "content": {"telemetry_data": {"country": "US"}}},
+        {"step_type": "FINAL", "content": {"answer": json.dumps(inner)}},
+    ]
+    payload = {"_extras": real, "text": json.dumps(blocks)}
+    assert len(list(account_values(payload, san.ACCOUNT_KEYS))) == 7
+
+    out = san._scrub_payload(payload)
+
+    found = list(account_values(out, san.ACCOUNT_KEYS))
+    assert len(found) == 7
+    assert {value for _, _, value in found} == {san.SENTINEL_ACCOUNT_VALUE}
 
 
 def test_sentinels_match_sanitizer_script() -> None:

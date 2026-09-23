@@ -49,6 +49,7 @@ from pplx_agent_tools.errors import (
     exit_code,
 )
 from pplx_agent_tools.verbs.fetch import _fetch_with_prompt
+from tests._account_metadata import account_values
 from tests._doubles import _TestClientBase
 
 FIXTURES = Path(__file__).parent / "fixtures" / "fetch-url"
@@ -330,17 +331,29 @@ def test_scrub_redacts_account_metadata(sanitizer: ModuleType) -> None:
 
 
 def test_committed_fixtures_carry_no_account_metadata(sanitizer: ModuleType) -> None:
+    seen = 0
     for path in sorted(FIXTURES.glob("*.events.jsonl")):
         for line in path.read_text().splitlines():
             if not line.strip():
                 continue
-            event = json.loads(line)
-            for parent in ("_extras", "telemetry_data"):
-                meta = event.get(parent)
-                if not isinstance(meta, dict):
-                    continue
-                for key in sanitizer.ACCOUNT_KEYS:
-                    assert meta.get(key) in (None, SENTINEL_REDACTED), (path.name, parent, key)
+            for parent, key, value in account_values(json.loads(line), sanitizer.ACCOUNT_KEYS):
+                assert value in (None, SENTINEL_REDACTED), (path.name, parent, key)
+                seen += 1
+    assert seen, "the walk found no account metadata at all; it is not looking"
+
+
+def test_scrub_redacts_account_metadata_inside_embedded_json(sanitizer: ModuleType) -> None:
+    """`text` is a JSON document serialized into a string; a copy of the
+    metadata there is invisible to a top-level check."""
+    real = {"subscription_tier": "max", "payment_tier": "paid", "country": "US"}
+    event = {"text": json.dumps({"_extras": real, "telemetry_data": {"country": "US"}})}
+    assert len(list(account_values(event, sanitizer.ACCOUNT_KEYS))) == 4
+
+    out = sanitizer._scrub_node(event)
+
+    found = list(account_values(out, sanitizer.ACCOUNT_KEYS))
+    assert len(found) == 4
+    assert {value for _, _, value in found} == {SENTINEL_REDACTED}
 
 
 def test_scrub_preserves_settings_and_shape(sanitizer: ModuleType) -> None:

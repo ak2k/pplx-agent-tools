@@ -108,7 +108,11 @@ ANSWER_STEPS = {"FINAL", "RESEARCH_ANSWER"}
 ACCOUNT_KEYS = ("subscription_tier", "payment_tier", "country")
 SENTINEL_ACCOUNT_VALUE = "REDACTED"
 _ACCOUNT_METADATA_PARENTS = {"_extras", "telemetry_data"}
-_CITATION_RE = re.compile(r"\[(\d+)\]")
+# `[3]`, `[^3]`, `[web:3]`, grouped `[3, 5]`, ranged `[3-5]` (hyphen or en dash), and
+# `【3】` / `【3†source】`, whose tail after the index is not a citation.
+_CITATION_RE = re.compile(
+    r"\[(?:\^|web:)?(\d+(?:\s*[,\u2013-]\s*\d+)*)\]|\u3010(\d+)[^\u3011\n]{0,40}\u3011"
+)
 
 
 def _scrub_string(value: str) -> str:
@@ -279,7 +283,12 @@ def _answer_parts(blocks: list[Any]) -> tuple[list[str], list[str]]:
 
 def _max_citation(blocks: list[Any]) -> int:
     cover, bodies = _answer_parts(blocks)
-    return max((int(n) for n in _CITATION_RE.findall("\n".join(cover + bodies))), default=0)
+    indices = [
+        int(n)
+        for bracket, lenticular in _CITATION_RE.findall("\n".join(cover + bodies))
+        for n in re.findall(r"\d+", bracket or lenticular)
+    ]
+    return max(indices, default=0)
 
 
 def _measure(payload: Any) -> tuple[int, int]:
