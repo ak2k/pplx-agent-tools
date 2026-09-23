@@ -6,16 +6,16 @@ Stateless GETs against /rest/models/{config,modes}. Surfaces what `--model` /
 
 from __future__ import annotations
 
-import argparse
 from collections.abc import Sequence
 
 from .cli_runner import run_verb
+from .cli_types import PplxArgumentParser
 from .render import render_models_json, render_models_text
 from .verbs.models import models
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+def build_parser() -> PplxArgumentParser:
+    parser = PplxArgumentParser(
         prog="pplx models",
         description="List Perplexity models, modes, and the default model per mode.",
     )

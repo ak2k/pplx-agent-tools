@@ -14,6 +14,8 @@ from collections.abc import Sequence
 from importlib.resources import files
 from pathlib import Path
 
+from .cli_types import PplxArgumentParser
+
 
 def find_skill_path() -> Path | None:
     """Find SKILL.md across install modes.
@@ -35,9 +37,16 @@ def find_skill_path() -> Path | None:
     return None
 
 
+def build_parser() -> PplxArgumentParser:
+    return PplxArgumentParser(
+        prog="pplx skill-path",
+        description="Print the absolute path to the bundled SKILL.md.",
+    )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
-    """Print SKILL.md path. Ignores argv (no flags needed)."""
-    del argv  # accept-and-ignore matches the other verb mains' signature
+    """Print SKILL.md path."""
+    build_parser().parse_args(argv)
     path = find_skill_path()
     if path is None:
         print(

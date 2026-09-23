@@ -8,21 +8,23 @@ dedupes results.
 
 from __future__ import annotations
 
-import argparse
 from collections.abc import Sequence
 
 from .cli_runner import run_verb
+from .cli_types import PplxArgumentParser, positive_int
 from .render import render_search_json, render_search_text
 from .verbs.search import search_many
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+def build_parser() -> PplxArgumentParser:
+    parser = PplxArgumentParser(
         prog="pplx search",
         description="Search Perplexity using your Pro subscription's web session.",
     )
     parser.add_argument("query", nargs="+", help="one or more search queries")
-    parser.add_argument("-n", "--limit", type=int, default=10, help="result count (default: 10)")
+    parser.add_argument(
+        "-n", "--limit", type=positive_int, default=10, help="result count (default: 10)"
+    )
     parser.add_argument("-j", "--json", action="store_true", help="output JSON")
     parser.add_argument(
         "--profile",

@@ -179,14 +179,13 @@ def fetch(
     `progress`, when True, emits a single stderr char every N SSE events
     in `--prompt` mode so concurrent backgrounded calls show liveness.
     """
-    domain = urlparse(url).netloc or "(unknown)"
     if prompt is None:
-        return fetch_page(url, domain, max_chars=max_chars)
+        return fetch_plain(url, max_chars=max_chars)
     return _fetch_with_prompt(
         client,
         url,
         prompt,
-        domain,
+        _domain(url),
         max_chars=max_chars,
         keep_thread=keep_thread,
         timeout=timeout,
@@ -194,6 +193,15 @@ def fetch(
         progress=progress,
         model=model,
     )
+
+
+def _domain(url: str) -> str:
+    return urlparse(url).netloc or "(unknown)"
+
+
+def fetch_plain(url: str, *, max_chars: int | None = None) -> FetchResult:
+    """Plain-mode fetch. Takes no Client: it never sends Perplexity cookies."""
+    return fetch_page(url, _domain(url), max_chars=max_chars)
 
 
 def fetch_page(

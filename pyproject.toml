@@ -149,6 +149,7 @@ include = ["pplx_agent_tools", "tests"]
 exclude = ["re-fixtures", "**/__pycache__"]
 pythonVersion = "3.10"
 typeCheckingMode = "standard"
+strict = ["pplx_agent_tools/cli_types.py", "pplx_agent_tools/cli_runner.py"]
 # Third-party deps without stubs: curl_cffi (Rust bindings), rookiepy (Rust),
 # trafilatura (older lib, no inline annotations). Silence stub-missing noise
 # rather than burn time chasing it.

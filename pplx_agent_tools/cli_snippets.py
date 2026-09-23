@@ -6,10 +6,10 @@ verbs/snippets.py and docs/wire/snippets.md for the rationale.
 
 from __future__ import annotations
 
-import argparse
 from collections.abc import Sequence
 
 from .cli_runner import run_verb
+from .cli_types import PplxArgumentParser, positive_int
 from .render import render_snippets_json, render_snippets_text
 from .verbs.snippets import (
     DEFAULT_EMBED_MODEL,
@@ -19,8 +19,8 @@ from .verbs.snippets import (
 )
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+def build_parser() -> PplxArgumentParser:
+    parser = PplxArgumentParser(
         prog="pplx snippets",
         description=(
             "Fetch N URLs and extract query-relevant paragraphs from each "
@@ -31,13 +31,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("url", nargs="+", help="one or more URLs")
     parser.add_argument(
         "--max-tokens",
-        type=int,
+        type=positive_int,
         default=DEFAULT_MAX_TOKENS,
         help=f"total token budget across all snippets (default: {DEFAULT_MAX_TOKENS})",
     )
     parser.add_argument(
         "--max-tokens-per-page",
-        type=int,
+        type=positive_int,
         default=DEFAULT_MAX_TOKENS_PER_PAGE,
         help=f"per-URL token budget (default: {DEFAULT_MAX_TOKENS_PER_PAGE})",
     )
