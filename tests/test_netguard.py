@@ -218,6 +218,9 @@ def test_literal_host_is_checked_without_the_resolver(monkeypatch: pytest.Monkey
         ("not a url", "not a url"),
         ("u:p@host.test/x", "host.test/x"),
         ("host.test/?q=a@b", "host.test/?q=a@b"),
+        ("https://medium.com/@user", "https://medium.com/@user"),
+        ("http://u:pa/ss@host.test/x", "http://host.test/x"),
+        ("http://u:pa?s#s@host.test/x", "http://host.test/x"),
     ],
 )
 def test_redact_drops_only_userinfo(url: str, shown: str) -> None:

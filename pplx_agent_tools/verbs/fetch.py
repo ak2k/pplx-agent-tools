@@ -21,7 +21,7 @@ from __future__ import annotations
 import sys
 from dataclasses import dataclass, field
 from typing import Any
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urlparse
 
 from curl_cffi import requests as cf_requests
 
@@ -32,7 +32,7 @@ from ..errors import (
     SchemaError,
     TargetHttpError,
 )
-from ..netguard import PublicUrl, check_url, redact
+from ..netguard import PublicUrl, check_url, join_location, redact, refuse_hidden_password
 from ..wire import Client
 from ._ask_common import (
     AskStreamState,
@@ -77,7 +77,7 @@ def _get_guarded(
         resp = _fetch_hop(session, check_url(current), timeout=timeout)
         location = resp.headers.get("location")
         if resp.status_code in _REDIRECT_CODES and location:
-            current = urljoin(current, location)
+            current = join_location(current, location)
             continue
         return resp
     raise TargetHttpError(f"fetch {redact(url)}: exceeded {_MAX_REDIRECTS} redirects")
@@ -135,6 +135,7 @@ def fetch(
     """
     if prompt is None:
         return fetch_plain(url, max_chars=max_chars)
+    refuse_hidden_password(url)
     shown = redact(url)
     if shown != url:
         print("pplx fetch: removed credentials from the URL sent to Perplexity", file=sys.stderr)

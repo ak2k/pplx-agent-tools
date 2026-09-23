@@ -11,6 +11,8 @@ the tests run offline and exercise the resolved-address path.
 
 from __future__ import annotations
 
+import contextlib
+import io
 import ipaddress
 import json
 import re
@@ -19,6 +21,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from hypothesis import HealthCheck, given, settings
+from hypothesis import strategies as st
 
 from pplx_agent_tools import cli_fetch, cli_runner, errors
 from pplx_agent_tools.errors import EXIT_GENERIC, AuthError, PplxError, exit_code
@@ -285,6 +289,46 @@ def test_userinfo_is_not_in_error_messages(monkeypatch: pytest.MonkeyPatch, stat
     with pytest.raises(PplxError) as ei:
         fetch_page(f"http://user:secret@{HOST}/", HOST, max_chars=None, session=sess)  # type: ignore[arg-type]
     assert "secret" not in str(ei.value) and "user" not in str(ei.value)
+
+
+# RFC 3986 ends the authority at the first '/', '?' or '#', so a password
+# holding one unencoded reads as host "user" and a port. The prefix is a marker
+# no generated text can produce by accident.
+_USER = st.text(st.characters(blacklist_characters="/?#", blacklist_categories=("Cs",)))
+_PASSWORD = st.builds(
+    lambda a, d, b: f"S3cr{a}{d}{b}",
+    st.text(st.characters(blacklist_categories=("Cs",))),
+    st.sampled_from("/?#"),
+    st.text(st.characters(blacklist_categories=("Cs",))),
+)
+
+
+@pytest.mark.usefixtures("_no_cookies")
+@settings(suppress_health_check=[HealthCheck.function_scoped_fixture], deadline=None)
+@given(user=_USER, password=_PASSWORD, as_json=st.booleans())
+def test_password_with_a_delimiter_is_refused_and_never_shown(
+    user: str, password: str, as_json: bool
+) -> None:
+    url = f"http://{user}:{password}@example.com/"
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        code = cli_fetch.main(["--json", url] if as_json else [url])
+    assert code == EXIT_GENERIC
+    for stream in (out.getvalue(), err.getvalue()):
+        assert "S3cr" not in stream, stream
+    if as_json:
+        assert json.loads(out.getvalue())["error"]["type"] == "BlockedUrlError"
+
+
+def test_numeric_password_with_a_delimiter_is_refused_before_dns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # "user:1234" is a valid host and port, so only the later '@' shows the password.
+    _stub_dns(monkeypatch, {})
+    with pytest.raises(PplxError) as ei:
+        fetch_page("http://user:1234/x@example.com/", "example.com", max_chars=None)
+    assert isinstance(ei.value, errors.BlockedUrlError), repr(ei.value)
+    assert "1234" not in str(ei.value)
 
 
 def test_userinfo_is_not_in_refusal_messages() -> None:

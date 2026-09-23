@@ -627,3 +627,25 @@ def test_prompt_mode_without_userinfo_prints_no_note(capsys: pytest.CaptureFixtu
     fetch(client, "https://example.com/a@b", prompt="summarize")
     assert "For URL: https://example.com/a@b" in client.bodies[0]["query_str"]
     assert capsys.readouterr().err == ""
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://user:S3cr/et@example.com/",
+        "http://user:S3cr?et@example.com/",
+        "http://user:S3cr#et@example.com/",
+        "https://user:1234/S3cr@example.com/",
+        "user:S3cr/et@example.com/",
+    ],
+)
+def test_prompt_mode_refuses_a_password_with_a_delimiter(
+    capsys: pytest.CaptureFixture[str], url: str
+) -> None:
+    client = _BodyRecordingClient([_ev([_block("ask_text", ["ok"])], status="COMPLETED")])
+    with pytest.raises(BlockedUrlError) as ei:
+        fetch(client, url, prompt="summarize")
+    assert client.bodies == []
+    assert "S3cr" not in str(ei.value)
+    captured = capsys.readouterr()
+    assert "S3cr" not in captured.out + captured.err

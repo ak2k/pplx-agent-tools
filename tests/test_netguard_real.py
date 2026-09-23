@@ -51,7 +51,8 @@ class _Counter(BaseHTTPRequestHandler):
         self.hits.append(self.path)
         if self.location is not None:
             self.send_response(302)
-            self.send_header("Location", self.location)
+            # send_header writes latin-1, so this puts the raw UTF-8 bytes on the wire.
+            self.send_header("Location", self.location.encode().decode("latin-1"))
         else:
             self.send_response(200)
         body = b"<html><body><p>INTERNAL</p></body></html>"
@@ -138,6 +139,34 @@ def test_numeric_redirect_targets_are_refused_before_connecting(
         with pytest.raises(PplxError) as ei:
             fetch_page(f"http://[::1]:{origin.port}/start", "[::1]", max_chars=None)
         assert isinstance(ei.value, BlockedUrlError), repr(ei.value)
+        assert origin.hits == ["/start"]
+        assert loopback.hits == []
+    finally:
+        origin.close()
+
+
+# Each is malformed or hostless once joined to the first hop's URL; the first
+# two made urljoin raise, which surfaced as a retryable NetworkError.
+MALFORMED_LOCATIONS = [
+    "http://127.0.0.1\uff1a{port}/hit",
+    "http://[::1]:{port}@1.1.1.1/hit",
+    "http://u:pw@127.0.0.1\uff1a{port}/hit",
+    "http:///hit",
+    "http://:{port}/hit",
+    "http://@/hit",
+]
+
+
+@pytest.mark.usefixtures("ipv6_origin_allowed")
+@pytest.mark.parametrize("location", MALFORMED_LOCATIONS)
+def test_malformed_redirect_location_is_a_refusal(loopback: _Server, location: str) -> None:
+    origin = _Server(socket.AF_INET6, "::1", location.format(port=loopback.port))
+    try:
+        with pytest.raises(PplxError) as ei:
+            fetch_page(f"http://[::1]:{origin.port}/start", "[::1]", max_chars=None)
+        assert isinstance(ei.value, BlockedUrlError), repr(ei.value)
+        assert exit_code(ei.value) == 1
+        assert "pw" not in str(ei.value)
         assert origin.hits == ["/start"]
         assert loopback.hits == []
     finally:
