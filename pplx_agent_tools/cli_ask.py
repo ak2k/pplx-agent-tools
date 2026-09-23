@@ -15,20 +15,14 @@ from collections.abc import Sequence
 from .cli_runner import resolve_model, resolve_timeout, run_verb
 from .errors import EXIT_OK, EXIT_PARTIAL
 from .render import render_ask_json, render_ask_text
-from .verbs._ask_common import DEFAULT_STALL_SECONDS
+from .verbs._ask_common import COPILOT_STALL_SECONDS
 from .verbs.ask import DEFAULT_MODEL, AskResult, ask
 
-# Sized for a thinking model, not for `turbo`. `turbo` answers in ~5-15 s; the
-# reasoning variants (`claude50opusthinking` et al., often pinned via
-# $PPLX_MODEL) measured 30-86 s over a 6-question sample, and a separate run
-# streamed for 147 s before returning an empty answer. So the backend does
-# exceed 120 s, and the old ceiling left only ~1.4x headroom over the observed
-# max — thin for a hang guard. 180 s matches `fetch --prompt`, the other
-# LLM-routed streaming verb. Deliberately not `research`'s long cap: nothing in
-# the sample justifies it, and the deadline is also what bounds the wait on a
-# degenerate no-answer stream. Tighten per call with --timeout /
-# $PPLX_ASK_TIMEOUT when a caller needs a real latency bound.
-_DEFAULT_TIMEOUT_SECONDS = 180.0
+# A hard cap, not the expected duration. A thinking model on a long multi-part
+# prompt can think for minutes and answer at ~5 min, so a tight cap turns a
+# slow answer into no answer; a hung stream is cut by the stall guard instead.
+# Kept under the 10 min an agent's foreground shell command is allowed.
+_DEFAULT_TIMEOUT_SECONDS = 540.0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -74,8 +68,8 @@ def build_parser() -> argparse.ArgumentParser:
             "cut the stream after this many seconds without new content (server "
             "heartbeats and repeated frames don't count); a partial answer is "
             "returned (exit 6), none "
-            f"exits 4. Default: {DEFAULT_STALL_SECONDS:.0f}s ($PPLX_STALL_TIMEOUT, "
-            "or 0 to disable). Only acts when --timeout exceeds it: the default 180s deadline ends a stream first."
+            f"exits 4. Default: {COPILOT_STALL_SECONDS:.0f}s ($PPLX_STALL_TIMEOUT, "
+            "or 0 to disable)."
         ),
     )
     parser.add_argument(
@@ -103,7 +97,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     progress = args.progress or os.environ.get("PPLX_PROGRESS") == "1"
     timeout = resolve_timeout(args.timeout, "PPLX_ASK_TIMEOUT", _DEFAULT_TIMEOUT_SECONDS, "ask")
     stall_seconds = resolve_timeout(
-        args.stall_timeout, "PPLX_STALL_TIMEOUT", DEFAULT_STALL_SECONDS, "ask"
+        args.stall_timeout, "PPLX_STALL_TIMEOUT", COPILOT_STALL_SECONDS, "ask"
     )
     model = resolve_model(args.model, ("PPLX_ASK_MODEL", "PPLX_MODEL"), DEFAULT_MODEL)
 

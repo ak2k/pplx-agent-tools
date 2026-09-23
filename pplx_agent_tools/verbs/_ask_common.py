@@ -37,9 +37,13 @@ _RATE_LIMIT_BACKOFF_CAP = 60.0  # cap any single sleep so a hostile retry-after 
 _BACKOFF_JITTER_LOW = 0.85
 _BACKOFF_JITTER_HIGH = 1.15  # ±15% jitter so parallel callers don't wake in lockstep
 _PROGRESS_EVENT_STRIDE = 10
-# Default for every ask-family CLI's --stall-timeout: how long a stream may go
-# without new content before it is cut.
+# Default --stall-timeout for `research`: how long a stream may go without new
+# content before it is cut.
 DEFAULT_STALL_SECONDS = 240.0
+# Default --stall-timeout for `ask` and `fetch --prompt`: a thinking model can
+# go minutes without changing `blocks` before its answer arrives all at once,
+# and a cut before that returns nothing.
+COPILOT_STALL_SECONDS = 480.0
 
 
 @dataclass
