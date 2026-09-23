@@ -465,3 +465,110 @@ def test_import_from_browser_empty_says_sign_in(
     _fake_rookiepy(monkeypatch, [])
     with pytest.raises(AuthError, match="sign in"):
         import_from_browser("brave")
+
+
+# ---------- import repairs the source load_cookies reads ----------
+
+
+@pytest.fixture
+def no_cookie_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.delenv("PPLX_COOKIES_PATH", raising=False)
+    monkeypatch.delenv("PPLX_COOKIES", raising=False)
+
+
+@pytest.mark.usefixtures("no_cookie_env")
+def test_import_writes_to_cookies_path_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    target = tmp_path / "custom" / "jar.json"
+    monkeypatch.setenv("PPLX_COOKIES_PATH", str(target))
+    _fake_rookiepy(monkeypatch, [{"name": "a", "value": "1"}])
+    assert import_from_browser("brave") == target
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+    assert load_cookies() == {"a": "1"}
+    assert not default_cookies_path().exists()
+
+
+@pytest.mark.usefixtures("no_cookie_env")
+def test_import_refuses_when_inline_env_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PPLX_COOKIES", '{"a": "SECRET"}')
+    called: list[object] = []
+    mod = types.ModuleType("rookiepy")
+    mod.brave = lambda d: called.append(d) or []  # pyright: ignore[reportAttributeAccessIssue]
+    monkeypatch.setitem(sys.modules, "rookiepy", mod)
+    with pytest.raises(AuthError) as ei:
+        import_from_browser("brave")
+    msg = str(ei.value)
+    assert "$PPLX_COOKIES" in msg and "not changed" in msg
+    assert "SECRET" not in msg
+    assert called == []
+    assert not default_cookies_path().exists()
+
+
+@pytest.mark.usefixtures("no_cookie_env")
+@pytest.mark.parametrize(
+    ("content", "mode"),
+    [(None, 0o600), ("{bad", 0o600), ('{"a": "x;y"}', 0o600), ('{"a": "1"}', 0o644)],
+    ids=["missing", "bad-json", "bad-value", "world-readable"],
+)
+def test_load_errors_name_env_path_source(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, content: str | None, mode: int
+) -> None:
+    p = tmp_path / "jar.json"
+    if content is not None:
+        p.write_text(content)
+        p.chmod(mode)
+    monkeypatch.setenv("PPLX_COOKIES_PATH", str(p))
+    with pytest.raises(AuthError) as ei:
+        load_cookies()
+    assert "$PPLX_COOKIES_PATH" in str(ei.value)
+    assert str(p) in str(ei.value)
+
+
+@pytest.mark.usefixtures("no_cookie_env")
+@pytest.mark.parametrize(
+    ("content", "mode"),
+    [("{bad", 0o600), ('{"a": "x;y"}', 0o600), ('{"a": "1"}', 0o644)],
+    ids=["bad-json", "bad-value", "world-readable"],
+)
+def test_load_errors_name_profile_source(content: str, mode: int) -> None:
+    p = default_cookies_path("work")
+    p.parent.mkdir(parents=True)
+    p.write_text(content)
+    p.chmod(mode)
+    with pytest.raises(AuthError) as ei:
+        load_cookies("work")
+    assert "profile 'work'" in str(ei.value)
+    assert str(p) in str(ei.value)
+
+
+@pytest.mark.usefixtures("no_cookie_env")
+@pytest.mark.parametrize("inline", ["{bad", '{"a": "x;SECRET"}', "[]"])
+def test_load_errors_name_inline_source(monkeypatch: pytest.MonkeyPatch, inline: str) -> None:
+    monkeypatch.setenv("PPLX_COOKIES", inline)
+    with pytest.raises(AuthError) as ei:
+        load_cookies()
+    assert "$PPLX_COOKIES" in str(ei.value)
+    assert "SECRET" not in str(ei.value)
+
+
+# ---------- save never writes what load refuses ----------
+
+
+@pytest.mark.usefixtures("no_cookie_env")
+def test_save_cookies_drops_unloadable_values_with_warning(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    dest = save_cookies({"session": "ok", "pref": "x;SECRET", "ctl": "a\r\nb"})
+    assert load_cookies() == {"session": "ok"}
+    assert json.loads(dest.read_text()) == {"session": "ok"}
+    err = capsys.readouterr().err
+    assert "'pref'" in err and "'ctl'" in err
+    assert "SECRET" not in err
+
+
+@pytest.mark.usefixtures("no_cookie_env")
+def test_save_cookies_all_unloadable_keeps_existing_file() -> None:
+    dest = save_cookies({"session": "ok"})
+    with pytest.raises(AuthError):
+        save_cookies({"session": "x;y"})
+    assert json.loads(dest.read_text()) == {"session": "ok"}

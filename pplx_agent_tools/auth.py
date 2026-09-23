@@ -13,7 +13,8 @@ Accepts two on-disk shapes:
 Both are flattened to {name: value} for curl_cffi's session cookies kwarg.
 Every name and value must be a string the transport can send intact (see
 `_cookie_text_ok`). Files and $PPLX_COOKIES are refused whole on any bad pair;
-browser import skips bad rows with a warning.
+browser import and `save_cookies` skip bad pairs with a warning, so nothing
+written here is refused on the next load.
 
 Cookie files must be mode 0600. World-readable files are refused; group-readable
 files are auto-chmodded with a warning to stderr.
@@ -26,6 +27,7 @@ import os
 import stat
 import sys
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
@@ -66,36 +68,89 @@ def default_cookies_path(profile: str | None = None) -> Path:
     return Path(xdg) / "perplexity" / resolve_profile(profile) / "cookies.json"
 
 
+@dataclass(frozen=True)
+class EnvPathSource:
+    path: Path
+
+
+@dataclass(frozen=True)
+class EnvInlineSource:
+    text: str
+
+
+@dataclass(frozen=True)
+class ProfileSource:
+    profile: str
+    path: Path
+
+
+CookieSource = EnvPathSource | EnvInlineSource | ProfileSource
+
+
+def cookie_source(profile: str | None = None) -> CookieSource:
+    """The one source `load_cookies` reads, by the resolution chain above."""
+    if path_str := os.environ.get("PPLX_COOKIES_PATH"):
+        return EnvPathSource(Path(path_str))
+    if inline := os.environ.get("PPLX_COOKIES"):
+        return EnvInlineSource(inline)
+    return ProfileSource(resolve_profile(profile), default_cookies_path(profile))
+
+
+def _describe(source: CookieSource) -> str:
+    """Names the source for error messages; never includes cookie values."""
+    match source:
+        case EnvPathSource(path):
+            return f"$PPLX_COOKIES_PATH file {path}"
+        case EnvInlineSource():
+            return "$PPLX_COOKIES"
+        case ProfileSource(name, path):
+            return f"profile {name!r} file {path}"
+
+
 def load_cookies(profile: str | None = None) -> dict[str, str]:
     """Resolve and load cookies. Returns flat {name: value} dict.
 
     Raises AuthError if cookies cannot be found, parsed, or have unsafe perms.
+    Every error names the source it read.
     """
-    if path_str := os.environ.get("PPLX_COOKIES_PATH"):
-        path = Path(path_str)
-        return _load_from_file(path)
+    source = cookie_source(profile)
+    label = _describe(source)
+    match source:
+        case EnvInlineSource(text):
+            try:
+                data: object = json.loads(text)
+            except json.JSONDecodeError as e:
+                raise AuthError(f"$PPLX_COOKIES is not valid JSON: {e.msg}") from e
+            return _normalize(data, source=label)
+        case ProfileSource(_, path) if not path.exists():
+            raise AuthError(f"no cookies found at {label}; run pplx auth import --browser brave")
+        case EnvPathSource(path) | ProfileSource(_, path):
+            return _load_from_file(path, label=label)
 
-    if inline := os.environ.get("PPLX_COOKIES"):
+
+def save_cookies(
+    cookies: dict[str, str], profile: str | None = None, *, dest: Path | None = None
+) -> Path:
+    """Persist cookies to `dest` (default: the profile's file) with mode 0600.
+
+    Pairs the loader would refuse are dropped with a warning naming the cookie,
+    because one of them would make the whole file unloadable. Atomic via tmp +
+    rename. Returns the path written.
+    """
+    loadable: dict[str, str] = {}
+    for name, value in cookies.items():
         try:
-            data: object = json.loads(inline)
-        except json.JSONDecodeError as e:
-            raise AuthError(f"$PPLX_COOKIES is not valid JSON: {e.msg}") from e
-        return _normalize(data, source="$PPLX_COOKIES")
-
-    path = default_cookies_path(profile)
-    if not path.exists():
-        raise AuthError(f"no cookies found at {path}; run pplx auth import --browser brave")
-    return _load_from_file(path)
-
-
-def save_cookies(cookies: dict[str, str], profile: str | None = None) -> Path:
-    """Persist cookies to the profile's on-disk file with mode 0600.
-
-    Atomic via tmp + rename. Returns the path written.
-    """
-    dest = default_cookies_path(profile)
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    _atomic_write_0600(dest, json.dumps(cookies, indent=2, sort_keys=True))
+            loadable[name] = _cookie_pair(name, value, where="not saving cookie")[1]
+        except AuthError as e:
+            print(f"warning: {e}", file=sys.stderr)
+    if not loadable:
+        raise AuthError("no loadable cookies to save; the cookie file was not changed")
+    dest = dest or default_cookies_path(profile)
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        _atomic_write_0600(dest, json.dumps(loadable, indent=2, sort_keys=True))
+    except OSError as e:
+        raise AuthError(f"cannot write cookie file: {dest}: {e.strerror}") from e
     return dest
 
 
@@ -127,26 +182,26 @@ def _atomic_write_0600(dest: Path, content: str) -> None:
             tmp_path.unlink(missing_ok=True)
 
 
-def _load_from_file(path: Path) -> dict[str, str]:
+def _load_from_file(path: Path, *, label: str) -> dict[str, str]:
     if not path.exists():
-        raise AuthError(f"cookie file does not exist: {path}")
-    _enforce_perms(path)
+        raise AuthError(f"cookie file does not exist: {label}")
+    _enforce_perms(path, label=label)
     try:
         with path.open("r", encoding="utf-8") as fh:
             data: object = json.load(fh)
     except OSError as e:
-        raise AuthError(f"cookie file unreadable: {path}: {e.strerror}") from e
+        raise AuthError(f"cookie file unreadable: {label}: {e.strerror}") from e
     except json.JSONDecodeError as e:
-        raise AuthError(f"cookie file invalid JSON: {path}: {e.msg}") from e
-    return _normalize(data, source=str(path))
+        raise AuthError(f"cookie file invalid JSON: {label}: {e.msg}") from e
+    return _normalize(data, source=label)
 
 
-def _enforce_perms(path: Path) -> None:
+def _enforce_perms(path: Path, *, label: str) -> None:
     """Refuse world-readable; auto-chmod group-readable to 0600."""
     try:
         mode = path.stat().st_mode
     except OSError as e:
-        raise AuthError(f"cannot stat cookie file: {path}: {e.strerror}") from e
+        raise AuthError(f"cannot stat cookie file: {label}: {e.strerror}") from e
 
     perms = stat.S_IMODE(mode)
     world_bits = perms & 0o007
@@ -154,7 +209,7 @@ def _enforce_perms(path: Path) -> None:
 
     if world_bits:
         raise AuthError(
-            f"cookie file is world-accessible (mode {perms:04o}): {path}; run: chmod 600 {path}"
+            f"cookie file is world-accessible (mode {perms:04o}): {label}; run: chmod 600 {path}"
         )
     if group_bits:
         print(
@@ -165,7 +220,7 @@ def _enforce_perms(path: Path) -> None:
         try:
             path.chmod(0o600)
         except OSError as e:
-            raise AuthError(f"could not tighten perms on cookie file: {path}: {e.strerror}") from e
+            raise AuthError(f"could not tighten perms on cookie file: {label}: {e.strerror}") from e
 
 
 # RFC 6265bis 5.6 (the user-agent storage rule): a name or value holding a CTL
@@ -205,6 +260,15 @@ def _cookie_pair(name: object, value: object, *, where: str) -> tuple[str, str]:
     return name, value
 
 
+def cookie_pair_ok(name: str, value: str) -> bool:
+    """Whether `load_cookies` would accept this pair."""
+    try:
+        _cookie_pair(name, value, where="")
+    except AuthError:
+        return False
+    return True
+
+
 def _cookie_entry(entry: object, *, where: str) -> tuple[str, str]:
     """One Cookie-Editor / rookiepy row: {"name": ..., "value": ..., ...}."""
     if not isinstance(entry, dict):
@@ -240,8 +304,9 @@ def _normalize(data: object, *, source: str) -> dict[str, str]:
 
 
 def import_from_browser(browser: str, profile: str | None = None) -> Path:
-    """Read *.perplexity.ai cookies from a local browser via rookiepy,
-    write them to the profile path. Atomic (tmp + rename), mode 0600.
+    """Read *.perplexity.ai cookies from a local browser via rookiepy and
+    write them to the file `load_cookies` reads ($PPLX_COOKIES_PATH, else the
+    profile file). Atomic (tmp + rename), mode 0600.
 
     rookiepy handles platform details: keychain on macOS, GNOME-keyring /
     kwallet / plaintext on Linux, DPAPI on Windows, locked-DB copy-to-temp,
@@ -255,6 +320,17 @@ def import_from_browser(browser: str, profile: str | None = None) -> Path:
     if browser not in SUPPORTED_BROWSERS:
         supported = ", ".join(SUPPORTED_BROWSERS)
         raise AuthError(f"unsupported browser: {browser!r} (supported: {supported})")
+
+    source = cookie_source(profile)
+    match source:
+        case EnvInlineSource():
+            # A child process cannot change the parent's environment.
+            raise AuthError(
+                "$PPLX_COOKIES is set and overrides any cookie file, so an import "
+                "would not be used; it was not changed. Replace or unset $PPLX_COOKIES"
+            )
+        case EnvPathSource(dest) | ProfileSource(_, dest):
+            pass
 
     try:
         import rookiepy
@@ -289,4 +365,4 @@ def import_from_browser(browser: str, profile: str | None = None) -> Path:
             f"sign in at perplexity.ai in {browser} first"
         )
 
-    return save_cookies(cookies, profile=profile)
+    return save_cookies(cookies, dest=dest)
