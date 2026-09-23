@@ -24,7 +24,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any
 
-from ..errors import NetworkError, SchemaError
+from ..errors import PplxError, SchemaError
 from ..wire import Client
 
 DEFAULT_MAX_TOKENS = 4000
@@ -188,7 +188,7 @@ def _fetch_all(urls: list[str]) -> list[tuple[str, str, str | None]]:
     ) -> tuple[str, str, str | None]:
         try:
             result = fetch_page(url, domain="", max_chars=None, session=session)
-        except NetworkError as e:
+        except PplxError as e:
             return (url, "", str(e))
         except Exception as e:
             # any fetch failure is captured on the row, not raised

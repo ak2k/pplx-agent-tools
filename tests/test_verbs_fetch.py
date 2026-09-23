@@ -13,15 +13,15 @@ from typing import Any
 import pytest
 
 from pplx_agent_tools.errors import (
-    NetworkError,
+    BlockedUrlError,
     RateLimitError,
     SchemaError,
     StreamDeadlineError,
 )
+from pplx_agent_tools.netguard import check_url
 from pplx_agent_tools.verbs.fetch import (
     _build_chat_body,
     _fetch_with_prompt,
-    _require_http_url,
     fetch_page,
 )
 from tests._doubles import _TestClientBase
@@ -334,29 +334,29 @@ def test_thread_cleanup_failure_does_not_propagate(
         "localhost:8080",  # no scheme — parsed as scheme=localhost, netloc=""
     ],
 )
-def test_require_http_url_rejects_non_http(url: str) -> None:
-    with pytest.raises(NetworkError):
-        _require_http_url(url)
+def test_check_url_rejects_non_http(url: str) -> None:
+    with pytest.raises(BlockedUrlError):
+        check_url(url)
 
 
 @pytest.mark.parametrize(
     "url",
-    ["http://example.com/", "https://example.com/path?q=1", "HTTPS://Example.com/"],
+    ["http://8.8.8.8/", "https://8.8.8.8/path?q=1", "HTTPS://8.8.8.8/"],
 )
-def test_require_http_url_accepts_http_https(url: str) -> None:
-    # Must NOT raise. urlparse lowercases the scheme, so HTTPS works.
-    _require_http_url(url.lower() if url.upper() == url else url)
+def test_check_url_accepts_http_https(url: str) -> None:
+    # IP literals keep this offline; urlparse lowercases the scheme, so HTTPS works.
+    assert check_url(url).url == url
 
 
-def test_require_http_url_rejects_missing_host() -> None:
-    with pytest.raises(NetworkError) as ei:
-        _require_http_url("http:///")
+def test_check_url_rejects_missing_host() -> None:
+    with pytest.raises(BlockedUrlError) as ei:
+        check_url("http:///")
     assert "no host" in str(ei.value)
 
 
 def test_fetch_page_rejects_file_scheme_before_network() -> None:
     # File-scheme URLs must be rejected up front — never reach curl_cffi.
-    with pytest.raises(NetworkError) as ei:
+    with pytest.raises(BlockedUrlError) as ei:
         fetch_page("file:///etc/passwd", domain="local", max_chars=None)
     assert "scheme" in str(ei.value)
 

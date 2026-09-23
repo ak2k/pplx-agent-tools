@@ -86,10 +86,10 @@ pplx auth check
 | Code | Meaning | Retry semantic |
 |---|---|---|
 | 0 | Success | n/a |
-| 1 | Generic failure / bug, or a usage error (unknown flag, missing argument, out-of-range value such as `--limit 0` or `--timeout nan`). Under `--json`, a usage error prints an error envelope with `error.type: "UsageError"` and an unexpected exception one with `"InternalError"` | don't retry; fix the command line |
+| 1 | Generic failure / bug, or a usage error (unknown flag, missing argument, out-of-range value such as `--limit 0` or `--timeout nan`). Under `--json`, a usage error prints an error envelope with `error.type: "UsageError"` and an unexpected exception one with `"InternalError"`. Also a refused `fetch` URL (`BlockedUrlError`: not http/https, no or malformed host, or a host that resolves to a private, loopback, link-local, CGNAT or other non-public address; redirects are checked the same way) and a fetched page that answers 4xx (`TargetHttpError`) | don't retry; fix the command line or pick another URL |
 | 2 | Auth: cookies missing/expired/rejected | refresh cookies (`pplx auth import --browser <name>`) and retry |
-| 3 | Rate limit (429) | exponential backoff |
-| 4 | Network (DNS / timeout / TLS), or a deadline or stall before any content arrived | linear backoff |
+| 3 | Rate limit (429 from Perplexity or from the page `fetch` requests) | exponential backoff |
+| 4 | Network (DNS / timeout / TLS, or a fetched page answering 5xx or 408), or a deadline or stall before any content arrived | linear backoff |
 | 5 | Anti-bot (Cloudflare challenge) | investigate, don't auto-retry |
 | 6 | Partial: stream incomplete (deadline or stall tripped, or server cut; `cut_by` in JSON and the stdout marker name which), or the answer decoded shorter than an earlier frame (`content_shortfall: true` with `stream_complete: true`). Stdout still carries usable content. | deadline (`cut_by: "deadline"`, marker `stream: incomplete (deadline)`) → accept the partial or raise `--timeout` (blind retry usually hits the same backend slowness); stall (`cut_by: "stall"`, marker `stream: incomplete (stall: no new content)`) → accept the partial or raise `--stall-timeout` (a larger `--timeout` does not help); `content_shortfall` with `stream_complete: true` → the stream finished, so a longer timeout cannot help: re-run once or accept the shorter answer |
 
