@@ -82,7 +82,8 @@ def build_parser() -> argparse.ArgumentParser:
             "content (server heartbeats and repeated frames don't count); partial "
             "content is "
             f"returned (exit 6), none exits 4. Default: {DEFAULT_STALL_SECONDS:.0f}s "
-            "($PPLX_STALL_TIMEOUT, or 0 to disable). Ignored in plain-fetch mode."
+            "($PPLX_STALL_TIMEOUT, or 0 to disable). Only acts when --timeout exceeds it: the default 180s deadline ends a stream first. Ignored in plain-fetch "
+            "mode."
         ),
     )
     parser.add_argument(

@@ -23,14 +23,17 @@ from pplx_agent_tools.errors import (
     EXIT_NETWORK,
     EXIT_PARTIAL,
     NetworkError,
+    RateLimitError,
     StreamDeadlineError,
     StreamStallError,
 )
 from pplx_agent_tools.render import render_fetch_json
 from pplx_agent_tools.verbs._ask_common import (
     DEFAULT_STALL_SECONDS,
+    AskStreamState,
     blocks_changed,
     no_content_error,
+    run_ask_stream,
 )
 from pplx_agent_tools.verbs.ask import ask
 from pplx_agent_tools.verbs.fetch import FetchResult, fetch
@@ -247,6 +250,16 @@ def test_curl_timeout_without_stall_guard_is_a_stall_of_the_backstop(clock: _Clo
     )
     with pytest.raises(StreamStallError, match=r"no new content for 90\.0s"):
         list(client.sse_post("/x", {}, max_total_seconds=180))
+
+
+def test_curl_timeout_after_the_deadline_passed_reports_the_deadline(clock: _Clock) -> None:
+    # The abort counts from the last byte, so it can land after the overall cap.
+    client = _StreamClient(
+        [(0, _chunk("a")), (1900, _curl_error(CurlECode.OPERATION_TIMEDOUT))], clock
+    )
+    with pytest.raises(StreamDeadlineError, match=r"exceeded 1800\.0s deadline") as exc:
+        list(client.sse_post("/x", {}, max_total_seconds=1800, stall_seconds=240))
+    assert not isinstance(exc.value, StreamStallError)
 
 
 def test_other_curl_errors_stay_network_errors(clock: _Clock) -> None:
@@ -557,3 +570,38 @@ def test_fetch_json_carries_warnings() -> None:
         url="u", title=None, domain="d", content="c", is_extracted=True, warnings=["w"]
     )
     assert render_fetch_json(result)["warnings"] == ["w"]
+
+
+class _RetryThenDeadlineClient(_TestClientBase):
+    """429 on the first attempt, then a deadline cut on the retry."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls = 0
+
+    def sse_post(  # type: ignore[override]
+        self, path: str, body: dict[str, Any], **kwargs: Any
+    ) -> Iterator[dict[str, Any]]:
+        self.calls += 1
+        if self.calls == 1:
+            raise RateLimitError("429", retry_after=0.0)
+        raise StreamDeadlineError(f"SSE stream on {path} exceeded 170.0s deadline")
+        yield {}  # pragma: no cover
+
+
+def test_deadline_after_a_rate_limit_retry_names_the_callers_timeout() -> None:
+    client = _RetryThenDeadlineClient()
+    state = AskStreamState()
+    run_ask_stream(
+        client,
+        "/x",
+        {},
+        state,
+        on_event=lambda _e: None,
+        timeout=180.0,
+        stall_seconds=240.0,
+        progress=False,
+        label="ask",
+    )
+    assert client.calls == 2
+    assert "exceeded 180.0s deadline" in str(state.cutoff)

@@ -24,7 +24,7 @@ from .verbs.ask import DEFAULT_MODEL, AskResult, ask
 # streamed for 147 s before returning an empty answer. So the backend does
 # exceed 120 s, and the old ceiling left only ~1.4x headroom over the observed
 # max — thin for a hang guard. 180 s matches `fetch --prompt`, the other
-# LLM-routed streaming verb. Deliberately not `research`'s 300 s: nothing in
+# LLM-routed streaming verb. Deliberately not `research`'s long cap: nothing in
 # the sample justifies it, and the deadline is also what bounds the wait on a
 # degenerate no-answer stream. Tighten per call with --timeout /
 # $PPLX_ASK_TIMEOUT when a caller needs a real latency bound.
@@ -75,7 +75,7 @@ def build_parser() -> argparse.ArgumentParser:
             "heartbeats and repeated frames don't count); a partial answer is "
             "returned (exit 6), none "
             f"exits 4. Default: {DEFAULT_STALL_SECONDS:.0f}s ($PPLX_STALL_TIMEOUT, "
-            "or 0 to disable)."
+            "or 0 to disable). Only acts when --timeout exceeds it: the default 180s deadline ends a stream first."
         ),
     )
     parser.add_argument(

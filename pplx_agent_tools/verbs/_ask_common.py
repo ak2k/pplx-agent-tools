@@ -282,8 +282,19 @@ def run_ask_stream(
                 is_progress=is_progress,
             )
             break
-        except StreamDeadlineError as e:
+        except StreamStallError as e:
             state.cutoff = e
+            break
+        except StreamDeadlineError as e:
+            # sse_post only sees the budget left after any 429 retries; name the
+            # caller's bound instead.
+            state.cutoff = (
+                StreamDeadlineError(
+                    f"{label} stream on {endpoint} exceeded {timeout:.1f}s deadline"
+                )
+                if timeout
+                else e
+            )
             break
         except RateLimitError as e:
             last_rate_limit = e

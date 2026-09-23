@@ -229,10 +229,11 @@ class Client:
         `stall_seconds` raises `StreamStallError` once no progress event has
         arrived for that long. `is_progress(event)` decides what counts as
         progress; None counts any event carrying data. Comment-only heartbeat
-        frames never reset the clock, whatever the predicate. The transport's low-speed abort is sized to the same window (capped by
+        frames never reset the clock, whatever the predicate. The transport's
+        low-speed abort is sized to the same window (capped by
         `max_total_seconds`) so total silence trips it too, and is reported as a
-        stall unless the overall deadline was the tighter bound. None keeps only
-        the default low-speed backstop.
+        stall unless the overall deadline ran out first. None keeps only the
+        default low-speed backstop.
 
         Raises the same typed errors as the GET path (auth/rate-limit/etc.) on
         connection or status-code failure.
@@ -317,6 +318,12 @@ class Client:
                 # carrying the curl code, not as its Timeout subclass, so the code
                 # is the only reliable signal of the low-speed abort.
                 if isinstance(e, CurlError) and e.code == CurlECode.OPERATION_TIMEDOUT:
+                    # The abort counts from the last byte, so it can land after the
+                    # overall deadline; the deadline is then the bound that ran out.
+                    if deadline is not None and time.monotonic() >= deadline:
+                        raise StreamDeadlineError(
+                            f"SSE stream on {path} exceeded {max_total_seconds:.1f}s deadline"
+                        ) from e
                     raise silence_error from e
                 # A read that dies mid-stream is the same class of failure as a POST
                 # that never connected, so it gets the same typed error and exit code.
