@@ -30,16 +30,17 @@ Trimming (what is KEPT):
     a broad run repeats ~200 THOUGHT/SEARCH_* steps in every snapshot.
 
 Scrubbing — deterministic (reruns are diff-free), applied recursively to the
-payload AND inside `data.text` (a JSON *string* holding the research block list)
-AND inside the FINAL block's `content.answer` (a JSON string again):
+payload AND inside every string that is itself a JSON document: `data.text` (the
+research block list), the FINAL block's `content.answer`, a joined `chunks`
+list, or any other value, whatever its key:
   - account/thread-bound ids (see SENTINELS): backend_uuid, read_write_token,
     context/frontend uuids, per-block `uuid`, cursor, slugs, author_*/user_*
   - the RESEARCH_ANSWER report URL: a *signed* CloudFront/S3 link (custom- or
     canned-policy query params), i.e. a time-limited credential
   - any email-shaped string anywhere
   - account metadata (ACCOUNT_KEYS under `_extras` / `telemetry_data`) becomes a
-    fixed placeholder: no test reads it, and it describes the capturing
-    account, not the wire shape.
+    fixed placeholder: no test depends on the real value, and it describes the
+    capturing account, not the wire shape.
 
 Preserved verbatim: `status`, `text_completed`, `step_type`s, the report body
 (`assets[].research_report.source_content`), FINAL `answer`/`chunks` — the
@@ -119,6 +120,24 @@ def _scrub_string(value: str) -> str:
     return _SIGNED_URL_RE.sub(SENTINEL_REPORT_URL, _EMAIL_RE.sub(SENTINEL_EMAIL, value))
 
 
+def _scrub_text(value: str) -> str:
+    """A string value → scrubbed, descending into it when it is a JSON document:
+    any key can carry one, and the identity and account rules are key-based."""
+    if value.lstrip()[:1] in ("{", "["):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, (dict, list)):
+            cleaned = _scrub(parsed)
+            # Re-serializing a clean document would rewrite the server's own
+            # spacing and escaping, making every rerun a diff.
+            if cleaned != parsed:
+                value = json.dumps(cleaned, separators=(",", ":"))
+    # Still run over the raw text: an address in a JSON key is not a value.
+    return _scrub_string(value)
+
+
 def _scrub_chunks(chunks: list[str]) -> list[str]:
     """A `chunks` list → scrubbed, scrubbing the JOINED text.
 
@@ -130,7 +149,7 @@ def _scrub_chunks(chunks: list[str]) -> list[str]:
     byte-for-byte stable.
     """
     joined = "".join(chunks)
-    scrubbed = _scrub_string(joined)
+    scrubbed = _scrub_text(joined)
     if scrubbed == joined:
         return list(chunks)
     return [scrubbed]
@@ -164,6 +183,8 @@ def _cap_steps(steps: list[Any]) -> list[Any]:
     kept: list[Any] = []
     for step in steps:
         kind = step.get("step_type") if isinstance(step, dict) else None
+        # A malformed (e.g. list) step_type is unhashable; bucket it with the rest.
+        kind = kind if isinstance(kind, str) else None
         if kind not in ANSWER_STEPS:
             seen[kind] += 1
             if seen[kind] > MAX_STEP_BLOCKS:
@@ -211,7 +232,7 @@ def _scrub(node: Any) -> Any:
     if isinstance(node, list):
         return [_scrub(v) for v in (_cap_steps(node) if _is_step_list(node) else node)]
     if isinstance(node, str):
-        return _scrub_string(node)
+        return _scrub_text(node)
     return node
 
 
@@ -222,6 +243,14 @@ def _scrub_research_text(text: str) -> str:
         blocks = json.loads(text)
     except json.JSONDecodeError:
         return _scrub_string(text)
+    # The generic walk below already decodes FINAL answers and caps their
+    # web_results flat; the citation-aligned cap needs the uncapped originals.
+    # FINAL steps are never dropped by `_cap_steps`, so order pairs them up.
+    raw_finals = iter(
+        blk["content"]["answer"]
+        for blk in (blocks if isinstance(blocks, list) else [])
+        if _is_final_answer(blk)
+    )
     blocks = _scrub(blocks)
     if isinstance(blocks, list):
         cited = _max_citation(blocks)
@@ -233,17 +262,27 @@ def _scrub_research_text(text: str) -> str:
                 continue
             if blk.get("step_type") == "RESEARCH_ANSWER" and content.get("url") is not None:
                 content["url"] = SENTINEL_REPORT_URL
-            if blk.get("step_type") == "FINAL" and isinstance(content.get("answer"), str):
+            if _is_final_answer(blk):
                 try:
-                    inner = json.loads(content["answer"])
+                    inner = json.loads(next(raw_finals))
                 except json.JSONDecodeError:
                     continue
                 cleaned = _scrub(inner)
                 if isinstance(inner, dict) and isinstance(inner.get("web_results"), list):
                     cap = max(cited, MAX_WEB_RESULTS)
                     cleaned["web_results"] = [_scrub(v) for v in inner["web_results"][:cap]]
-                content["answer"] = json.dumps(cleaned, separators=(",", ":"))
+                content["answer"] = _scrub_string(json.dumps(cleaned, separators=(",", ":")))
     return json.dumps(blocks, separators=(",", ":"))
+
+
+def _is_final_answer(blk: Any) -> bool:
+    content = blk.get("content") if isinstance(blk, dict) else None
+    return (
+        isinstance(blk, dict)
+        and blk.get("step_type") == "FINAL"
+        and isinstance(content, dict)
+        and isinstance(content.get("answer"), str)
+    )
 
 
 def _answer_parts(blocks: list[Any]) -> tuple[list[str], list[str]]:
@@ -257,7 +296,8 @@ def _answer_parts(blocks: list[Any]) -> tuple[list[str], list[str]]:
         content = blk.get("content")
         if blk.get("step_type") == "RESEARCH_ANSWER":
             found = []
-            for asset in blk.get("assets") or []:
+            assets = blk.get("assets")
+            for asset in assets if isinstance(assets, list) else []:
                 report = asset.get("research_report") if isinstance(asset, dict) else None
                 body = report.get("source_content") if isinstance(report, dict) else None
                 if isinstance(body, str) and body.strip():

@@ -9,9 +9,9 @@ line, as captured by scripts/re-capture-fetch-prompt.py) and emits a sanitized
 JSONL safe to commit under tests/fixtures/fetch-url/.
 
 Scrubbing is recursive: identifiers nest inside `blocks[*]`, inside `plan`,
-and inside the `text` field, which is itself a JSON document serialized into
-a string. Anything reachable is reachable by a leak, so the walk descends
-into all of it.
+and inside any string that is itself a JSON document (`text`, FINAL
+`content.answer`, a joined `chunks` list), whatever its key. Anything reachable
+is reachable by a leak, so the walk descends into all of it.
 
 What gets replaced (deterministically, so reruns are diff-free):
   - account-bound UUIDs (backend_uuid, context_uuid, frontend_uuid,
@@ -26,8 +26,8 @@ What gets replaced (deterministically, so reruns are diff-free):
   - any email-shaped substring in any string value, including one that only
     exists across a `chunks` slice boundary (see `_scrub_chunks`)
   - account metadata (`ACCOUNT_KEYS` under `_extras` / `telemetry_data`) becomes
-    a fixed placeholder: no test reads it, and it describes the capturing
-    account, not the wire shape.
+    a fixed placeholder: no test depends on the real value, and it describes
+    the capturing account, not the wire shape.
 
 Scrubbing is per-event, but the answer is streamed as one chunk per event, so
 an address split across two events is invisible to every individual scrub and
@@ -101,8 +101,6 @@ _REDACTED_KEY_PREFIXES = ("author_", "user_")
 _PRESERVED_PREFIXED_KEYS = frozenset({"user_selected_model"})
 ACCOUNT_KEYS = ("subscription_tier", "payment_tier", "country")
 _ACCOUNT_METADATA_PARENTS = frozenset({"_extras", "telemetry_data"})
-# Keys whose string value is itself a JSON document.
-_EMBEDDED_JSON_KEYS = frozenset({"text"})
 
 _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 
@@ -125,29 +123,26 @@ def _redact_identity(key: str, value: Any) -> Any:
     return SENTINELS.get(key, SENTINEL_REDACTED)
 
 
-def _scrub_str(key: str | None, value: str) -> str:
+def _scrub_str(value: str) -> str:
     # Only non-empty strings are rewritten: `""` carries shape information
     # (an un-started plan step) and no secret.
     if not value:
         return value
-    if key is not None and key in _EMBEDDED_JSON_KEYS:
-        return _scrub_embedded_json(value)
+    # Any key can carry a JSON document (FINAL `content.answer` does), so the
+    # value's shape decides, not the key.
+    if value.lstrip()[:1] in ("{", "["):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, (dict, list)):
+            scrubbed = _scrub_node(parsed)
+            # Re-serializing an already-clean payload would rewrite the server's
+            # own spacing and escaping, making every rerun a diff.
+            if scrubbed != parsed:
+                value = json.dumps(scrubbed, separators=(",", ":"))
+    # Still run over the raw text: an address in a JSON key is not a value.
     return _EMAIL_RE.sub(SENTINEL_EMAIL, value)
-
-
-def _scrub_embedded_json(value: str) -> str:
-    try:
-        parsed = json.loads(value)
-    except json.JSONDecodeError:
-        return _EMAIL_RE.sub(SENTINEL_EMAIL, value)
-    if not isinstance(parsed, (dict, list)):
-        return _EMAIL_RE.sub(SENTINEL_EMAIL, value)
-    scrubbed = _scrub_node(parsed)
-    if scrubbed == parsed:
-        # Re-serializing an already-clean payload would rewrite the server's
-        # own spacing and escaping, making every rerun a diff.
-        return value
-    return json.dumps(scrubbed, separators=(",", ":"))
 
 
 def _scrub_chunks(chunks: list[str]) -> list[str]:
@@ -156,12 +151,13 @@ def _scrub_chunks(chunks: list[str]) -> list[str]:
     Perplexity ships the answer twice: whole, and sliced into ~23-char `chunks`.
     Per-string scrubbing therefore redacts an email in the whole string and
     keeps it verbatim in `chunks` whenever it straddles a slice boundary.
-    Scrubbing the join closes that. A clean capture keeps its original slicing
-    (nothing matched), so re-running the sanitizer over an already-clean input
-    is byte-for-byte stable.
+    Scrubbing the join closes that, and lets a JSON answer split across slices
+    be decoded whole. A clean capture keeps its original slicing (nothing
+    matched), so re-running the sanitizer over an already-clean input is
+    byte-for-byte stable.
     """
     joined = "".join(chunks)
-    scrubbed = _EMAIL_RE.sub(SENTINEL_EMAIL, joined)
+    scrubbed = _scrub_str(joined)
     if scrubbed == joined:
         return list(chunks)
     return [scrubbed]
@@ -190,7 +186,7 @@ def _scrub_node(node: Any, key: str | None = None) -> Any:
         # The parent key rides along so `{"author_ids": [...]}` scrubs its items.
         return [_scrub_node(v, key) for v in node]
     if isinstance(node, str):
-        return _scrub_str(key, node)
+        return _scrub_str(node)
     # Numbers, bools and null carry no identifier we can recognize.
     return node
 

@@ -14,7 +14,7 @@ Observed shape (weather-nowcasting-apis.events.jsonl — 7 of 802 captured frame
 Nested `web_results` lists are capped at 10 per list by the sanitizer, so source
 counts here are a floor, not the real stream's total — assert on shape, not size.
 This fixture predates the citation-aligned cap: its report cites up to [34]
-against 10 kept sources, and only a fresh capture can restore the rest.
+against 10 kept sources (pinned in `CITATION_GAPS`).
 
 ocio-fees-final-only.events.jsonl (7 of 958 frames, a 14-minute broad run) is
 the other build's shape: no RESEARCH_ANSWER block at all — the report arrives
@@ -47,7 +47,17 @@ import pytest
 
 from pplx_agent_tools.verbs._ask_common import event_marks_completed
 from pplx_agent_tools.verbs.research import decode_research_text, research
-from tests._account_metadata import account_values
+from tests._account_metadata import (
+    ACCOUNT_PARENTS,
+    PLANTED_ACCOUNT,
+    PLANTED_DOC,
+    PLANTED_VALUES,
+    account_values,
+    identity_values,
+    is_identity_key,
+    sliced,
+    stray_uuids,
+)
 from tests._doubles import _TestClientBase
 
 FIXTURES = Path(__file__).parent / "fixtures" / "research"
@@ -400,6 +410,33 @@ def test_sanitizer_select_keeps_the_high_water_frame(tmp_path: Path, body: bool)
         assert research(FixtureClient(path), "q").content_shortfall is True
 
 
+def test_sanitizer_select_keeps_distinct_body_and_answer_peaks() -> None:
+    """The report-body peak (frame 4) and the decoded-answer peak (frame 7) are
+    different frames, and neither is frame 0, a mid-stream pick or the tail."""
+    san = _sanitizer()
+    frames = [_research_frame(cover="note", body="x" * n) for n in range(12)]
+    frames[4] = _research_frame(cover="note", body="b" * 500)
+    frames[7] = _research_frame(cover="c" * 2000, body="x" * 7)
+    for i in range(9, 12):
+        frames[i]["text_completed"] = True
+
+    keep = san._select(frames)
+
+    assert {4, 7} <= set(keep)
+    assert not {4, 7} & {0, 3, 6, 9, 10, 11}, "the peaks must be the only reason to keep them"
+
+
+def test_sanitizer_tolerates_malformed_step_type_and_assets() -> None:
+    """The verb ignores both; a sanitizer that crashes on them cannot process
+    the capture that shows them."""
+    san = _sanitizer()
+    steps = [{"step_type": ["odd"], "content": {}}, {"step_type": "THOUGHT", "content": {}}]
+
+    assert san._scrub({"steps": steps})["steps"] == steps
+    blocks = [{"step_type": "RESEARCH_ANSWER", "assets": 7, "content": {"answer": "body"}}]
+    assert san._answer_parts(blocks) == ([], ["body"])
+
+
 def test_sanitizer_measure_matches_the_verb(weather_fixture: Path, ocio_fixture: Path) -> None:
     """The reducer picks high-water frames by its own decode; if it drifts from
     the verb's, it keeps the wrong frame and the shortfall stops reproducing."""
@@ -504,6 +541,59 @@ def test_committed_fixtures_carry_no_account_metadata(
     assert seen, "the walk found no account metadata at all; it is not looking"
 
 
+def test_committed_fixtures_carry_no_identifiers(weather_fixture: Path, ocio_fixture: Path) -> None:
+    san = _sanitizer()
+    allowed = {*san.SENTINELS.values(), "REDACTED", None, ""}
+    seen = 0
+    for path in (weather_fixture, ocio_fixture):
+        text = path.read_text()
+        assert not stray_uuids(text, san.SENTINELS.values()), path.name
+        for payload in _payloads(path):
+            for key, value in identity_values(payload):
+                assert value in allowed or value in ([], {}), (path.name, key, value)
+                seen += 1
+    assert seen, "the walk found no identity keys at all; it is not looking"
+
+
+def test_leak_walk_shares_the_sanitizer_key_sets() -> None:
+    """A parent or identity key added to the sanitizer but not to the walk would
+    let the committed-fixture checks pass without looking at it."""
+    san = _sanitizer()
+    assert set(san._ACCOUNT_METADATA_PARENTS) == set(ACCOUNT_PARENTS)
+    assert all(is_identity_key(k) for k in san.SENTINELS)
+
+
+def test_leak_walk_decodes_json_with_leading_whitespace() -> None:
+    assert len(list(account_values("\n  " + PLANTED_DOC, PLANTED_ACCOUNT))) == 3
+    assert len(list(identity_values("\n  " + PLANTED_DOC))) == 2
+
+
+def _planted_payload(position: str) -> dict[str, Any]:
+    doc = "  " + PLANTED_DOC
+    if position == "final-answer":
+        blocks = [{"step_type": "FINAL", "content": {"answer": doc}}]
+    elif position == "chunks":
+        blocks = [{"step_type": "FINAL", "content": {"answer": "", "chunks": sliced(doc)}}]
+    elif position == "non-final-content":
+        blocks = [{"step_type": "SEARCH_RESULTS", "content": {"payload": doc}}]
+    else:
+        return {"payload": doc}
+    return {"text": json.dumps(blocks)}
+
+
+@pytest.mark.parametrize("position", ["final-answer", "chunks", "non-final-content", "any-key"])
+def test_sanitizer_scrubs_every_embedded_json_carrier(position: str) -> None:
+    """Identity and account rules are key-based, so they only reach a JSON
+    document serialized into a string if the walk decodes it, whatever its key."""
+    san = _sanitizer()
+    payload = _planted_payload(position)
+    assert all(v in json.dumps(payload) for v in PLANTED_VALUES)
+
+    out = json.dumps(san._scrub_payload(payload))
+
+    assert not [v for v in PLANTED_VALUES if v in out]
+
+
 def test_sanitizer_redacts_account_metadata_inside_embedded_json() -> None:
     """`text` is a JSON string, and FINAL's `content.answer` a JSON string inside
     it; a copy of the metadata there is invisible to a top-level check."""
@@ -522,6 +612,32 @@ def test_sanitizer_redacts_account_metadata_inside_embedded_json() -> None:
     found = list(account_values(out, san.ACCOUNT_KEYS))
     assert len(found) == 7
     assert {value for _, _, value in found} == {san.SENTINEL_ACCOUNT_VALUE}
+
+
+# The weather capture predates the citation-aligned cap and its raw stream is
+# gone, so sources past [10] cannot be restored from committed material.
+CITATION_GAPS = {"weather-nowcasting-apis.events.jsonl": (34, 10)}
+RESEARCH_FIXTURES = sorted(FIXTURES.glob("*.events.jsonl"))
+
+
+def test_citation_gaps_name_committed_fixtures() -> None:
+    assert set(CITATION_GAPS) <= {p.name for p in RESEARCH_FIXTURES}
+
+
+@pytest.mark.parametrize("path", RESEARCH_FIXTURES, ids=lambda p: p.name)
+def test_every_fixture_citation_resolves(path: Path) -> None:
+    """(highest cited index, FINAL sources kept) in the COMPLETED repaint; a
+    fixture outside CITATION_GAPS must keep every source its answer cites."""
+    san = _sanitizer()
+    completed = next(p for p in _payloads(path) if p.get("status") == "COMPLETED")
+    highest = san._max_citation(json.loads(completed["text"]))
+    kept = len(_final_inner(completed)["web_results"])
+
+    assert highest, "no citation found; the check is not looking"
+    if path.name in CITATION_GAPS:
+        assert (highest, kept) == CITATION_GAPS[path.name]
+    else:
+        assert highest <= kept
 
 
 def test_sentinels_match_sanitizer_script() -> None:
