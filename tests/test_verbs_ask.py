@@ -16,7 +16,8 @@ from pplx_agent_tools.errors import (
     StreamDeadlineError,
     exit_code,
 )
-from pplx_agent_tools.render import render_ask_json, render_ask_text
+from pplx_agent_tools.grounding import Grounding
+from pplx_agent_tools.render import grounding_summary, render_ask_json, render_ask_text
 from pplx_agent_tools.verbs._ask_common import (
     extract_chunks_from_event,
     extract_web_results,
@@ -121,6 +122,21 @@ def test_ask_extracts_sources_from_web_results_block() -> None:
     assert [s.url for s in result.sources] == ["https://a", "https://b"]  # deduped, ordered
     assert result.sources[0].title == "A"
     assert result.sources[0].snippet == "sa"
+
+
+def test_ask_attaches_grounding_verdict() -> None:
+    events = [
+        _web_results_event(
+            [{"url": "https://www.vivino.com/", "name": "Vivino", "snippet": "Wine"}]
+        ),
+        _chunk_event("It is rated 4.2 by 3,100 users [1]."),
+        {"data": {"status": "COMPLETED"}},
+    ]
+    result = ask(_FakeClient(events), "q")
+    assert result.grounding is not None
+    assert result.grounding.grounded is False
+    assert result.grounding.unsupported == ["4.2", "3,100"]
+    assert ask(_FakeClient(events), "q", grounded_check=False).grounding is None
 
 
 def test_ask_partial_on_deadline() -> None:
@@ -232,6 +248,43 @@ def test_render_ask_with_sources() -> None:
     assert "— sources (1) —" in out and "[1] A" in out and "https://a" in out
     j = render_ask_json(result)
     assert j["sources"][0] == {"url": "https://a", "title": "A", "snippet": "snip"}
+
+
+_UNGROUNDED = Grounding(False, ["every cited URL is a site root"], ["4.0", "$55"], 2)
+
+
+def test_render_ask_ungrounded() -> None:
+    result = AskResult("q", "Answer.", "turbo", grounding=_UNGROUNDED)
+    marker = [ln for ln in render_ask_text(result).splitlines() if ln.startswith("grounded:")]
+    assert marker == ["grounded: no (every cited URL is a site root; unsupported: 4.0, $55)"]
+    j = render_ask_json(result)
+    assert j["grounded"] is False
+    assert j["grounding_reasons"] == ["every cited URL is a site root"]
+    assert j["ungrounded_terms"] == ["4.0", "$55"]
+    assert j["checked_terms"] == 2
+
+
+@pytest.mark.parametrize(
+    "grounding", [Grounding(True, [], [], 3), Grounding(None, ["no checkable figures or names"])]
+)
+def test_render_ask_grounded_or_unchecked_has_no_marker(grounding: Grounding) -> None:
+    result = AskResult("q", "Answer.", "turbo", grounding=grounding)
+    assert "grounded:" not in render_ask_text(result)
+    j = render_ask_json(result)
+    assert j["grounded"] is grounding.grounded
+    assert j["grounding_reasons"] == grounding.reasons
+
+
+def test_render_ask_json_check_disabled() -> None:
+    j = render_ask_json(AskResult("q", "Answer.", "turbo"))
+    assert j["grounded"] is None
+    assert j["grounding_reasons"] == ["check disabled"]
+    assert "ungrounded_terms" not in j
+
+
+def test_grounding_summary_caps_listed_terms() -> None:
+    g = Grounding(False, ["r"], [str(n) for n in range(100, 112)], 12)
+    assert grounding_summary(g).endswith("106, 107 (+4 more)")
 
 
 # ---------- run_ask_stream 429 retry/exhaustion (exercised via ask) ----------

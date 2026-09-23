@@ -21,6 +21,7 @@ from __future__ import annotations
 from typing import Any
 
 from . import __version__
+from .grounding import Grounding
 from .verbs.ask import AskResult
 from .verbs.fetch import FetchResult
 from .verbs.models import ModelsResult
@@ -298,10 +299,23 @@ def render_models_json(result: ModelsResult) -> dict[str, Any]:
     )
 
 
+_MAX_LISTED_TERMS = 8
+
+
+def grounding_summary(g: Grounding) -> str:
+    """Why an answer is ungrounded, shared by the stdout marker and the
+    stderr warning so the two cannot drift."""
+    terms = g.unsupported[:_MAX_LISTED_TERMS]
+    more = len(g.unsupported) - len(terms)
+    listed = ", ".join(terms) + (f" (+{more} more)" if more > 0 else "")
+    reasons = "; ".join(g.reasons)
+    return f"{reasons}; unsupported: {listed}" if listed else reasons
+
+
 def render_ask_text(result: AskResult) -> str:
     """The synthesized answer (with inline [n] citations) then the numbered
     sources. The incomplete marker is appended (and `cli_ask` also warns on
-    stderr + exits 6)."""
+    stderr + exits 6), as is a `grounded: no` marker for an ungrounded answer."""
     parts: list[str] = [result.answer if result.answer else "(no answer)"]
     if result.sources:
         parts.append("")
@@ -310,10 +324,25 @@ def render_ask_text(result: AskResult) -> str:
             parts.append(f"[{i}] {s.title or s.url}")
             if s.title:
                 parts.append(f"    {s.url}")
+    g = result.grounding
+    if g is not None and g.grounded is False:
+        parts.append("")
+        parts.append(f"grounded: no ({grounding_summary(g)})")
     if not result.stream_complete:
         parts.append("")
         parts.append(_incomplete_marker(result.cut_by))
     return "\n".join(parts)
+
+
+def _grounding_json(g: Grounding | None) -> dict[str, Any]:
+    if g is None:
+        return {"grounded": None, "grounding_reasons": ["check disabled"]}
+    return {
+        "grounded": g.grounded,
+        "grounding_reasons": g.reasons,
+        "ungrounded_terms": g.unsupported,
+        "checked_terms": g.checked,
+    }
 
 
 def render_ask_json(result: AskResult) -> dict[str, Any]:
@@ -333,6 +362,7 @@ def render_ask_json(result: AskResult) -> dict[str, Any]:
             ],
             "stream_complete": result.stream_complete,
             "cut_by": result.cut_by,
+            **_grounding_json(result.grounding),
         },
         warnings=result.warnings,
     )

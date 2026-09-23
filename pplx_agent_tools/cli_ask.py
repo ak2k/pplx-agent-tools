@@ -14,7 +14,7 @@ from collections.abc import Sequence
 from .cli_runner import resolve_model, resolve_timeout, run_verb
 from .cli_types import PplxArgumentParser, duration
 from .errors import EXIT_OK, EXIT_PARTIAL
-from .render import render_ask_json, render_ask_text
+from .render import grounding_summary, render_ask_json, render_ask_text
 from .verbs._ask_common import COPILOT_STALL_SECONDS
 from .verbs.ask import DEFAULT_MODEL, AskResult, ask
 
@@ -73,6 +73,14 @@ def build_parser() -> PplxArgumentParser:
         ),
     )
     parser.add_argument(
+        "--no-grounded-check",
+        action="store_true",
+        help=(
+            "skip the check that the answer's figures and names appear in its "
+            "cited sources' titles/snippets (on by default; never changes the exit code)."
+        ),
+    )
+    parser.add_argument(
         "--progress",
         action="store_true",
         help="emit a heartbeat dot to stderr per ~10 SSE events. Honors $PPLX_PROGRESS=1.",
@@ -81,6 +89,12 @@ def build_parser() -> PplxArgumentParser:
 
 
 def _finalize(result: AskResult) -> int:
+    if result.grounding is not None and result.grounding.grounded is False:
+        print(
+            f"warning: ask answer not grounded in its sources: "
+            f"{grounding_summary(result.grounding)}",
+            file=sys.stderr,
+        )
     if not result.stream_complete:
         print(
             "warning: ask stream did not reach COMPLETED (deadline, stall or cut); "
@@ -113,6 +127,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             timeout=timeout,
             stall_seconds=stall_seconds,
             progress=progress,
+            grounded_check=not args.no_grounded_check,
         ),
         render_text=render_ask_text,
         render_json=render_ask_json,

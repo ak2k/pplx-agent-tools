@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..errors import SchemaError
+from ..grounding import Grounding, check_grounding
 from ..wire import Client
 from ._ask_common import (
     AskStreamState,
@@ -51,6 +52,8 @@ class AskResult:
     warnings: list[str] = field(default_factory=list)
     # "stall" | "deadline" when that bound cut the stream; None otherwise.
     cut_by: str | None = None
+    # None when the caller disabled the check.
+    grounding: Grounding | None = None
 
 
 def ask(
@@ -62,6 +65,7 @@ def ask(
     timeout: float | None = None,
     stall_seconds: float | None = None,
     progress: bool = False,
+    grounded_check: bool = True,
 ) -> AskResult:
     """Ask a question, get a synthesized cited answer (copilot mode).
 
@@ -69,7 +73,8 @@ def ask(
     wall-clock and `stall_seconds` the time without new content; when either
     trips with a partial answer we return it with `stream_complete=False`
     (exit 6) and a warning naming which one. `keep_thread` keeps the incognito
-    thread.
+    thread. `grounded_check` attaches a `Grounding` verdict on whether the
+    answer's figures and names appear in its sources.
     """
     body = _build_ask_body(query, model)
     chunks: list[str] = []
@@ -125,6 +130,7 @@ def ask(
         cut_by=cutoff_cause(state),
         sources=sources,
         warnings=cutoff_warnings(state),
+        grounding=check_grounding(content, query, sources) if grounded_check else None,
     )
 
 
