@@ -15,9 +15,9 @@ EXIT_RATE_LIMIT: Final = 3
 EXIT_NETWORK: Final = 4
 EXIT_ANTI_BOT: Final = 5
 # Partial-success: stdout carries usable content, but the upstream stream did
-# not signal COMPLETED (deadline tripped or server cut). Distinct from network
-# (exit 4) because the retry semantic differs: bumping --timeout or accepting
-# the partial is usually the right move, not a blind backoff retry.
+# not signal COMPLETED (deadline or stall tripped, or server cut). Distinct from
+# network (exit 4) because the retry semantic differs: bumping --timeout or
+# accepting the partial is usually the right move, not a blind backoff retry.
 EXIT_PARTIAL: Final = 6
 
 
@@ -55,6 +55,19 @@ class StreamDeadlineError(NetworkError):
     a partial result (e.g. `pplx fetch --prompt` accumulating chunks) can catch
     it specifically without swallowing real network failures.
     """
+
+
+class StreamStallError(StreamDeadlineError):
+    """SSE stream carried no new content for `seconds` (heartbeats and repeats don't count).
+
+    A deadline subclass so every partial-salvage path treats it the same way;
+    distinguished so the reported reason says the backend went quiet rather
+    than that the caller's overall budget ran out.
+    """
+
+    def __init__(self, message: str, seconds: float) -> None:
+        super().__init__(message)
+        self.seconds = seconds
 
 
 class AntiBotError(PplxError):

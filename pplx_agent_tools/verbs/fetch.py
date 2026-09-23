@@ -6,8 +6,8 @@ Hybrid implementation:
     content with trafilatura.
   - --prompt mode: route the URL + prompt through /rest/sse/perplexity_ask
     (the LLM has URL-fetching as a tool), parse out the answer — sharing the
-    ask-family SSE orchestration in `_ask_common` (retry/deadline/heartbeat/
-    cleanup) with `ask` and `research`.
+    ask-family SSE orchestration in `_ask_common` (retry/deadline/stall/
+    heartbeat/cleanup) with `ask` and `research`.
 
 Why the hybrid: Perplexity's web-session API surface has no URL→content
 fetch endpoint we can reach (RE'd 2026-05-12; see plan's "Open questions").
@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import ipaddress
 import socket
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urljoin, urlparse
 
@@ -29,9 +29,14 @@ from curl_cffi import requests as cf_requests
 from ..errors import NetworkError, SchemaError
 from ..wire import Client
 from ._ask_common import (
+    AskStreamState,
     base_ask_params,
+    blocks_changed,
+    cutoff_cause,
+    cutoff_warnings,
     extract_chunks_from_event,
     no_content_error,
+    release_thread,
     run_ask_stream,
 )
 
@@ -136,6 +141,9 @@ class FetchResult:
     # False iff the server stream was cut before a COMPLETED signal arrived
     # (only meaningful for --prompt mode; plain mode is always True).
     stream_complete: bool = True
+    warnings: list[str] = field(default_factory=list)
+    # "stall" | "deadline" when that bound cut the --prompt stream; None otherwise.
+    cut_by: str | None = None
 
 
 def fetch(
@@ -146,6 +154,7 @@ def fetch(
     max_chars: int | None = None,
     keep_thread: bool = False,
     timeout: float | None = None,
+    stall_seconds: float | None = None,
     progress: bool = False,
     model: str = "turbo",
 ) -> FetchResult:
@@ -162,9 +171,10 @@ def fetch(
     `model` is the `model_preference` for `--prompt` mode (default `turbo`).
 
     `timeout` bounds the wall-clock duration of `--prompt` mode (the SSE
-    chat call). When the deadline trips with any accumulated content, the
-    partial answer is returned with `stream_complete=False`. Plain mode
-    uses curl's own connect/read timeouts and ignores this parameter.
+    chat call) and `stall_seconds` its time without new content. When
+    either trips with any accumulated content, the partial answer is returned
+    with `stream_complete=False` and a warning naming which one. Plain mode
+    uses curl's own connect/read timeouts and ignores both.
 
     `progress`, when True, emits a single stderr char every N SSE events
     in `--prompt` mode so concurrent backgrounded calls show liveness.
@@ -180,6 +190,7 @@ def fetch(
         max_chars=max_chars,
         keep_thread=keep_thread,
         timeout=timeout,
+        stall_seconds=stall_seconds,
         progress=progress,
         model=model,
     )
@@ -271,6 +282,7 @@ def _fetch_with_prompt(
     max_chars: int | None,
     keep_thread: bool = False,
     timeout: float | None = None,
+    stall_seconds: float | None = None,
     progress: bool = False,
     model: str = "turbo",
 ) -> FetchResult:
@@ -278,11 +290,11 @@ def _fetch_with_prompt(
     URL-fetching as a tool and answers in one round-trip.
 
     Shares the ask-family SSE orchestration (429 retry + wall-clock deadline +
-    heartbeat + thread-id/completion/FAILED capture) via
+    stall guard + heartbeat + thread-id/completion/FAILED capture) via
     `_ask_common.run_ask_stream`; we accumulate the `markdown_block` chunks. The
     created thread runs incognito and is best-effort deleted (unless
-    `keep_thread`) on every exit path. On a tripped deadline with partial content
-    we return it with `stream_complete=False` (the agent contract is "you always
+    `keep_thread`) on every exit path. On a tripped deadline or stall with
+    partial content we return it with `stream_complete=False` (the agent contract is "you always
     get *something* plus a flag").
     """
     body = _build_chat_body(f"{prompt}\n\nFor URL: {url}", model_preference=model)
@@ -291,23 +303,22 @@ def _fetch_with_prompt(
     def on_event(event: dict[str, Any]) -> None:
         chunks.extend(extract_chunks_from_event(event))
 
-    state, deadline_tripped = run_ask_stream(
-        client,
-        _PROMPT_ENDPOINT,
-        body,
-        on_event=on_event,
-        timeout=timeout,
-        progress=progress,
-        label="fetch",
-    )
-
-    # Cleanup runs on EVERY exit path (success, FAILED, no-content) — delete_thread
-    # never raises, so doing it before the error checks stops a leak.
-    if not keep_thread and state.backend_uuid and state.read_write_token:
-        client.delete_thread(state.backend_uuid, state.read_write_token)
-
-    if state.transport_error is not None:
-        raise state.transport_error
+    state = AskStreamState()
+    try:
+        run_ask_stream(
+            client,
+            _PROMPT_ENDPOINT,
+            body,
+            state,
+            on_event=on_event,
+            timeout=timeout,
+            stall_seconds=stall_seconds,
+            progress=progress,
+            label="fetch",
+            is_progress=blocks_changed(),
+        )
+    finally:
+        release_thread(client, state, keep_thread=keep_thread)
 
     if state.failed:
         raise SchemaError(
@@ -321,7 +332,7 @@ def _fetch_with_prompt(
             label="fetch --prompt",
             endpoint=_PROMPT_ENDPOINT,
             timeout=timeout,
-            deadline_tripped=deadline_tripped,
+            cutoff=state.cutoff,
         )
 
     truncated = False
@@ -338,6 +349,8 @@ def _fetch_with_prompt(
         published_date=None,
         truncated=truncated,
         stream_complete=state.saw_completed,
+        cut_by=cutoff_cause(state),
+        warnings=cutoff_warnings(state),
     )
 
 

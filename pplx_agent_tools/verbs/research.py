@@ -19,20 +19,32 @@ docs/wire/perplexity-ask-research.md), with two important differences:
      blocks' `content.web_results`. The latest PARSEABLE snapshot's decode is what
      we return.
 
-Deep research takes ~90-120s (multi-round, ~40+ sources); the verb supports the
-same `--timeout` → partial-result (exit 6) contract as `fetch --prompt`, with
-bounded 429 retry.
+Deep research takes ~90-120s for a focused question and far longer for a broad
+one (multi-round, hundreds of sources); the verb supports the same `--timeout` /
+stall → partial-result (exit 6) contract as `fetch --prompt`, with bounded 429
+retry.
 """
 
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
 from ..errors import SchemaError
 from ..wire import Client
-from ._ask_common import Source, base_ask_params, no_content_error, run_ask_stream, to_source
+from ._ask_common import (
+    AskStreamState,
+    Source,
+    base_ask_params,
+    cutoff_cause,
+    cutoff_warnings,
+    no_content_error,
+    release_thread,
+    run_ask_stream,
+    to_source,
+)
 
 ENDPOINT = "/rest/sse/perplexity_ask"
 DEFAULT_MODE = "research"
@@ -79,7 +91,7 @@ class ResearchResult:
     answer: str
     sources: list[ResearchSource]
     mode: str
-    # False iff the stream was cut before COMPLETED (deadline tripped / server cut).
+    # False iff the stream was cut before COMPLETED (deadline / stall / server cut).
     stream_complete: bool = True
     # True when the kept snapshot's decoded report body is shorter than the
     # longest seen in any parseable snapshot, or when the stream's last frame
@@ -88,6 +100,8 @@ class ResearchResult:
     # guarantee.
     content_shortfall: bool = False
     warnings: list[str] = field(default_factory=list)
+    # "stall" | "deadline" when that bound cut the stream; None otherwise.
+    cut_by: str | None = None
 
 
 def _status_completed(event: dict[str, Any]) -> bool:
@@ -101,6 +115,23 @@ def _status_completed(event: dict[str, Any]) -> bool:
     return isinstance(data, dict) and data.get("status") == "COMPLETED"
 
 
+def _text_changed() -> Callable[[dict[str, Any]], bool]:
+    """The stall-guard progress predicate for research's snapshot stream."""
+    seen: set[int] = set()
+
+    # Snapshot frames repeat (or replay older ones) while working or hung; only a
+    # snapshot never seen before counts.
+    def is_progress(event: dict[str, Any]) -> bool:
+        data = event.get("data")
+        text = data.get("text") if isinstance(data, dict) else None
+        if not isinstance(text, str) or hash(text) in seen:
+            return False
+        seen.add(hash(text))
+        return True
+
+    return is_progress
+
+
 def research(
     client: Client,
     query: str,
@@ -110,6 +141,7 @@ def research(
     council_models: list[str] | None = None,
     keep_thread: bool = False,
     timeout: float | None = None,
+    stall_seconds: float | None = None,
     progress: bool = False,
 ) -> ResearchResult:
     """Run a deep-research query through the ask endpoint in `mode`.
@@ -118,9 +150,10 @@ def research(
     only — a model incompatible with research fails fast). `council_models`
     (Model Council only) picks the cross-checked trio.
 
-    `timeout` bounds wall-clock; on deadline-with-partial we return the partial
-    answer with `stream_complete=False` (the agent contract is "always something
-    plus a flag", exit 6). `keep_thread` preserves the incognito thread instead
+    `timeout` bounds wall-clock and `stall_seconds` the time without new content;
+    when either trips with a partial we return it with `stream_complete=False`
+    and a warning naming which one (the agent contract is "always something plus
+    a flag", exit 6). `keep_thread` preserves the incognito thread instead
     of deleting it (default deletes).
 
     Research streams full-snapshot frames, so we keep the *latest* `text` rather
@@ -176,26 +209,23 @@ def research(
         best["body"] = max(best["body"], len(body))
         best["total"] = max(best["total"], len(answer))
 
-    state, deadline_tripped = run_ask_stream(
-        client,
-        ENDPOINT,
-        body,
-        on_event=_on_event,
-        timeout=timeout,
-        progress=progress,
-        label="research",
-        is_complete=_status_completed,
-    )
-
-    # Best-effort cleanup runs on EVERY exit path (success, FAILED, no-content,
-    # or a decode error below) — delete_thread never raises, so doing it before
-    # the error checks stops a FAILED/partial request from leaking the incognito
-    # thread it created.
-    if not keep_thread and state.backend_uuid and state.read_write_token:
-        client.delete_thread(state.backend_uuid, state.read_write_token)
-
-    if state.transport_error is not None:
-        raise state.transport_error
+    state = AskStreamState()
+    try:
+        run_ask_stream(
+            client,
+            ENDPOINT,
+            body,
+            state,
+            on_event=_on_event,
+            timeout=timeout,
+            stall_seconds=stall_seconds,
+            progress=progress,
+            label="research",
+            is_complete=_status_completed,
+            is_progress=_text_changed(),
+        )
+    finally:
+        release_thread(client, state, keep_thread=keep_thread)
 
     if state.failed:
         raise SchemaError(
@@ -209,11 +239,17 @@ def research(
             # honest diagnosis, so re-raise it rather than reporting no content.
             decode_research_text(last_raw["text"])
         raise no_content_error(
-            label="research", endpoint=ENDPOINT, timeout=timeout, deadline_tripped=deadline_tripped
+            label="research", endpoint=ENDPOINT, timeout=timeout, cutoff=state.cutoff
         )
 
     answer: str = latest["answer"]
     sources: list[ResearchSource] = latest["sources"]
+    if not state.saw_completed and not answer and not sources:
+        # A cut stream whose only snapshot is the empty INITIAL_QUERY step has
+        # nothing to salvage; report it as a retryable cutoff, as `ask` does.
+        raise no_content_error(
+            label="research", endpoint=ENDPOINT, timeout=timeout, cutoff=state.cutoff
+        )
     content_shortfall, warnings = _shortfall_verdict(
         answer_len=len(answer), body_len=latest["body_len"], best=best, saw=saw
     )
@@ -224,8 +260,9 @@ def research(
         sources=sources,
         mode=mode,
         stream_complete=state.saw_completed,
+        cut_by=cutoff_cause(state),
         content_shortfall=content_shortfall,
-        warnings=warnings,
+        warnings=cutoff_warnings(state) + warnings,
     )
 
 

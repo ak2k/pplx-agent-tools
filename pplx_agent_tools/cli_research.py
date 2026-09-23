@@ -2,7 +2,8 @@
 
 Routes through /rest/sse/perplexity_ask in research mode. Session-creating but
 runs incognito (no history pollution) + best-effort thread cleanup. Supports the
-same --timeout → partial-result (exit 6) contract as `pplx fetch --prompt`.
+same --timeout / --stall-timeout → partial-result (exit 6) contract as
+`pplx fetch --prompt`.
 """
 
 from __future__ import annotations
@@ -15,10 +16,13 @@ from collections.abc import Sequence
 from .cli_runner import resolve_timeout, run_verb
 from .errors import EXIT_OK, EXIT_PARTIAL
 from .render import render_research_json, render_research_text
+from .verbs._ask_common import DEFAULT_STALL_SECONDS
 from .verbs.research import DEFAULT_MODE, ResearchResult, research
 
-# Research is slower than copilot ask (measured ~90-120s); longer default leash.
-_DEFAULT_TIMEOUT_SECONDS = 300.0
+# A hard cap, not the expected duration: a focused question finishes in
+# ~90-120s but a broad one can run past 30 minutes, and a hung backend is
+# caught by the stall guard long before this.
+_DEFAULT_TIMEOUT_SECONDS = 3600.0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -81,6 +85,18 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--stall-timeout",
+        type=float,
+        default=None,
+        help=(
+            "cut the stream after this many seconds without new content (server "
+            "heartbeats and repeated frames don't count); a partial report is "
+            "returned (exit 6), none "
+            f"exits 4. Default: {DEFAULT_STALL_SECONDS:.0f}s ($PPLX_STALL_TIMEOUT, "
+            "or 0 to disable)."
+        ),
+    )
+    parser.add_argument(
         "--progress",
         action="store_true",
         help="emit a heartbeat dot to stderr per ~10 SSE events. Honors $PPLX_PROGRESS=1.",
@@ -91,7 +107,7 @@ def build_parser() -> argparse.ArgumentParser:
 def _finalize(result: ResearchResult) -> int:
     if not result.stream_complete:
         print(
-            "warning: research stream did not reach COMPLETED (deadline or cut); "
+            "warning: research stream did not reach COMPLETED (deadline, stall or cut); "
             "partial answer returned (exit 6)",
             file=sys.stderr,
         )
@@ -116,6 +132,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     timeout = resolve_timeout(
         args.timeout, "PPLX_RESEARCH_TIMEOUT", _DEFAULT_TIMEOUT_SECONDS, "research"
     )
+    stall_seconds = resolve_timeout(
+        args.stall_timeout, "PPLX_STALL_TIMEOUT", DEFAULT_STALL_SECONDS, "research"
+    )
     council_models = (
         [m.strip() for m in args.council_models.split(",") if m.strip()]
         if args.council_models
@@ -134,6 +153,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             council_models=council_models,
             keep_thread=keep_thread,
             timeout=timeout,
+            stall_seconds=stall_seconds,
             progress=progress,
         ),
         render_text=render_research_text,
