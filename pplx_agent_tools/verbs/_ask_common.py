@@ -71,6 +71,20 @@ def cutoff_warnings(state: AskStreamState) -> list[str]:
     return [f"stream cut before COMPLETED, returning partial content: {state.cutoff}"]
 
 
+def cutoff_cause(state: AskStreamState) -> str | None:
+    """Which bound cut the stream: "stall", "deadline", or None when neither did
+    (a completed stream, or one the server closed early).
+
+    Results carry this on stdout because the retry differs by cause and agents
+    commonly discard stderr: a larger --timeout cannot help a stall.
+    """
+    if isinstance(state.cutoff, StreamStallError):
+        return "stall"
+    if state.cutoff is not None:
+        return "deadline"
+    return None
+
+
 def base_ask_params(
     query: str, *, model_preference: str, is_incognito: bool = True
 ) -> dict[str, Any]:

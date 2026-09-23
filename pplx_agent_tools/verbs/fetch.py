@@ -32,6 +32,7 @@ from ._ask_common import (
     AskStreamState,
     base_ask_params,
     blocks_changed,
+    cutoff_cause,
     cutoff_warnings,
     extract_chunks_from_event,
     no_content_error,
@@ -141,6 +142,8 @@ class FetchResult:
     # (only meaningful for --prompt mode; plain mode is always True).
     stream_complete: bool = True
     warnings: list[str] = field(default_factory=list)
+    # "stall" | "deadline" when that bound cut the --prompt stream; None otherwise.
+    cut_by: str | None = None
 
 
 def fetch(
@@ -346,6 +349,7 @@ def _fetch_with_prompt(
         published_date=None,
         truncated=truncated,
         stream_complete=state.saw_completed,
+        cut_by=cutoff_cause(state),
         warnings=cutoff_warnings(state),
     )
 

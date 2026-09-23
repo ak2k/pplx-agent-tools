@@ -147,6 +147,7 @@ def test_render_fetch_json_full_shape() -> None:
         "is_extracted": False,
         "truncated": False,
         "stream_complete": True,
+        "cut_by": None,
         "content": "Hello, world.",
         "title": "Example",
         "published_date": "2026-01-01",
@@ -172,6 +173,7 @@ def test_render_fetch_json_omits_optional_when_none() -> None:
         "is_extracted": True,
         "truncated": True,
         "stream_complete": False,
+        "cut_by": None,
         "content": "x",
     }
 

@@ -27,17 +27,25 @@ from pplx_agent_tools.errors import (
     StreamDeadlineError,
     StreamStallError,
 )
-from pplx_agent_tools.render import render_fetch_json
+from pplx_agent_tools.render import (
+    render_ask_json,
+    render_ask_text,
+    render_fetch_json,
+    render_fetch_text,
+    render_research_json,
+    render_research_text,
+)
 from pplx_agent_tools.verbs._ask_common import (
     DEFAULT_STALL_SECONDS,
     AskStreamState,
     blocks_changed,
+    cutoff_cause,
     no_content_error,
     run_ask_stream,
 )
-from pplx_agent_tools.verbs.ask import ask
+from pplx_agent_tools.verbs.ask import AskResult, ask
 from pplx_agent_tools.verbs.fetch import FetchResult, fetch
-from pplx_agent_tools.verbs.research import _text_changed, research
+from pplx_agent_tools.verbs.research import ResearchResult, _text_changed, research
 
 from ._doubles import _TestClientBase
 
@@ -65,6 +73,16 @@ def _snapshot(answer: str) -> bytes:
     return _frame({"backend_uuid": "BU", "read_write_token": "RW", "text": json.dumps([final])})
 
 
+def _research_steps(*steps: dict[str, Any]) -> bytes:
+    """A research snapshot made of the given blocks, without a FINAL answer."""
+    return _frame({"backend_uuid": "BU", "read_write_token": "RW", "text": json.dumps(steps)})
+
+
+INITIAL_QUERY = {"step_type": "INITIAL_QUERY", "content": {"query": "q"}}
+SEARCH_RESULTS = {
+    "step_type": "SEARCH_RESULTS",
+    "content": {"web_results": [{"url": "https://found", "name": "Found"}]},
+}
 COMPLETED = _frame({"status": "COMPLETED"})
 # ask and fetch --prompt default to a 180 s deadline, inside the default stall
 # window, so their stall scenarios need the deadline lifted out of the way.
@@ -310,6 +328,7 @@ def test_stall_after_partial_content_returns_the_partial(
     cap = capsys.readouterr()
     assert rc == EXIT_PARTIAL
     assert "partial answer" in cap.out
+    assert "stream: incomplete (stall: no new content)" in cap.out
     assert "stalled: no new content for 240.0s" in cap.err
     assert client.deleted == [("BU", "RW")]
 
@@ -323,6 +342,7 @@ def test_stall_warning_reaches_the_json_envelope(
     assert rc == EXIT_PARTIAL
     assert out["stream_complete"] is False
     assert out["content_shortfall"] is False
+    assert out["cut_by"] == "stall"
     assert any("stalled: no new content for 240.0s" in w for w in out["warnings"])
 
 
@@ -450,8 +470,101 @@ def test_hard_cap_with_data_still_flowing_returns_a_deadline_partial(
     cap = capsys.readouterr()
     assert rc == EXIT_PARTIAL
     assert "report v" in cap.out
+    assert "stream: incomplete (deadline)" in cap.out
     assert "s deadline" in cap.err
     assert "stalled" not in cap.err
+
+
+def test_research_cut_with_only_the_initial_query_exits_network(
+    clock: _Clock, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    client = _StreamClient([(0, _research_steps(INITIAL_QUERY)), *_heartbeats(300)], clock)
+    rc = _run_cli(monkeypatch, cli_research.main, ["q"], client)
+    cap = capsys.readouterr()
+    assert rc == EXIT_NETWORK
+    assert "no new content for 240.0s before the first content arrived" in cap.err
+    assert "(no answer)" not in cap.out
+    assert client.deleted == [("BU", "RW")]
+
+
+def test_research_cut_with_sources_but_no_answer_is_a_partial(
+    clock: _Clock, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    frame = _research_steps(INITIAL_QUERY, SEARCH_RESULTS)
+    client = _StreamClient([(0, frame), *_heartbeats(300)], clock)
+    rc = _run_cli(monkeypatch, cli_research.main, ["q", "--json"], client)
+    out = json.loads(capsys.readouterr().out)
+    assert rc == EXIT_PARTIAL
+    assert out["answer"] == ""
+    assert [s["url"] for s in out["sources"]] == ["https://found"]
+    assert out["cut_by"] == "stall"
+    assert client.deleted == [("BU", "RW")]
+
+
+def test_server_cut_names_no_bound(
+    clock: _Clock, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    client = _StreamClient([(0, _chunk("cut short"))], clock)
+    rc = _run_cli(monkeypatch, cli_ask.main, ["q"], client)
+    cap = capsys.readouterr()
+    assert rc == EXIT_PARTIAL
+    assert "stream: incomplete (server cut)" in cap.out
+
+
+@pytest.mark.parametrize(
+    ("cutoff", "expected"),
+    [
+        (StreamStallError("x", 240), "stall"),
+        (StreamDeadlineError("x"), "deadline"),
+        (None, None),
+    ],
+    ids=["stall", "deadline", "none"],
+)
+def test_cutoff_cause_names_the_bound(
+    cutoff: StreamDeadlineError | None, expected: str | None
+) -> None:
+    assert cutoff_cause(AskStreamState(cutoff=cutoff)) == expected
+
+
+_CUT_RESULTS: list[Callable[[str | None], Any]] = [
+    lambda cut_by: AskResult("q", "partial", "turbo", stream_complete=False, cut_by=cut_by),
+    lambda cut_by: ResearchResult("q", "partial", [], "research", False, cut_by=cut_by),
+    lambda cut_by: FetchResult(
+        url="https://example.com",
+        title=None,
+        domain="example.com",
+        content="partial",
+        is_extracted=True,
+        stream_complete=False,
+        cut_by=cut_by,
+    ),
+]
+_RENDERERS = [
+    (render_ask_text, render_ask_json),
+    (render_research_text, render_research_json),
+    (render_fetch_text, render_fetch_json),
+]
+
+
+@pytest.mark.parametrize("verb", range(3), ids=["ask", "research", "fetch"])
+@pytest.mark.parametrize(
+    ("cut_by", "marker"),
+    [
+        ("stall", "stream: incomplete (stall: no new content)"),
+        ("deadline", "stream: incomplete (deadline)"),
+        (None, "stream: incomplete (server cut)"),
+    ],
+    ids=["stall", "deadline", "server"],
+)
+def test_incomplete_marker_and_json_name_the_cause(
+    verb: int, cut_by: str | None, marker: str
+) -> None:
+    result = _CUT_RESULTS[verb](cut_by)
+    render_text, render_json = _RENDERERS[verb]
+    assert marker in render_text(result)
+    j = render_json(result)
+    assert j["stream_complete"] is False
+    assert j["cut_by"] == cut_by
 
 
 def test_no_content_messages_name_the_bound_that_fired() -> None:

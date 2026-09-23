@@ -138,6 +138,17 @@ def render_snippets_json(result: SnippetsResult) -> dict[str, Any]:
     )
 
 
+def _incomplete_marker(cut_by: str | None) -> str:
+    """The stdout marker for a cut stream. The `stream: incomplete` prefix is
+    stable for callers that grep it; the cause follows because the right retry
+    differs (a larger --timeout cannot help a stall)."""
+    if cut_by == "stall":
+        return "stream: incomplete (stall: no new content)"
+    if cut_by == "deadline":
+        return "stream: incomplete (deadline)"
+    return "stream: incomplete (server cut)"
+
+
 def render_fetch_text(result: FetchResult) -> str:
     """Header (title / URL / domain / extracted flag) followed by content."""
     header_lines: list[str] = []
@@ -153,7 +164,7 @@ def render_fetch_text(result: FetchResult) -> str:
         # Surfaced on the header line so a human eyeballing stdout doesn't
         # mistake a deadline-clipped partial answer for a complete one.
         # `cli_fetch` also emits a stderr warning for machine-parseable runs.
-        extra.append("stream: incomplete (deadline, stall or cut)")
+        extra.append(_incomplete_marker(result.cut_by))
     header_lines.append(" · ".join(extra))
     return "\n".join(header_lines) + "\n\n" + result.content
 
@@ -165,6 +176,7 @@ def render_fetch_json(result: FetchResult) -> dict[str, Any]:
         "is_extracted": result.is_extracted,
         "truncated": result.truncated,
         "stream_complete": result.stream_complete,
+        "cut_by": result.cut_by,
         "content": result.content,
     }
     if result.title is not None:
@@ -300,7 +312,7 @@ def render_ask_text(result: AskResult) -> str:
                 parts.append(f"    {s.url}")
     if not result.stream_complete:
         parts.append("")
-        parts.append("stream: incomplete (deadline, stall or cut)")
+        parts.append(_incomplete_marker(result.cut_by))
     return "\n".join(parts)
 
 
@@ -320,6 +332,7 @@ def render_ask_json(result: AskResult) -> dict[str, Any]:
                 for s in result.sources
             ],
             "stream_complete": result.stream_complete,
+            "cut_by": result.cut_by,
         },
         warnings=result.warnings,
     )
@@ -339,7 +352,7 @@ def render_research_text(result: ResearchResult) -> str:
                 parts.append(f"    {s.url}")
     if not result.stream_complete:
         parts.append("")
-        parts.append("stream: incomplete (deadline, stall or cut)")
+        parts.append(_incomplete_marker(result.cut_by))
     if result.content_shortfall:
         parts.append("")
         parts.append("content: may be incomplete (see warnings)")
@@ -362,6 +375,7 @@ def render_research_json(result: ResearchResult) -> dict[str, Any]:
                 for s in result.sources
             ],
             "stream_complete": result.stream_complete,
+            "cut_by": result.cut_by,
             "content_shortfall": result.content_shortfall,
         },
         warnings=result.warnings,

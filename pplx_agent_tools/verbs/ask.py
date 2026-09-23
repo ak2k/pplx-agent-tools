@@ -26,6 +26,7 @@ from ._ask_common import (
     Source,
     base_ask_params,
     blocks_changed,
+    cutoff_cause,
     cutoff_warnings,
     extract_chunks_from_event,
     extract_web_results,
@@ -48,6 +49,8 @@ class AskResult:
     stream_complete: bool = True
     sources: list[Source] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    # "stall" | "deadline" when that bound cut the stream; None otherwise.
+    cut_by: str | None = None
 
 
 def ask(
@@ -119,6 +122,7 @@ def ask(
         answer=content,
         model=model,
         stream_complete=state.saw_completed,
+        cut_by=cutoff_cause(state),
         sources=sources,
         warnings=cutoff_warnings(state),
     )

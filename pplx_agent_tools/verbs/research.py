@@ -38,6 +38,7 @@ from ._ask_common import (
     AskStreamState,
     Source,
     base_ask_params,
+    cutoff_cause,
     cutoff_warnings,
     no_content_error,
     release_thread,
@@ -99,6 +100,8 @@ class ResearchResult:
     # guarantee.
     content_shortfall: bool = False
     warnings: list[str] = field(default_factory=list)
+    # "stall" | "deadline" when that bound cut the stream; None otherwise.
+    cut_by: str | None = None
 
 
 def _status_completed(event: dict[str, Any]) -> bool:
@@ -240,6 +243,12 @@ def research(
 
     answer: str = latest["answer"]
     sources: list[ResearchSource] = latest["sources"]
+    if not state.saw_completed and not answer and not sources:
+        # A cut stream whose only snapshot is the empty INITIAL_QUERY step has
+        # nothing to salvage; report it as a retryable cutoff, as `ask` does.
+        raise no_content_error(
+            label="research", endpoint=ENDPOINT, timeout=timeout, cutoff=state.cutoff
+        )
     content_shortfall, warnings = _shortfall_verdict(
         answer_len=len(answer), body_len=latest["body_len"], best=best, saw=saw
     )
@@ -250,6 +259,7 @@ def research(
         sources=sources,
         mode=mode,
         stream_complete=state.saw_completed,
+        cut_by=cutoff_cause(state),
         content_shortfall=content_shortfall,
         warnings=cutoff_warnings(state) + warnings,
     )
