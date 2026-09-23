@@ -239,7 +239,7 @@ class Client:
         connection or status-code failure.
         """
         url = self._base_url + path
-        read_timeout, silence_error = _silence_bounds(
+        connect_timeout, read_timeout, silence_error = _silence_bounds(
             path, self._timeout, max_total_seconds, stall_seconds
         )
         try:
@@ -249,7 +249,7 @@ class Client:
                 json=body,
                 headers={"accept": "text/event-stream"},
                 stream=True,
-                timeout=(self._timeout, read_timeout),
+                timeout=(connect_timeout, read_timeout),
             )
         except Exception as e:
             raise NetworkError(f"POST {path} failed: {e!s}") from e
@@ -398,11 +398,12 @@ class Client:
 
 def _silence_bounds(
     path: str, connect_timeout: float, max_total_seconds: float | None, stall_seconds: float | None
-) -> tuple[float, StreamDeadlineError]:
-    """The SSE read leg, and the error its low-speed abort stands for.
+) -> tuple[float, float, StreamDeadlineError]:
+    """The SSE (connect, read) legs, and the error their low-speed abort stands for.
 
-    curl aborts after connect + read seconds below 1 B/s, so the read leg is
-    what remains of the silence window after the connect leg. The window is the
+    curl aborts after connect + read seconds below 1 B/s, so the two legs must
+    sum to the silence window; a window shorter than the connect timeout
+    shrinks the connect leg too. The window is the
     stall bound capped by the overall deadline; when the deadline is the one
     that runs out first, the abort is reported as the deadline. The stall check
     in `sse_post` only runs when bytes arrive, so this abort is what ends a
@@ -413,17 +414,24 @@ def _silence_bounds(
         window = stall_seconds
         if max_total_seconds and max_total_seconds < stall_seconds:
             window = max_total_seconds
-        read_timeout = max(window - connect_timeout, 1.0)
+        connect_timeout = min(connect_timeout, window)
+        read_timeout = window - connect_timeout
     else:
         read_timeout = DEFAULT_SSE_READ_TIMEOUT
     silence_seconds = connect_timeout + read_timeout
     if max_total_seconds and max_total_seconds <= silence_seconds:
-        return read_timeout, StreamDeadlineError(
-            f"SSE stream on {path} exceeded {max_total_seconds:.1f}s deadline"
+        return (
+            connect_timeout,
+            read_timeout,
+            StreamDeadlineError(f"SSE stream on {path} exceeded {max_total_seconds:.1f}s deadline"),
         )
-    return read_timeout, StreamStallError(
-        f"SSE stream on {path} stalled: no new content for {silence_seconds:.1f}s",
-        silence_seconds,
+    return (
+        connect_timeout,
+        read_timeout,
+        StreamStallError(
+            f"SSE stream on {path} stalled: no new content for {silence_seconds:.1f}s",
+            silence_seconds,
+        ),
     )
 
 

@@ -275,7 +275,7 @@ def test_other_curl_errors_stay_network_errors(clock: _Clock) -> None:
         (DEFAULT_STALL_SECONDS, 1800.0, (30.0, 210.0)),  # abort at the default window
         (120.0, 1800.0, (30.0, 90.0)),  # low-speed abort after ~120 s of silence
         (120.0, 50.0, (30.0, 20.0)),  # capped by the remaining deadline
-        (10.0, None, (30.0, 1.0)),  # window shorter than the connect leg
+        (10.0, None, (10.0, 0.0)),  # window shorter than the connect leg shrinks it
         (None, 180.0, (30.0, 60.0)),  # guard disabled: today's 90 s backstop
     ],
 )
