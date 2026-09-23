@@ -71,8 +71,9 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=None,
         help=(
-            "cut the stream after this many seconds without a data event (server "
-            "heartbeats don't count); a partial answer is returned (exit 6), none "
+            "cut the stream after this many seconds without new content (server "
+            "heartbeats and repeated frames don't count); a partial answer is "
+            "returned (exit 6), none "
             f"exits 4. Default: {DEFAULT_STALL_SECONDS:.0f}s ($PPLX_STALL_TIMEOUT, "
             "or 0 to disable)."
         ),

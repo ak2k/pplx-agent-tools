@@ -1,8 +1,10 @@
-"""Stall guard for the ask-family SSE stream: no data event for N seconds cuts it.
+"""Stall guard for the ask-family SSE stream: no new content for N seconds cuts it.
 
 Runs the real `Client.sse_post` over a scripted stream whose clock is fake, so
 multi-minute scenarios run instantly. Heartbeats are SSE comment frames, which
-Perplexity sends every ~15 s whether or not the backend is making progress.
+Perplexity sends every ~15 s whether or not the backend is making progress; it
+also keeps sending envelope-only and repeated-snapshot data frames, which the
+ask-family verbs must not count as progress either.
 """
 
 from __future__ import annotations
@@ -25,10 +27,14 @@ from pplx_agent_tools.errors import (
     StreamStallError,
 )
 from pplx_agent_tools.render import render_fetch_json
-from pplx_agent_tools.verbs._ask_common import DEFAULT_STALL_SECONDS, no_content_error
+from pplx_agent_tools.verbs._ask_common import (
+    DEFAULT_STALL_SECONDS,
+    blocks_changed,
+    no_content_error,
+)
 from pplx_agent_tools.verbs.ask import ask
 from pplx_agent_tools.verbs.fetch import FetchResult, fetch
-from pplx_agent_tools.verbs.research import research
+from pplx_agent_tools.verbs.research import _text_changed, research
 
 from ._doubles import _TestClientBase
 
@@ -57,6 +63,11 @@ def _snapshot(answer: str) -> bytes:
 
 
 COMPLETED = _frame({"status": "COMPLETED"})
+# ask and fetch --prompt default to a 180 s deadline, inside the default stall
+# window, so their stall scenarios need the deadline lifted out of the way.
+LONG_DEADLINE = ["--timeout", "1800"]
+# A data frame with no `blocks`: the bulk of a live ask stream.
+ENVELOPE = _frame({"backend_uuid": "BU", "read_write_token": "RW", "status": "PENDING"})
 
 
 class _Clock:
@@ -121,6 +132,10 @@ def _heartbeats(seconds: float, every: float = 15.0) -> list[Step]:
     return [(every, HEARTBEAT) for _ in range(int(seconds // every))]
 
 
+def _repeat(frame: bytes, seconds: float, every: float = 14.0) -> list[Step]:
+    return [(every, frame) for _ in range(int(seconds // every))]
+
+
 def _curl_error(code: CurlECode) -> RequestException:
     # The shape curl_cffi queues when a streaming transfer dies mid-body.
     return RequestException(f"curl: ({int(code)}) simulated", code)
@@ -136,10 +151,61 @@ def test_heartbeats_do_not_reset_the_stall_clock(clock: _Clock) -> None:
         for event in client.sse_post("/x", {}, max_total_seconds=1800, stall_seconds=120):
             data_events += event["data"] is not None
     assert exc.value.seconds == 120
-    assert "no data for 120.0s" in str(exc.value)
+    assert "no new content for 120.0s" in str(exc.value)
     assert data_events == 1
     # Heartbeats arrive every 15 s, so the trip lands within one of the window.
     assert 120 < clock.now - 1000.0 <= 135
+
+
+def test_default_predicate_counts_any_data_event(clock: _Clock) -> None:
+    client = _StreamClient([(0, _chunk("a")), *_repeat(ENVELOPE, 500), (14, COMPLETED)], clock)
+    events = list(client.sse_post("/x", {}, max_total_seconds=1800, stall_seconds=120))
+    assert events[-1]["data"] == {"status": "COMPLETED"}
+    assert clock.now - 1000.0 > 500
+
+
+def test_predicate_decides_what_resets_the_stall_clock(clock: _Clock) -> None:
+    client = _StreamClient([(0, _chunk("a")), *_repeat(ENVELOPE, 500)], clock)
+    with pytest.raises(StreamStallError, match=r"no new content for 120\.0s"):
+        list(
+            client.sse_post(
+                "/x", {}, max_total_seconds=1800, stall_seconds=120, is_progress=blocks_changed()
+            )
+        )
+    assert 120 < clock.now - 1000.0 <= 134
+
+
+def test_heartbeats_never_reach_the_predicate(clock: _Clock) -> None:
+    seen: list[Any] = []
+
+    def _always(event: dict[str, Any]) -> bool:
+        seen.append(event)
+        return True
+
+    client = _StreamClient([(0, _chunk("a")), *_heartbeats(200)], clock)
+    with pytest.raises(StreamStallError):
+        list(client.sse_post("/x", {}, stall_seconds=120, is_progress=_always))
+    assert len(seen) == 1
+
+
+def test_blocks_changed_counts_only_new_blocks() -> None:
+    is_progress = blocks_changed()
+    first = {"data": {"blocks": [{"x": 1}]}}
+    assert not is_progress({"data": {"status": "PENDING"}})
+    assert not is_progress({"data": "raw"})
+    assert is_progress(first)
+    assert not is_progress({"data": {"blocks": [{"x": 1}], "status": "PENDING"}})
+    assert is_progress({"data": {"blocks": [{"x": 2}]}})
+    assert is_progress(first)
+
+
+def test_text_changed_counts_only_new_text() -> None:
+    is_progress = _text_changed()
+    assert not is_progress({"data": {"status": "PENDING"}})
+    assert not is_progress({"data": {"text": None}})
+    assert is_progress({"data": {"text": "a"}})
+    assert not is_progress({"data": {"text": "a", "status": "PENDING"}})
+    assert is_progress({"data": {"text": "ab"}})
 
 
 def test_long_healthy_stream_outlives_the_old_research_deadline(clock: _Clock) -> None:
@@ -162,7 +228,7 @@ def test_curl_timeout_mid_stream_is_a_stall(clock: _Clock) -> None:
     client = _StreamClient(
         [(0, _chunk("a")), (0, _curl_error(CurlECode.OPERATION_TIMEDOUT))], clock
     )
-    with pytest.raises(StreamStallError, match=r"no data for 120\.0s"):
+    with pytest.raises(StreamStallError, match=r"no new content for 120\.0s"):
         list(client.sse_post("/x", {}, max_total_seconds=1800, stall_seconds=120))
 
 
@@ -179,7 +245,7 @@ def test_curl_timeout_without_stall_guard_is_a_stall_of_the_backstop(clock: _Clo
     client = _StreamClient(
         [(0, _chunk("a")), (0, _curl_error(CurlECode.OPERATION_TIMEDOUT))], clock
     )
-    with pytest.raises(StreamStallError, match=r"no data for 90\.0s"):
+    with pytest.raises(StreamStallError, match=r"no new content for 90\.0s"):
         list(client.sse_post("/x", {}, max_total_seconds=180))
 
 
@@ -193,6 +259,7 @@ def test_other_curl_errors_stay_network_errors(clock: _Clock) -> None:
 @pytest.mark.parametrize(
     ("stall", "deadline", "expected"),
     [
+        (DEFAULT_STALL_SECONDS, 1800.0, (30.0, 210.0)),  # abort at the default window
         (120.0, 1800.0, (30.0, 90.0)),  # low-speed abort after ~120 s of silence
         (120.0, 50.0, (30.0, 20.0)),  # capped by the remaining deadline
         (10.0, None, (30.0, 1.0)),  # window shorter than the connect leg
@@ -226,11 +293,11 @@ def test_stall_after_partial_content_returns_the_partial(
     clock: _Clock, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     client = _StreamClient([(0, _chunk("partial answer")), *_heartbeats(300)], clock)
-    rc = _run_cli(monkeypatch, cli_ask.main, ["q"], client)
+    rc = _run_cli(monkeypatch, cli_ask.main, ["q", *LONG_DEADLINE], client)
     cap = capsys.readouterr()
     assert rc == EXIT_PARTIAL
     assert "partial answer" in cap.out
-    assert "stalled: no data for 120.0s" in cap.err
+    assert "stalled: no new content for 240.0s" in cap.err
     assert client.deleted == [("BU", "RW")]
 
 
@@ -243,17 +310,100 @@ def test_stall_warning_reaches_the_json_envelope(
     assert rc == EXIT_PARTIAL
     assert out["stream_complete"] is False
     assert out["content_shortfall"] is False
-    assert any("stalled: no data for 120.0s" in w for w in out["warnings"])
+    assert any("stalled: no new content for 240.0s" in w for w in out["warnings"])
 
 
 def test_stall_before_any_content_exits_network(
     clock: _Clock, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     client = _StreamClient(_heartbeats(300), clock)
-    rc = _run_cli(monkeypatch, cli_ask.main, ["q"], client)
+    rc = _run_cli(monkeypatch, cli_ask.main, ["q", *LONG_DEADLINE], client)
     cap = capsys.readouterr()
     assert rc == EXIT_NETWORK
-    assert "no data for 120.0s before the first content arrived" in cap.err
+    assert "no new content for 240.0s before the first content arrived" in cap.err
+
+
+def test_research_repeating_its_snapshot_stalls_with_the_partial(
+    clock: _Clock, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    frame = _snapshot("partial report")
+    client = _StreamClient([(0, frame), *_repeat(frame, 600)], clock)
+    rc = _run_cli(monkeypatch, cli_research.main, ["q", "--json"], client)
+    out = json.loads(capsys.readouterr().out)
+    assert rc == EXIT_PARTIAL
+    assert "partial report" in out["answer"]
+    assert out["stream_complete"] is False
+    assert any("stalled: no new content for 240.0s" in w for w in out["warnings"])
+    assert 240 < clock.now - 1000.0 <= 254
+    assert client.deleted == [("BU", "RW")]
+
+
+PARTIAL_CHUNK = _chunk("partial answer")
+
+
+@pytest.mark.parametrize(
+    ("main", "argv", "filler"),
+    [
+        (cli_ask.main, ["q"], ENVELOPE),
+        (cli_fetch.main, ["https://example.com", "--prompt", "p"], ENVELOPE),
+        (cli_ask.main, ["q"], PARTIAL_CHUNK),
+    ],
+    ids=["ask-envelope", "fetch-envelope", "ask-repeated-blocks"],
+)
+def test_non_progress_frames_after_content_stall_with_the_partial(
+    clock: _Clock,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    main: Callable[[list[str]], int],
+    argv: list[str],
+    filler: bytes,
+) -> None:
+    client = _StreamClient([(0, PARTIAL_CHUNK), *_repeat(filler, 600)], clock)
+    rc = _run_cli(monkeypatch, main, [*argv, *LONG_DEADLINE], client)
+    cap = capsys.readouterr()
+    assert rc == EXIT_PARTIAL
+    assert "partial answer" in cap.out
+    assert "stalled: no new content for 240.0s" in cap.err
+    assert 240 < clock.now - 1000.0 <= 254
+
+
+def test_envelope_frames_before_content_exit_network(
+    clock: _Clock, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    client = _StreamClient(_repeat(ENVELOPE, 600), clock)
+    rc = _run_cli(monkeypatch, cli_ask.main, ["q", *LONG_DEADLINE], client)
+    cap = capsys.readouterr()
+    assert rc == EXIT_NETWORK
+    assert "no new content for 240.0s before the first content arrived" in cap.err
+
+
+def test_ask_whose_blocks_keep_changing_runs_past_the_window(
+    clock: _Clock, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    steps: list[Step] = []
+    for i in range(5):
+        steps += [(0, _chunk(f"part{i} ")), *_repeat(ENVELOPE, 200)]
+    client = _StreamClient([*steps, (0, COMPLETED)], clock)
+    rc = _run_cli(monkeypatch, cli_ask.main, ["q", *LONG_DEADLINE], client)
+    cap = capsys.readouterr()
+    assert rc == 0
+    assert "part4" in cap.out
+    assert clock.now - 1000.0 > 900
+
+
+def test_research_whose_text_keeps_changing_runs_past_the_window(
+    clock: _Clock, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    steps: list[Step] = []
+    for i in range(5):
+        frame = _snapshot(f"report v{i}")
+        steps += [(0, frame), *_repeat(frame, 200)]
+    client = _StreamClient([*steps, (0, COMPLETED)], clock)
+    rc = _run_cli(monkeypatch, cli_research.main, ["q"], client)
+    cap = capsys.readouterr()
+    assert rc == 0
+    assert "report v4" in cap.out
+    assert clock.now - 1000.0 > 900
 
 
 def test_curl_timeout_after_content_keeps_the_partial(
@@ -261,7 +411,8 @@ def test_curl_timeout_after_content_keeps_the_partial(
 ) -> None:
     steps: list[Step] = [(0, _chunk("kept")), (0, _curl_error(CurlECode.OPERATION_TIMEDOUT))]
     client = _StreamClient(steps, clock)
-    rc = _run_cli(monkeypatch, cli_fetch.main, ["https://example.com", "--prompt", "p"], client)
+    argv = ["https://example.com", "--prompt", "p", *LONG_DEADLINE]
+    rc = _run_cli(monkeypatch, cli_fetch.main, argv, client)
     cap = capsys.readouterr()
     assert rc == EXIT_PARTIAL
     assert "kept" in cap.out
@@ -298,7 +449,7 @@ def test_no_content_messages_name_the_bound_that_fired() -> None:
         label="ask", endpoint="/e", timeout=180, cutoff=StreamDeadlineError("x")
     )
     assert isinstance(stall, StreamStallError)
-    assert "no data for 120.0s" in str(stall)
+    assert "no new content for 120.0s" in str(stall)
     assert type(deadline) is StreamDeadlineError
     assert "exceeded 180.0s deadline" in str(deadline)
 

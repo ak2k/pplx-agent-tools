@@ -25,6 +25,7 @@ from ._ask_common import (
     AskStreamState,
     Source,
     base_ask_params,
+    blocks_changed,
     cutoff_warnings,
     extract_chunks_from_event,
     extract_web_results,
@@ -62,7 +63,7 @@ def ask(
     """Ask a question, get a synthesized cited answer (copilot mode).
 
     `model` is the `model_preference` (default `turbo`). `timeout` bounds
-    wall-clock and `stall_seconds` the gap between data events; when either
+    wall-clock and `stall_seconds` the time without new content; when either
     trips with a partial answer we return it with `stream_complete=False`
     (exit 6) and a warning naming which one. `keep_thread` keeps the incognito
     thread.
@@ -98,6 +99,7 @@ def ask(
             stall_seconds=stall_seconds,
             progress=progress,
             label="ask",
+            is_progress=blocks_changed(),
         )
     finally:
         release_thread(client, state, keep_thread=keep_thread)

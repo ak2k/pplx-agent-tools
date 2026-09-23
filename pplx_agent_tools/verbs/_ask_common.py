@@ -3,7 +3,7 @@
 All three hit /rest/sse/perplexity_ask and share: the request `params` block
 (`base_ask_params`), the copilot chunk/source extractors + the `Source` type, and
 the SSE orchestration (`run_ask_stream`: 429 retry honoring `retry-after`, an
-overall wall-clock deadline and a no-data stall guard that both soft-fail to a
+overall wall-clock deadline and a no-new-content stall guard that both soft-fail to a
 partial result, a progress heartbeat, and capture of the thread identifiers +
 completion/FAILED signals; `release_thread` is the matching cleanup).
 Only the *accumulation* differs (copilot streams `markdown_block` chunks +
@@ -37,8 +37,8 @@ _BACKOFF_JITTER_LOW = 0.85
 _BACKOFF_JITTER_HIGH = 1.15  # ±15% jitter so parallel callers don't wake in lockstep
 _PROGRESS_EVENT_STRIDE = 10
 # Default for every ask-family CLI's --stall-timeout: how long a stream may go
-# without a data event (heartbeat comments excluded) before it is cut.
-DEFAULT_STALL_SECONDS = 120.0
+# without new content before it is cut.
+DEFAULT_STALL_SECONDS = 240.0
 
 
 @dataclass
@@ -193,6 +193,23 @@ def event_marks_completed(event: dict[str, Any]) -> bool:
     return data.get("status") == "COMPLETED" or bool(data.get("text_completed"))
 
 
+def blocks_changed() -> Callable[[dict[str, Any]], bool]:
+    """A stall-guard progress predicate for copilot streams (`ask`, `fetch --prompt`)."""
+    last: dict[str, Any] = {}
+
+    # Envelope and repeat frames flow while working or hung; only new blocks count.
+    def is_progress(event: dict[str, Any]) -> bool:
+        data = event.get("data")
+        if not isinstance(data, dict) or "blocks" not in data:
+            return False
+        if "blocks" in last and last["blocks"] == data["blocks"]:
+            return False
+        last["blocks"] = data["blocks"]
+        return True
+
+    return is_progress
+
+
 def _event_marks_failed(event: dict[str, Any]) -> bool:
     data = event.get("data")
     return isinstance(data, dict) and data.get("status") == "FAILED"
@@ -210,6 +227,7 @@ def run_ask_stream(
     progress: bool,
     label: str,
     is_complete: Callable[[dict[str, Any]], bool] = event_marks_completed,
+    is_progress: Callable[[dict[str, Any]], bool] | None = None,
 ) -> None:
     """Drive the SSE call with retry/deadline/stall guard, filling in `state`.
 
@@ -226,6 +244,9 @@ def run_ask_stream(
     early `text_completed` flag, which is right for delta-accumulating callers
     (stopping there avoids double-counting the COMPLETED repaint). Snapshot
     callers need the repaint and override it — see verbs/research.py.
+
+    `is_progress` decides which events reset the stall clock (see
+    `Client.sse_post`); None counts any event carrying data.
     """
     overall_deadline = (time.monotonic() + timeout) if timeout else None
 
@@ -258,6 +279,7 @@ def run_ask_stream(
                 progress=progress,
                 on_event=on_event,
                 is_complete=is_complete,
+                is_progress=is_progress,
             )
             break
         except StreamDeadlineError as e:
@@ -289,7 +311,7 @@ def no_content_error(
     """
     if isinstance(cutoff, StreamStallError):
         return StreamStallError(
-            f"{label} stream on {endpoint} received no data for {cutoff.seconds:.1f}s "
+            f"{label} stream on {endpoint} stalled: no new content for {cutoff.seconds:.1f}s "
             f"before the first content arrived",
             cutoff.seconds,
         )
@@ -315,11 +337,16 @@ def _drive_one(
     progress: bool,
     on_event: Callable[[dict[str, Any]], None],
     is_complete: Callable[[dict[str, Any]], bool],
+    is_progress: Callable[[dict[str, Any]], bool] | None,
 ) -> None:
     event_count = 0
     try:
         for event in client.sse_post(
-            endpoint, body, max_total_seconds=remaining_seconds, stall_seconds=stall_seconds
+            endpoint,
+            body,
+            max_total_seconds=remaining_seconds,
+            stall_seconds=stall_seconds,
+            is_progress=is_progress,
         ):
             event_count += 1
             if progress and event_count % _PROGRESS_EVENT_STRIDE == 0:

@@ -28,6 +28,7 @@ retry.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -111,6 +112,22 @@ def _status_completed(event: dict[str, Any]) -> bool:
     return isinstance(data, dict) and data.get("status") == "COMPLETED"
 
 
+def _text_changed() -> Callable[[dict[str, Any]], bool]:
+    """The stall-guard progress predicate for research's snapshot stream."""
+    last: dict[str, str] = {}
+
+    # Snapshot frames repeat unchanged while working or hung; only new text counts.
+    def is_progress(event: dict[str, Any]) -> bool:
+        data = event.get("data")
+        text = data.get("text") if isinstance(data, dict) else None
+        if not isinstance(text, str) or last.get("text") == text:
+            return False
+        last["text"] = text
+        return True
+
+    return is_progress
+
+
 def research(
     client: Client,
     query: str,
@@ -129,7 +146,7 @@ def research(
     only — a model incompatible with research fails fast). `council_models`
     (Model Council only) picks the cross-checked trio.
 
-    `timeout` bounds wall-clock and `stall_seconds` the gap between data events;
+    `timeout` bounds wall-clock and `stall_seconds` the time without new content;
     when either trips with a partial we return it with `stream_complete=False`
     and a warning naming which one (the agent contract is "always something plus
     a flag", exit 6). `keep_thread` preserves the incognito thread instead
@@ -201,6 +218,7 @@ def research(
             progress=progress,
             label="research",
             is_complete=_status_completed,
+            is_progress=_text_changed(),
         )
     finally:
         release_thread(client, state, keep_thread=keep_thread)

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from typing import Any
 
 import pytest
@@ -91,6 +91,7 @@ class _FakeClient(_TestClientBase):
         *,
         max_total_seconds: float | None = None,
         stall_seconds: float | None = None,
+        is_progress: Callable[[dict[str, Any]], bool] | None = None,
     ) -> Iterator[dict[str, Any]]:
         yield from self._events
         if self._raise_deadline:
@@ -374,7 +375,13 @@ def test_research_model_override_bypasses_mode_mapping() -> None:
 
     class _Cap(_FakeClient):
         def sse_post(
-            self, path: str, body: dict[str, Any], *, max_total_seconds=None, stall_seconds=None
+            self,
+            path: str,
+            body: dict[str, Any],
+            *,
+            max_total_seconds=None,
+            stall_seconds=None,
+            is_progress=None,
         ):  # type: ignore[override]
             captured["mp"] = body["params"]["model_preference"]
             return iter(self._events)
@@ -388,7 +395,13 @@ def test_research_council_auto_sends_default_trio() -> None:
 
     class _Cap(_FakeClient):
         def sse_post(
-            self, path: str, body: dict[str, Any], *, max_total_seconds=None, stall_seconds=None
+            self,
+            path: str,
+            body: dict[str, Any],
+            *,
+            max_total_seconds=None,
+            stall_seconds=None,
+            is_progress=None,
         ):  # type: ignore[override]
             captured["mp"] = body["params"]["model_preference"]
             captured["compare"] = body["params"].get("compare_model_preferences")
@@ -405,7 +418,13 @@ def test_research_council_explicit_models_override_default() -> None:
 
     class _Cap(_FakeClient):
         def sse_post(
-            self, path: str, body: dict[str, Any], *, max_total_seconds=None, stall_seconds=None
+            self,
+            path: str,
+            body: dict[str, Any],
+            *,
+            max_total_seconds=None,
+            stall_seconds=None,
+            is_progress=None,
         ):  # type: ignore[override]
             captured["compare"] = body["params"].get("compare_model_preferences")
             return iter(self._events)
@@ -419,7 +438,13 @@ def test_research_passes_model_preference_into_body() -> None:
 
     class _BodyCapture(_FakeClient):
         def sse_post(
-            self, path: str, body: dict[str, Any], *, max_total_seconds=None, stall_seconds=None
+            self,
+            path: str,
+            body: dict[str, Any],
+            *,
+            max_total_seconds=None,
+            stall_seconds=None,
+            is_progress=None,
         ):  # type: ignore[override]
             captured["model_preference"] = body["params"]["model_preference"]
             captured["is_incognito"] = body["params"]["is_incognito"]

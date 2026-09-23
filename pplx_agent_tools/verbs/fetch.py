@@ -31,6 +31,7 @@ from ..wire import Client
 from ._ask_common import (
     AskStreamState,
     base_ask_params,
+    blocks_changed,
     cutoff_warnings,
     extract_chunks_from_event,
     no_content_error,
@@ -167,7 +168,7 @@ def fetch(
     `model` is the `model_preference` for `--prompt` mode (default `turbo`).
 
     `timeout` bounds the wall-clock duration of `--prompt` mode (the SSE
-    chat call) and `stall_seconds` the gap between its data events. When
+    chat call) and `stall_seconds` its time without new content. When
     either trips with any accumulated content, the partial answer is returned
     with `stream_complete=False` and a warning naming which one. Plain mode
     uses curl's own connect/read timeouts and ignores both.
@@ -311,6 +312,7 @@ def _fetch_with_prompt(
             stall_seconds=stall_seconds,
             progress=progress,
             label="fetch",
+            is_progress=blocks_changed(),
         )
     finally:
         release_thread(client, state, keep_thread=keep_thread)

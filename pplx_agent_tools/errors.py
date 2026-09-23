@@ -58,7 +58,7 @@ class StreamDeadlineError(NetworkError):
 
 
 class StreamStallError(StreamDeadlineError):
-    """SSE stream carried no data event for `seconds` (heartbeats don't count).
+    """SSE stream carried no new content for `seconds` (heartbeats and repeats don't count).
 
     A deadline subclass so every partial-salvage path treats it the same way;
     distinguished so the reported reason says the backend went quiet rather

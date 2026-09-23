@@ -14,7 +14,7 @@ import contextlib
 import json
 import sys
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from typing import Any
 
 from curl_cffi import CurlECode, CurlError
@@ -37,7 +37,7 @@ DEFAULT_IMPERSONATE = "chrome"
 # SSE-only read leg when no stall window is given. curl_cffi turns a streaming
 # (connect, read) timeout into a low-speed abort (< 1 B/s for connect + read
 # seconds), so this only catches total silence: heartbeat comments keep the
-# rate above 1 B/s. The data-event stall check in `sse_post` covers that case.
+# rate above 1 B/s. The progress-event stall check in `sse_post` covers that case.
 DEFAULT_SSE_READ_TIMEOUT = 60.0
 # Hard cap on un-dispatched SSE buffer (a single event with no `\n\n` terminator).
 # Defends against a server that trickles bytes forever without a terminator.
@@ -211,6 +211,7 @@ class Client:
         *,
         max_total_seconds: float | None = None,
         stall_seconds: float | None = None,
+        is_progress: Callable[[dict[str, Any]], bool] | None = None,
     ) -> Iterator[dict[str, Any]]:
         """POST a JSON body, stream the SSE response, yield parsed events.
 
@@ -225,9 +226,10 @@ class Client:
         — a stream that keeps trickling bytes more often than every 60 s but
         never reaches COMPLETED can otherwise run indefinitely.
 
-        `stall_seconds` raises `StreamStallError` once no event carrying data has
-        arrived for that long; comment-only heartbeat frames do not reset it. The
-        transport's low-speed abort is sized to the same window (capped by
+        `stall_seconds` raises `StreamStallError` once no progress event has
+        arrived for that long. `is_progress(event)` decides what counts as
+        progress; None counts any event carrying data. Comment-only heartbeat
+        frames never reset the clock, whatever the predicate. The transport's low-speed abort is sized to the same window (capped by
         `max_total_seconds`) so total silence trips it too, and is reported as a
         stall unless the overall deadline was the tighter bound. None keeps only
         the default low-speed backstop.
@@ -255,7 +257,7 @@ class Client:
 
         # Use monotonic so wall-clock jumps (NTP, sleep) don't trip the deadline.
         deadline = (time.monotonic() + max_total_seconds) if max_total_seconds else None
-        last_data = time.monotonic()
+        last_progress = time.monotonic()
 
         def _check_bounds() -> None:
             now = time.monotonic()
@@ -263,9 +265,9 @@ class Client:
                 raise StreamDeadlineError(
                     f"SSE stream on {path} exceeded {max_total_seconds:.1f}s deadline"
                 )
-            if stall_seconds and now - last_data > stall_seconds:
+            if stall_seconds and now - last_progress > stall_seconds:
                 raise StreamStallError(
-                    f"SSE stream on {path} stalled: no data for {stall_seconds:.1f}s",
+                    f"SSE stream on {path} stalled: no new content for {stall_seconds:.1f}s",
                     stall_seconds,
                 )
 
@@ -295,13 +297,15 @@ class Client:
                         raw_event, buffer = buffer.split("\n\n", 1)
                         parsed = _parse_sse_event(raw_event)
                         if parsed is not None:
-                            if parsed["data"] is not None:
-                                last_data = time.monotonic()
+                            if parsed["data"] is not None and (
+                                is_progress is None or is_progress(parsed)
+                            ):
+                                last_progress = time.monotonic()
                             yield parsed
                             # Re-check between yields so a generator consumer
                             # that processes events slowly can't outrun the bounds.
                             _check_bounds()
-                    # A chunk of heartbeats alone yields no data event, so the
+                    # A chunk of heartbeats alone yields no progress event, so the
                     # stall check has to run per chunk as well.
                     _check_bounds()
             except PplxError:
@@ -393,7 +397,10 @@ def _silence_bounds(
     curl aborts after connect + read seconds below 1 B/s, so the read leg is
     what remains of the silence window after the connect leg. The window is the
     stall bound capped by the overall deadline; when the deadline is the one
-    that runs out first, the abort is reported as the deadline.
+    that runs out first, the abort is reported as the deadline. The stall check
+    in `sse_post` only runs when bytes arrive, so this abort is what ends a
+    stream gone fully silent; it counts from the last byte, not the last
+    progress event.
     """
     if stall_seconds:
         window = stall_seconds
@@ -408,7 +415,8 @@ def _silence_bounds(
             f"SSE stream on {path} exceeded {max_total_seconds:.1f}s deadline"
         )
     return read_timeout, StreamStallError(
-        f"SSE stream on {path} stalled: no data for {silence_seconds:.1f}s", silence_seconds
+        f"SSE stream on {path} stalled: no new content for {silence_seconds:.1f}s",
+        silence_seconds,
     )
 
 

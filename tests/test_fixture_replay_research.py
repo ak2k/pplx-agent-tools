@@ -29,7 +29,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from types import ModuleType
 from typing import Any, ClassVar
@@ -75,6 +75,7 @@ class FixtureClient(_TestClientBase):
         *,
         max_total_seconds: float | None = None,
         stall_seconds: float | None = None,
+        is_progress: Callable[[dict[str, Any]], bool] | None = None,
     ) -> Iterator[dict[str, Any]]:
         for payload in self._events:
             self.consumed += 1
@@ -342,6 +343,7 @@ class _StubResearchClient:
         *,
         max_total_seconds: float | None = None,
         stall_seconds: float | None = None,
+        is_progress: Callable[[dict[str, Any]], bool] | None = None,
     ) -> Iterator[dict[str, Any]]:
         yield {"event": "message", "data": {"backend_uuid": "BU", "read_write_token": "RW"}}
 

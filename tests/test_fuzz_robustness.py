@@ -16,7 +16,7 @@ a bug — it means the verb leaks an implementation detail.
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from typing import Any
 
 from hypothesis import HealthCheck, given, settings
@@ -234,6 +234,7 @@ class _StreamClient(_TestClientBase):
         *,
         max_total_seconds: float | None = None,
         stall_seconds: float | None = None,
+        is_progress: Callable[[dict[str, Any]], bool] | None = None,
     ) -> Iterator[dict[str, Any]]:
         yield from self._events
 

@@ -78,8 +78,9 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=None,
         help=(
-            "for --prompt mode: cut the stream after this many seconds without a "
-            "data event (server heartbeats don't count); partial content is "
+            "for --prompt mode: cut the stream after this many seconds without new "
+            "content (server heartbeats and repeated frames don't count); partial "
+            "content is "
             f"returned (exit 6), none exits 4. Default: {DEFAULT_STALL_SECONDS:.0f}s "
             "($PPLX_STALL_TIMEOUT, or 0 to disable). Ignored in plain-fetch mode."
         ),
