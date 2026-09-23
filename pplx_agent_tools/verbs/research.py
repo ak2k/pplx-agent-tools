@@ -117,15 +117,16 @@ def _status_completed(event: dict[str, Any]) -> bool:
 
 def _text_changed() -> Callable[[dict[str, Any]], bool]:
     """The stall-guard progress predicate for research's snapshot stream."""
-    last: dict[str, str] = {}
+    seen: set[int] = set()
 
-    # Snapshot frames repeat unchanged while working or hung; only new text counts.
+    # Snapshot frames repeat (or replay older ones) while working or hung; only a
+    # snapshot never seen before counts.
     def is_progress(event: dict[str, Any]) -> bool:
         data = event.get("data")
         text = data.get("text") if isinstance(data, dict) else None
-        if not isinstance(text, str) or last.get("text") == text:
+        if not isinstance(text, str) or hash(text) in seen:
             return False
-        last["text"] = text
+        seen.add(hash(text))
         return True
 
     return is_progress

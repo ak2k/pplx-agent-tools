@@ -319,8 +319,13 @@ class Client:
                 # is the only reliable signal of the low-speed abort.
                 if isinstance(e, CurlError) and e.code == CurlECode.OPERATION_TIMEDOUT:
                     # The abort counts from the last byte, so it can land after the
-                    # overall deadline; the deadline is then the bound that ran out.
-                    if deadline is not None and time.monotonic() >= deadline:
+                    # overall deadline; name whichever bound came due first.
+                    stall_due = last_progress + stall_seconds if stall_seconds else None
+                    if (
+                        deadline is not None
+                        and time.monotonic() >= deadline
+                        and (stall_due is None or stall_due >= deadline)
+                    ):
                         raise StreamDeadlineError(
                             f"SSE stream on {path} exceeded {max_total_seconds:.1f}s deadline"
                         ) from e

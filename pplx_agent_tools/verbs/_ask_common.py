@@ -13,6 +13,7 @@ Only the *accumulation* differs (copilot streams `markdown_block` chunks +
 
 from __future__ import annotations
 
+import json
 import random
 import sys
 import time
@@ -209,16 +210,18 @@ def event_marks_completed(event: dict[str, Any]) -> bool:
 
 def blocks_changed() -> Callable[[dict[str, Any]], bool]:
     """A stall-guard progress predicate for copilot streams (`ask`, `fetch --prompt`)."""
-    last: dict[str, Any] = {}
+    seen: set[int] = set()
 
-    # Envelope and repeat frames flow while working or hung; only new blocks count.
+    # Envelope, repeat and replayed frames flow while working or hung; only blocks
+    # never seen before count.
     def is_progress(event: dict[str, Any]) -> bool:
         data = event.get("data")
         if not isinstance(data, dict) or "blocks" not in data:
             return False
-        if "blocks" in last and last["blocks"] == data["blocks"]:
+        key = hash(json.dumps(data["blocks"], sort_keys=True, default=str))
+        if key in seen:
             return False
-        last["blocks"] = data["blocks"]
+        seen.add(key)
         return True
 
     return is_progress

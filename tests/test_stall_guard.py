@@ -217,7 +217,7 @@ def test_blocks_changed_counts_only_new_blocks() -> None:
     assert is_progress(first)
     assert not is_progress({"data": {"blocks": [{"x": 1}], "status": "PENDING"}})
     assert is_progress({"data": {"blocks": [{"x": 2}]}})
-    assert is_progress(first)
+    assert not is_progress(first)  # a replay of earlier blocks is not progress
 
 
 def test_text_changed_counts_only_new_text() -> None:
@@ -227,6 +227,7 @@ def test_text_changed_counts_only_new_text() -> None:
     assert is_progress({"data": {"text": "a"}})
     assert not is_progress({"data": {"text": "a", "status": "PENDING"}})
     assert is_progress({"data": {"text": "ab"}})
+    assert not is_progress({"data": {"text": "a"}})  # replayed snapshot
 
 
 def test_long_healthy_stream_outlives_the_old_research_deadline(clock: _Clock) -> None:
@@ -271,13 +272,44 @@ def test_curl_timeout_without_stall_guard_is_a_stall_of_the_backstop(clock: _Clo
 
 
 def test_curl_timeout_after_the_deadline_passed_reports_the_deadline(clock: _Clock) -> None:
-    # The abort counts from the last byte, so it can land after the overall cap.
+    # Last progress at 1700: the deadline (1800) comes due before the stall
+    # (1940), and curl's abort, counted from the last byte, lands after both.
     client = _StreamClient(
-        [(0, _chunk("a")), (1900, _curl_error(CurlECode.OPERATION_TIMEDOUT))], clock
+        [
+            (0, _chunk("a")),
+            (1700, _chunk("b")),
+            (200, _curl_error(CurlECode.OPERATION_TIMEDOUT)),
+        ],
+        clock,
     )
     with pytest.raises(StreamDeadlineError, match=r"exceeded 1800\.0s deadline") as exc:
         list(client.sse_post("/x", {}, max_total_seconds=1800, stall_seconds=240))
     assert not isinstance(exc.value, StreamStallError)
+
+
+def test_curl_timeout_after_the_deadline_is_a_stall_when_the_stall_came_due_first(
+    clock: _Clock,
+) -> None:
+    # Progress at 0, a heartbeat at 80, then silence: the stall was due at 240,
+    # inside the 300 s deadline, though curl's abort only lands at ~326.
+    client = _StreamClient(
+        [
+            (0, _chunk("a")),
+            (80, HEARTBEAT),
+            (246, _curl_error(CurlECode.OPERATION_TIMEDOUT)),
+        ],
+        clock,
+    )
+    with pytest.raises(StreamStallError):
+        list(client.sse_post("/x", {}, max_total_seconds=300, stall_seconds=240))
+
+
+def test_research_alternating_replayed_snapshots_still_stalls(clock: _Clock) -> None:
+    steps: list[Step] = [(0, _snapshot("one")), (14, _snapshot("two"))]
+    steps += [(14, _snapshot("one" if i % 2 else "two")) for i in range(40)]
+    client = _StreamClient(steps, clock)
+    result = research(client, "q", timeout=1800, stall_seconds=240)
+    assert result.cut_by == "stall"
 
 
 def test_other_curl_errors_stay_network_errors(clock: _Clock) -> None:
