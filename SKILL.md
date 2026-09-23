@@ -86,7 +86,7 @@ pplx auth check
 | Code | Meaning | Retry semantic |
 |---|---|---|
 | 0 | Success | n/a |
-| 1 | Generic failure / bug, or a usage error (unknown flag, missing argument, out-of-range value such as `--limit 0` or `--timeout nan`). An unexpected exception under `--json` still prints an error envelope with `error.type: "InternalError"` | don't retry; fix the command line |
+| 1 | Generic failure / bug, or a usage error (unknown flag, missing argument, out-of-range value such as `--limit 0` or `--timeout nan`). Under `--json`, a usage error prints an error envelope with `error.type: "UsageError"` and an unexpected exception one with `"InternalError"` | don't retry; fix the command line |
 | 2 | Auth: cookies missing/expired/rejected | refresh cookies (`pplx auth import --browser <name>`) and retry |
 | 3 | Rate limit (429) | exponential backoff |
 | 4 | Network (DNS / timeout / TLS), or a deadline or stall before any content arrived | linear backoff |
@@ -94,6 +94,8 @@ pplx auth check
 | 6 | Partial: stream incomplete (deadline or stall tripped, or server cut; `cut_by` in JSON and the stdout marker name which), or the answer decoded shorter than an earlier frame (`content_shortfall: true` with `stream_complete: true`). Stdout still carries usable content. | deadline (`cut_by: "deadline"`, marker `stream: incomplete (deadline)`) → accept the partial or raise `--timeout` (blind retry usually hits the same backend slowness); stall (`cut_by: "stall"`, marker `stream: incomplete (stall: no new content)`) → accept the partial or raise `--stall-timeout` (a larger `--timeout` does not help); `content_shortfall` with `stream_complete: true` → the stream finished, so a longer timeout cannot help: re-run once or accept the shorter answer |
 
 Stdout is results only; stderr carries diagnostics. `2>/dev/null` gives clean parseable stdout.
+
+Counts (`-n/--limit`, `--max-chars`, `--max-tokens`, `--max-tokens-per-page`) must be at least 1; `--max-chars 0` is an error, so omit the flag for no cap. A timeout (`--timeout`, `--stall-timeout` and their env vars) of 0, a negative value, or `inf` disables it; `nan` is rejected. `pplx skill-path` takes no arguments.
 
 # First-run notes
 

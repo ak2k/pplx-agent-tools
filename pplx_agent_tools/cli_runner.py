@@ -148,15 +148,8 @@ def run_verb(
     try:
         client: Client | None = None
         if requires_auth:
-            try:
-                client = Client.from_default_cookies(profile=getattr(args, "profile", None))
-            except PplxError as e:
-                return _emit_error(name, e, args)
-
-        try:
-            result = run(client)
-        except PplxError as e:
-            return _emit_error(name, e, args)
+            client = Client.from_default_cookies(profile=getattr(args, "profile", None))
+        result = run(client)
 
         if getattr(args, "json", False):
             print(json.dumps(render_json(result), indent=2))
@@ -170,6 +163,13 @@ def run_verb(
         if finalize is not None:
             return finalize(result)
         return EXIT_OK
+    except PplxError as e:
+        # After the success document is out (a finalize failure), report on
+        # stderr only.
+        if wrote_stdout:
+            print(f"pplx {name}: {e}", file=sys.stderr)
+            return exit_code(e)
+        return _emit_error(name, e, args)
     except Exception as e:
         # A bug, not an expected failure: keep the traceback for the report,
         # but still honor the --json contract of one parseable document.
