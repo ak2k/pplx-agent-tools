@@ -6,8 +6,8 @@ description: Query Perplexity via your Pro subscription's web session. Use `pplx
 # When to reach for each verb
 
 - **`pplx search <query>...`** — ranked web hits (sources, no answer). Each hit carries `title`, `url`, `domain`, `snippet` (~200 chars), and `summary` (~1500 chars, agent-friendly extract). Multi-query is native — pass several queries, server merges/dedupes. Stateless (creates no thread).
-- **`pplx ask <query>`** — the front door: ask a question, get one **synthesized, cited answer** + its sources (Pro Search). `search` returns sources; `ask` returns the answer (with `-j` also a `sources` list). `--model <id>` picks the model (default `turbo` = "Best"; pass a thinking variant like `claude48opusthinking` for max reasoning — see `pplx models`). ~5–15 s on `turbo`; a thinking variant measured 30–90 s. Session-creating but incognito + auto-cleanup.
-- **`pplx research <query>`** — deep, multi-step, cited research (Perplexity's "Research" mode). Returns a long markdown report + a sources list — `answer` is the full report (cover note then body), not a summary of one. Takes ~90–120 s (allow more with `--timeout`); far more thorough than `search`. This is the differentiated capability — reach for it when one search won't cut it. Session-creating but runs **incognito** (no history pollution) + auto-cleans the thread.
+- **`pplx ask <query>`** — the front door: ask a question, get one **synthesized, cited answer** + its sources (Pro Search). `search` returns sources; `ask` returns the answer (with `-j` also a `sources` list). `--model <id>` picks the model (default `turbo` = "Best"; pass a thinking variant like `claude55opusthinking` for max reasoning — see `pplx models`, ids rotate). ~5–15 s on `turbo`; a thinking variant measured 30–90 s. Session-creating but incognito + auto-cleanup. Check its figures against the cited sources before using them; see "Using `ask` answers" below.
+- **`pplx research <query>`** — deep, multi-step, cited research (Perplexity's "Research" mode). Returns a long markdown report + a sources list — `answer` is the full report (cover note then body), not a summary of one. Takes ~90–120 s for a focused question, but runtime grows with the number of subjects: a 14-subject comparison measured 18 min and 560 sources. Far more thorough than `search`; see "Running `research`" below. This is the differentiated capability — reach for it when one search won't cut it. Session-creating but runs **incognito** (no history pollution) + auto-cleans the thread.
 - **`pplx fetch <url>`** — local fetch + cleaned content extraction. With `--prompt`, routes to Perplexity's LLM which fetches the URL itself and answers your prompt in one round-trip (model-selectable via `--model`, default `turbo`; runs incognito + auto-cleanup like `ask`).
 - **`pplx snippets <query> <url>...`** — concurrent-fetch N URLs locally, return query-relevant paragraphs from each using hybrid retrieval (BM25 keyword + semantic vectors). Useful after `pplx search` narrows candidates.
 - **`pplx quota`** — subscription rate-limit / availability per mode (`research`, `pro_search`, …) + per-source. Stateless GET; check before firing an expensive `research` call in a loop. Validates the session first: an expired cookie exits 2 (same message as `pplx auth check`) instead of rendering the anonymous view, in which every mode reads `EXHAUSTED (0 remaining)`.
@@ -66,6 +66,20 @@ pplx snippets "TLS fingerprinting" \
 # Validate session
 pplx auth check
 ```
+
+# Using `ask` answers
+
+- **Check every figure against a source.** On a long compound question `ask` has returned a complete, plausible row of numbers that appeared in none of its sources, cited only to a site's landing page. Treat a figure or name as usable only when you can see it in a cited hit's `snippet`/`summary` or in a page you fetched. If the synthesized answer is the only place it appears, record it as unknown.
+- **Citations drift even when the prose is right.** Numbered footnotes can point at the wrong document. Open the primary source before a claim goes anywhere someone else relies on it.
+- **One fact per question, a few sentences per prompt.** Fabrication and timeouts both concentrate in long multi-part prompts (a ~250-word prompt has hit the 180 s deadline before the first token, or returned no answer). Ask several narrow questions in parallel instead; a failure then costs one fact, not the batch. For pure extraction, `search` (the `summary` field often carries the exact figure) or `search` → `snippets` is more reliable than `ask`.
+- **Pin a stronger model.** `turbo` is the model that fabricated above. Set `$PPLX_MODEL` (or `$PPLX_ASK_MODEL` / `$PPLX_FETCH_MODEL`) to a current Opus thinking id from `pplx models` once instead of passing `--model` every call; `--model turbo` still downgrades a cheap query (~4× faster). The pin improves depth; it does not make citations trustworthy.
+- **Fan-out.** `ask`, `research` and `fetch --prompt` share one endpoint and its rate limit (429, exit 3); `search` does not. Under many parallel agents, use `search` as the primary and `ask` opportunistically. Stacked ask calls running next to a `research` call have timed out before their first token while single-fact asks in parallel completed.
+
+# Running `research`
+
+- **Run it in the background from an agent loop.** A long run outlasts foreground tool-call caps (Claude Code's Bash tool stops at 10 min); background the command and read its output when it exits.
+- **Split broad prompts.** More than 3–4 subjects in one prompt → several narrower `research` calls in parallel. Each finishes in minutes, and a failure costs one slice instead of a 20-minute run and its quota unit.
+- **Size `--timeout` to the prompt.** The 300 s default suits a focused question. A broad one needs `--timeout 1500` or more. A deadline trip that returns hundreds of sources and no answer means the run was still working, not stuck: re-run with a larger `--timeout` or split it.
 
 # Exit codes (stable contract for retry logic)
 
