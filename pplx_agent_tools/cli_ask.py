@@ -15,6 +15,7 @@ from collections.abc import Sequence
 from .cli_runner import resolve_model, resolve_timeout, run_verb
 from .errors import EXIT_OK, EXIT_PARTIAL
 from .render import render_ask_json, render_ask_text
+from .verbs._ask_common import DEFAULT_STALL_SECONDS
 from .verbs.ask import DEFAULT_MODEL, AskResult, ask
 
 # Sized for a thinking model, not for `turbo`. `turbo` answers in ~5-15 s; the
@@ -66,6 +67,17 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--stall-timeout",
+        type=float,
+        default=None,
+        help=(
+            "cut the stream after this many seconds without a data event (server "
+            "heartbeats don't count); a partial answer is returned (exit 6), none "
+            f"exits 4. Default: {DEFAULT_STALL_SECONDS:.0f}s ($PPLX_STALL_TIMEOUT, "
+            "or 0 to disable)."
+        ),
+    )
+    parser.add_argument(
         "--progress",
         action="store_true",
         help="emit a heartbeat dot to stderr per ~10 SSE events. Honors $PPLX_PROGRESS=1.",
@@ -76,7 +88,7 @@ def build_parser() -> argparse.ArgumentParser:
 def _finalize(result: AskResult) -> int:
     if not result.stream_complete:
         print(
-            "warning: ask stream did not reach COMPLETED (deadline or cut); "
+            "warning: ask stream did not reach COMPLETED (deadline, stall or cut); "
             "partial answer returned (exit 6)",
             file=sys.stderr,
         )
@@ -89,6 +101,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     keep_thread = args.keep_thread or os.environ.get("PPLX_KEEP_THREADS") == "1"
     progress = args.progress or os.environ.get("PPLX_PROGRESS") == "1"
     timeout = resolve_timeout(args.timeout, "PPLX_ASK_TIMEOUT", _DEFAULT_TIMEOUT_SECONDS, "ask")
+    stall_seconds = resolve_timeout(
+        args.stall_timeout, "PPLX_STALL_TIMEOUT", DEFAULT_STALL_SECONDS, "ask"
+    )
     model = resolve_model(args.model, ("PPLX_ASK_MODEL", "PPLX_MODEL"), DEFAULT_MODEL)
 
     return run_verb(
@@ -101,6 +116,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             model=model,
             keep_thread=keep_thread,
             timeout=timeout,
+            stall_seconds=stall_seconds,
             progress=progress,
         ),
         render_text=render_ask_text,

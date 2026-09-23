@@ -109,6 +109,7 @@ class FakeClient(_TestClientBase):
         body: dict[str, Any],
         *,
         max_total_seconds: float | None = None,
+        stall_seconds: float | None = None,
     ) -> Iterator[dict[str, Any]]:
         yield from self._events
 
@@ -413,6 +414,7 @@ class _DeadlineClient(_TestClientBase):
         body: dict[str, Any],
         *,
         max_total_seconds: float | None = None,
+        stall_seconds: float | None = None,
     ) -> Iterator[dict[str, Any]]:
         yield from self._events
         raise StreamDeadlineError("simulated deadline")
@@ -452,6 +454,7 @@ def test_deadline_kwarg_propagates_to_sse_post() -> None:
             body: dict[str, Any],
             *,
             max_total_seconds: float | None = None,
+            stall_seconds: float | None = None,
         ) -> Iterator[dict[str, Any]]:
             seen["max_total_seconds"] = max_total_seconds
             yield from [_ev([_block("ask_text", ["x"])], status="COMPLETED")]
@@ -476,6 +479,7 @@ def test_no_timeout_passes_none_to_sse_post() -> None:
             body: dict[str, Any],
             *,
             max_total_seconds: float | None = None,
+            stall_seconds: float | None = None,
         ) -> Iterator[dict[str, Any]]:
             seen["max_total_seconds"] = max_total_seconds
             yield from [_ev([_block("ask_text", ["x"])], status="COMPLETED")]
@@ -511,6 +515,7 @@ class _RateLimitClient(_TestClientBase):
         body: dict[str, Any],
         *,
         max_total_seconds: float | None = None,
+        stall_seconds: float | None = None,
     ) -> Iterator[dict[str, Any]]:
         self.attempts += 1
         if self.attempts <= self._fail_attempts:

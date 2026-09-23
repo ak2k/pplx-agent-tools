@@ -233,6 +233,7 @@ class _StreamClient(_TestClientBase):
         body: dict[str, Any],
         *,
         max_total_seconds: float | None = None,
+        stall_seconds: float | None = None,
     ) -> Iterator[dict[str, Any]]:
         yield from self._events
 

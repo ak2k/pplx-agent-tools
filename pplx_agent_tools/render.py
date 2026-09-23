@@ -153,7 +153,7 @@ def render_fetch_text(result: FetchResult) -> str:
         # Surfaced on the header line so a human eyeballing stdout doesn't
         # mistake a deadline-clipped partial answer for a complete one.
         # `cli_fetch` also emits a stderr warning for machine-parseable runs.
-        extra.append("stream: incomplete (deadline or cut)")
+        extra.append("stream: incomplete (deadline, stall or cut)")
     header_lines.append(" · ".join(extra))
     return "\n".join(header_lines) + "\n\n" + result.content
 
@@ -171,7 +171,7 @@ def render_fetch_json(result: FetchResult) -> dict[str, Any]:
         payload["title"] = result.title
     if result.published_date is not None:
         payload["published_date"] = result.published_date
-    return envelope("fetch", payload)
+    return envelope("fetch", payload, warnings=result.warnings)
 
 
 def _quota_avail(it: QuotaItem) -> str:
@@ -300,7 +300,7 @@ def render_ask_text(result: AskResult) -> str:
                 parts.append(f"    {s.url}")
     if not result.stream_complete:
         parts.append("")
-        parts.append("stream: incomplete (deadline or cut)")
+        parts.append("stream: incomplete (deadline, stall or cut)")
     return "\n".join(parts)
 
 
@@ -339,7 +339,7 @@ def render_research_text(result: ResearchResult) -> str:
                 parts.append(f"    {s.url}")
     if not result.stream_complete:
         parts.append("")
-        parts.append("stream: incomplete (deadline or cut)")
+        parts.append("stream: incomplete (deadline, stall or cut)")
     if result.content_shortfall:
         parts.append("")
         parts.append("content: may be incomplete (see warnings)")

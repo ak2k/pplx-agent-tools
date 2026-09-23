@@ -15,6 +15,7 @@ from collections.abc import Sequence
 from .cli_runner import resolve_model, resolve_timeout, run_verb
 from .errors import EXIT_OK, EXIT_PARTIAL
 from .render import render_fetch_json, render_fetch_text
+from .verbs._ask_common import DEFAULT_STALL_SECONDS
 from .verbs.fetch import FetchResult, fetch
 
 _DEFAULT_PROMPT_TIMEOUT_SECONDS = 180.0
@@ -73,6 +74,17 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--stall-timeout",
+        type=float,
+        default=None,
+        help=(
+            "for --prompt mode: cut the stream after this many seconds without a "
+            "data event (server heartbeats don't count); partial content is "
+            f"returned (exit 6), none exits 4. Default: {DEFAULT_STALL_SECONDS:.0f}s "
+            "($PPLX_STALL_TIMEOUT, or 0 to disable). Ignored in plain-fetch mode."
+        ),
+    )
+    parser.add_argument(
         "--progress",
         action="store_true",
         help=(
@@ -97,7 +109,7 @@ def _finalize(result: FetchResult, max_chars: int | None) -> int:
         print(f"warning: content truncated at {max_chars} chars", file=sys.stderr)
     if not result.stream_complete:
         print(
-            "warning: stream did not reach COMPLETED (deadline or server cut); "
+            "warning: stream did not reach COMPLETED (deadline, stall or server cut); "
             "partial content returned (exit 6)",
             file=sys.stderr,
         )
@@ -116,6 +128,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.prompt
         else None
     )
+    stall_seconds = (
+        resolve_timeout(args.stall_timeout, "PPLX_STALL_TIMEOUT", DEFAULT_STALL_SECONDS, "fetch")
+        if args.prompt
+        else None
+    )
     model = resolve_model(args.model, ("PPLX_FETCH_MODEL", "PPLX_MODEL"), "turbo")
 
     return run_verb(
@@ -129,6 +146,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             max_chars=args.max_chars,
             keep_thread=keep_thread,
             timeout=timeout,
+            stall_seconds=stall_seconds,
             progress=progress,
             model=model,
         ),

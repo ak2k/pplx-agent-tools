@@ -74,6 +74,7 @@ class FixtureClient(_TestClientBase):
         body: dict[str, Any],
         *,
         max_total_seconds: float | None = None,
+        stall_seconds: float | None = None,
     ) -> Iterator[dict[str, Any]]:
         for payload in self._events:
             self.consumed += 1
@@ -335,7 +336,12 @@ class _StubResearchClient:
         return cls()
 
     def sse_post(
-        self, path: str, body: dict[str, Any], *, max_total_seconds: float | None = None
+        self,
+        path: str,
+        body: dict[str, Any],
+        *,
+        max_total_seconds: float | None = None,
+        stall_seconds: float | None = None,
     ) -> Iterator[dict[str, Any]]:
         yield {"event": "message", "data": {"backend_uuid": "BU", "read_write_token": "RW"}}
 

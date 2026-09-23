@@ -63,7 +63,12 @@ class _FakeClient(_TestClientBase):
         self.deleted: list[tuple[str, str]] = []
 
     def sse_post(  # type: ignore[override]
-        self, path: str, body: dict[str, Any], *, max_total_seconds: float | None = None
+        self,
+        path: str,
+        body: dict[str, Any],
+        *,
+        max_total_seconds: float | None = None,
+        stall_seconds: float | None = None,
     ) -> Iterator[dict[str, Any]]:
         yield from self._events
         if self._raise_deadline:
@@ -243,7 +248,12 @@ class _RateLimitClient(_TestClientBase):
         self.deleted: list[tuple[str, str]] = []
 
     def sse_post(  # type: ignore[override]
-        self, path: str, body: dict[str, Any], *, max_total_seconds: float | None = None
+        self,
+        path: str,
+        body: dict[str, Any],
+        *,
+        max_total_seconds: float | None = None,
+        stall_seconds: float | None = None,
     ) -> Iterator[dict[str, Any]]:
         self._calls += 1
         if self._calls <= self._fail_times:

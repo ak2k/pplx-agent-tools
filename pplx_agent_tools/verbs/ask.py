@@ -22,11 +22,14 @@ from typing import Any
 from ..errors import SchemaError
 from ..wire import Client
 from ._ask_common import (
+    AskStreamState,
     Source,
     base_ask_params,
+    cutoff_warnings,
     extract_chunks_from_event,
     extract_web_results,
     no_content_error,
+    release_thread,
     run_ask_stream,
     to_source,
 )
@@ -40,7 +43,7 @@ class AskResult:
     query: str
     answer: str
     model: str
-    # False iff the stream was cut before COMPLETED (deadline tripped / server cut).
+    # False iff the stream was cut before COMPLETED (deadline / stall / server cut).
     stream_complete: bool = True
     sources: list[Source] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
@@ -53,13 +56,16 @@ def ask(
     model: str = DEFAULT_MODEL,
     keep_thread: bool = False,
     timeout: float | None = None,
+    stall_seconds: float | None = None,
     progress: bool = False,
 ) -> AskResult:
     """Ask a question, get a synthesized cited answer (copilot mode).
 
     `model` is the `model_preference` (default `turbo`). `timeout` bounds
-    wall-clock; on deadline-with-partial we return the partial answer with
-    `stream_complete=False` (exit 6). `keep_thread` keeps the incognito thread.
+    wall-clock and `stall_seconds` the gap between data events; when either
+    trips with a partial answer we return it with `stream_complete=False`
+    (exit 6) and a warning naming which one. `keep_thread` keeps the incognito
+    thread.
     """
     body = _build_ask_body(query, model)
     chunks: list[str] = []
@@ -80,18 +86,21 @@ def ask(
                     collected.append(src)
             sources[:] = collected
 
-    state, deadline_tripped = run_ask_stream(
-        client, ENDPOINT, body, on_event=on_event, timeout=timeout, progress=progress, label="ask"
-    )
-
-    # Best-effort cleanup runs on EVERY exit path (success, FAILED, no-content).
-    # delete_thread never raises, so doing it before the error checks below stops
-    # a FAILED/partial request from leaking the incognito thread it created.
-    if not keep_thread and state.backend_uuid and state.read_write_token:
-        client.delete_thread(state.backend_uuid, state.read_write_token)
-
-    if state.transport_error is not None:
-        raise state.transport_error
+    state = AskStreamState()
+    try:
+        run_ask_stream(
+            client,
+            ENDPOINT,
+            body,
+            state,
+            on_event=on_event,
+            timeout=timeout,
+            stall_seconds=stall_seconds,
+            progress=progress,
+            label="ask",
+        )
+    finally:
+        release_thread(client, state, keep_thread=keep_thread)
 
     if state.failed:
         raise SchemaError(
@@ -101,9 +110,7 @@ def ask(
 
     content = "".join(chunks).strip()
     if not content and not state.saw_completed:
-        raise no_content_error(
-            label="ask", endpoint=ENDPOINT, timeout=timeout, deadline_tripped=deadline_tripped
-        )
+        raise no_content_error(label="ask", endpoint=ENDPOINT, timeout=timeout, cutoff=state.cutoff)
 
     return AskResult(
         query=query,
@@ -111,6 +118,7 @@ def ask(
         model=model,
         stream_complete=state.saw_completed,
         sources=sources,
+        warnings=cutoff_warnings(state),
     )
 
 
