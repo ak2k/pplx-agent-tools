@@ -18,7 +18,7 @@ Session-creating but incognito (no history pollution) + best-effort cleanup, lik
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal, TypeAlias
 
 from ..errors import NetworkError, SchemaError
 from ..grounding import Grounding, Unchecked, check_grounding
@@ -50,17 +50,42 @@ SOURCES_FRAME_MISSING = (
 )
 
 
+@dataclass(frozen=True)
+class Finished:
+    """The stream reached COMPLETED: the answer is whole and the sources are
+    in the order its [n] citations index."""
+
+    tag: Literal["finished"] = field(default="finished", init=False)
+
+
+@dataclass(frozen=True)
+class FinishedWithoutSources:
+    """The answer is whole (`text_completed`) but the COMPLETED frame never
+    arrived, so the sources are the last mid-stream list and [n] may not
+    index them."""
+
+    tag: Literal["finished_without_sources"] = field(default="finished_without_sources", init=False)
+
+
+@dataclass(frozen=True)
+class Cut:
+    """The stream ended before the answer was whole."""
+
+    by: Literal["stall", "deadline", "server"]
+    tag: Literal["cut"] = field(default="cut", init=False)
+
+
+AskCompletion: TypeAlias = "Finished | FinishedWithoutSources | Cut"
+
+
 @dataclass
 class AskResult:
     query: str
     answer: str
     model: str
-    # False iff the stream was cut before COMPLETED (deadline / stall / server cut).
-    stream_complete: bool = True
+    completion: AskCompletion = field(default_factory=Finished)
     sources: list[Source] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
-    # "stall" | "deadline" when that bound cut the stream; None otherwise.
-    cut_by: str | None = None
     grounding: Grounding = field(default_factory=lambda: Unchecked("disabled"))
 
 
@@ -79,8 +104,8 @@ def ask(
 
     `model` is the `model_preference` (default `turbo`). `timeout` bounds
     wall-clock and `stall_seconds` the time without new content; when either
-    trips with a partial answer we return it with `stream_complete=False`
-    (exit 6) and a warning naming which one. `keep_thread` keeps the incognito
+    trips with a partial answer we return it with a `Cut` completion (exit 6)
+    and a warning naming which one. `keep_thread` keeps the incognito
     thread. `grounded_check` attaches a `Grounding` verdict on whether the
     answer's figures and names appear in its sources.
     """
@@ -143,17 +168,26 @@ def ask(
     if not content and not state.saw_completed:
         raise no_content_error(label="ask", endpoint=ENDPOINT, timeout=timeout, cutoff=state.cutoff)
 
-    # The answer is whole at `text_completed`; only the sources frame after it
-    # was lost, so this is not a partial answer.
-    sources_lost = text_done and not state.saw_completed
+    completion: AskCompletion
+    if state.saw_completed:
+        completion = Finished()
+    elif text_done:
+        # The answer is whole at `text_completed`; only the sources frame after
+        # it was lost, so this is not a partial answer.
+        completion = FinishedWithoutSources()
+    else:
+        completion = Cut(cutoff_cause(state) or "server")
     return AskResult(
         query=query,
         answer=content,
         model=model,
-        stream_complete=state.saw_completed or text_done,
-        cut_by=None if sources_lost else cutoff_cause(state),
+        completion=completion,
         sources=sources,
-        warnings=[SOURCES_FRAME_MISSING] if sources_lost else cutoff_warnings(state),
+        warnings=(
+            [SOURCES_FRAME_MISSING]
+            if isinstance(completion, FinishedWithoutSources)
+            else cutoff_warnings(state)
+        ),
         grounding=(
             check_grounding(content, query, sources) if grounded_check else Unchecked("disabled")
         ),

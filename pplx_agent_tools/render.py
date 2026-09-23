@@ -31,7 +31,7 @@ from .grounding import (
     Ungrounded,
     UngroundedReason,
 )
-from .verbs.ask import AskResult
+from .verbs.ask import AskCompletion, AskResult, Cut, Finished, FinishedWithoutSources
 from .verbs.fetch import FetchResult
 from .verbs.models import ModelsResult
 from .verbs.quota import QuotaItem, QuotaResult
@@ -369,10 +369,34 @@ def render_ask_text(result: AskResult) -> str:
             pass
         case _:
             assert_never(g)
-    if not result.stream_complete:
-        parts.append("")
-        parts.append(_incomplete_marker(result.cut_by))
+    c = result.completion
+    match c:
+        case Cut():
+            parts.append("")
+            parts.append(_incomplete_marker(_cut_by(c)))
+        case Finished() | FinishedWithoutSources():
+            pass
+        case _:
+            assert_never(c)
     return "\n".join(parts)
+
+
+def _cut_by(c: Cut) -> str | None:
+    """The bound that cut the stream; None for a server cut, as `fetch` and
+    `research` report it."""
+    return None if c.by == "server" else c.by
+
+
+def _completion_json(c: AskCompletion) -> dict[str, Any]:
+    match c:
+        case Finished():
+            return {"stream_complete": True, "cut_by": None, "sources_complete": True}
+        case FinishedWithoutSources():
+            return {"stream_complete": True, "cut_by": None, "sources_complete": False}
+        case Cut():
+            return {"stream_complete": False, "cut_by": _cut_by(c), "sources_complete": False}
+        case _:
+            assert_never(c)
 
 
 def _grounding_json(g: Grounding) -> dict[str, Any]:
@@ -417,8 +441,7 @@ def render_ask_json(result: AskResult) -> dict[str, Any]:
                 }
                 for s in result.sources
             ],
-            "stream_complete": result.stream_complete,
-            "cut_by": result.cut_by,
+            **_completion_json(result.completion),
             **_grounding_json(result.grounding),
         },
         warnings=result.warnings,

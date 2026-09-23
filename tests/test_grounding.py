@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import re
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
+from pplx_agent_tools import grounding
 from pplx_agent_tools.grounding import (
     Grounded,
     Grounding,
@@ -108,6 +111,16 @@ def test_sign_is_part_of_the_value() -> None:
     ]
 
 
+def test_negative_bare_integers_are_checked() -> None:
+    answer = "Net flows were -2,500, -7,300 and -9,100 in the quarter."
+    g = check_grounding(answer, "q", [Source("https://x.test/a", "t", "flows were steady")])
+    assert isinstance(g, Ungrounded)
+    assert g.ungrounded_terms == ("-2,500", "-7,300", "-9,100")
+    g = check_grounding("The balance moved by -3 overnight.", "q", [])
+    assert isinstance(g, Ungrounded)
+    assert g.checked_terms == ("-3",)
+
+
 def test_absurdly_long_numerals_are_ignored() -> None:
     assert _parse_figures("Revenue was " + "9" * 1_000_001 + " units.") == []
     g = check_grounding("Revenue was " + "9" * 1_000_001 + " units.", "q", [Source("u", "t", "s")])
@@ -164,6 +177,18 @@ def test_name_words_must_be_adjacent() -> None:
         assert _name_verdict("It is rated by Wine Spectator here.", snippet) == []
 
 
+@pytest.mark.parametrize("apostrophe", ["'", "\u2019"])
+def test_possessive_inside_a_name_matches_a_verbatim_quote(apostrophe: str) -> None:
+    answer = f"Last week Moody{apostrophe}s Investors Service downgraded the bond."
+    for snippet in (
+        "Moody's Investors Service downgraded the bond",
+        "Moody\u2019s Investors Service downgraded the bond",
+    ):
+        assert _name_verdict(answer, snippet) == []
+    assert _name_verdict(answer, "Moody Investors Service downgraded the bond") == []
+    assert _name_verdict("It was rated by Wine Spectator's panel.", "the Wine Spectator list") == []
+
+
 def test_name_does_not_match_across_sources() -> None:
     sources = [
         Source("https://x.test/a", "red", "ends with Red"),
@@ -205,8 +230,10 @@ def test_fabricated_row_cited_to_landing_pages_is_ungrounded() -> None:
     g = check_grounding(_CAPARZO_ANSWER, _CAPARZO_QUERY, sources)
     assert isinstance(g, Ungrounded)
     assert g.reasons == ("site_roots", "low_support")
-    assert sorted(g.ungrounded_terms) == sorted(["4.0", "1,234", "$55", "100", "Wine Spectator"])
-    assert len(g.checked_terms) == 5
+    assert sorted(g.ungrounded_terms) == sorted(
+        ["2019", "4.0", "1,234", "$55", "100", "Wine Spectator"]
+    )
+    assert len(g.checked_terms) == 6
 
 
 def test_fabricated_row_is_ungrounded_even_with_deep_links() -> None:
@@ -252,10 +279,21 @@ def test_no_checkable_terms_is_null_not_true() -> None:
     assert g == Unchecked("no_checkable_terms")
 
 
-def test_query_terms_and_small_counts_are_not_checked() -> None:
-    answer = "There are 3 reasons the Caparzo 2019 scores well [1]."
-    g = check_grounding(answer, "Caparzo 2019", [Source("https://x.test/a", "t", "s")])
+def test_query_names_and_small_counts_are_not_checked() -> None:
+    answer = "There are 3 reasons the Caparzo Brunello scores well [1]."
+    g = check_grounding(answer, "Caparzo Brunello", [Source("https://x.test/a", "t", "s")])
     assert g == Unchecked("no_checkable_terms")
+
+
+def test_figures_restated_from_the_query_are_checked() -> None:
+    query, answer = "Was it $45 in 2024?", "Yes, it was $45 in 2024."
+    g = check_grounding(answer, query, [])
+    assert isinstance(g, Ungrounded)
+    assert g.reasons == ("no_sources",)
+    assert g.checked_terms == ("$45", "2024")
+    g = check_grounding(answer, query, [Source("https://x.test/a", "Price", "It cost $45.")])
+    assert isinstance(g, Grounded)
+    assert g.ungrounded_terms == ("2024",)
 
 
 def test_low_support_fraction_threshold() -> None:
@@ -320,6 +358,19 @@ _huge = _text.map(lambda t: f"{t}{'9' * 1_000_001} {t}")
 )
 def test_check_grounding_is_total(answer: str, query: str, sources: list[Source]) -> None:
     assert isinstance(check_grounding(answer, query, sources), (Grounded, Ungrounded, Unchecked))
+
+
+def test_only_one_function_constructs_a_term() -> None:
+    """`Term` is a NewType, so the checker cannot stop a stray `Term(...)`;
+    this keeps its one constructor the only call site in the package."""
+    package = Path(grounding.__file__).parent
+    calls = [
+        (path.name, line.strip())
+        for path in sorted(package.rglob("*.py"))
+        for line in path.read_text().splitlines()
+        if re.search(r"(?<![\w.])Term\(", line)
+    ]
+    assert calls == [("grounding.py", "return Term(text)")]
 
 
 def test_verdicts_reject_contradictory_fields() -> None:

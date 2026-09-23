@@ -34,7 +34,16 @@ from pplx_agent_tools.verbs._ask_common import (
     extract_chunks_from_event,
     extract_web_results,
 )
-from pplx_agent_tools.verbs.ask import SOURCES_FRAME_MISSING, AskResult, _build_ask_body, ask
+from pplx_agent_tools.verbs.ask import (
+    SOURCES_FRAME_MISSING,
+    AskCompletion,
+    AskResult,
+    Cut,
+    Finished,
+    FinishedWithoutSources,
+    _build_ask_body,
+    ask,
+)
 
 from ._doubles import _TestClientBase
 
@@ -119,7 +128,7 @@ def test_ask_accumulates_and_cleans_up() -> None:
     client = _FakeClient(_complete())
     result = ask(client, "hi")
     assert result.answer == "Hello world."
-    assert result.stream_complete is True
+    assert result.completion == Finished()
     assert result.model == "turbo"
     assert client.deleted == [("BU", "RW")]  # incognito thread cleaned up by default
 
@@ -169,7 +178,7 @@ def test_ask_sources_come_from_the_completed_frame_in_citation_order() -> None:
     ]
     # The COMPLETED frame repaints every chunk from offset 0: placed, not appended.
     assert result.answer == "Price is $45 at shop A [1]; score 93 per B [2]."
-    assert result.stream_complete is True
+    assert result.completion == Finished()
     assert result.warnings == []
 
 
@@ -177,9 +186,10 @@ def test_ask_stream_ending_at_text_completed_is_whole_but_warns() -> None:
     events = [e for e in _multi_step_events() if e["data"]["status"] != "COMPLETED"]
     result = ask(_FakeClient(events), "q")
     assert result.answer == "Price is $45 at shop A [1]; score 93 per B [2]."
-    assert result.stream_complete is True
-    assert result.cut_by is None
+    assert result.completion == FinishedWithoutSources()
     assert result.warnings == [SOURCES_FRAME_MISSING]
+    j = render_ask_json(result)
+    assert (j["stream_complete"], j["cut_by"], j["sources_complete"]) == (True, None, False)
     # The last search step's block is all that arrived.
     assert [s.url for s in result.sources] == ["https://delta.example/p", "https://echo.example/p"]
 
@@ -251,8 +261,7 @@ def test_network_error_after_text_completed_keeps_the_whole_answer() -> None:
     client = _FakeClient(events, raise_network=True)
     result = ask(client, "q")
     assert result.answer == "Price is $45 at shop A [1]; score 93 per B [2]."
-    assert result.stream_complete is True
-    assert result.cut_by is None
+    assert result.completion == FinishedWithoutSources()
     assert result.warnings == [SOURCES_FRAME_MISSING]
     assert client.deleted == [("BU", "RW")]
 
@@ -275,7 +284,7 @@ def test_ask_attaches_grounding_verdict() -> None:
 def test_ask_partial_on_deadline() -> None:
     client = _FakeClient([_chunk_event("partial")], raise_deadline=True)
     result = ask(client, "hi", timeout=30)
-    assert result.stream_complete is False
+    assert result.completion == Cut("deadline")
     assert result.answer == "partial"
 
 
@@ -369,14 +378,50 @@ def test_render_ask_text_and_json() -> None:
 
 
 def test_render_ask_text_incomplete_marker() -> None:
-    result = AskResult("q", "partial", "turbo", stream_complete=False)
+    result = AskResult("q", "partial", "turbo", Cut("server"))
     assert "stream: incomplete" in render_ask_text(result)
+
+
+_COMPLETIONS: list[tuple[AskCompletion, bool, str | None, bool, str | None]] = [
+    (Finished(), True, None, True, None),
+    (FinishedWithoutSources(), True, None, False, None),
+    (Cut("stall"), False, "stall", False, "stream: incomplete (stall: no new content)"),
+    (Cut("deadline"), False, "deadline", False, "stream: incomplete (deadline)"),
+    (Cut("server"), False, None, False, "stream: incomplete (server cut)"),
+]
+
+
+@pytest.mark.parametrize(
+    ("completion", "stream_complete", "cut_by", "sources_complete", "marker"), _COMPLETIONS
+)
+def test_render_ask_completion_states(
+    completion: AskCompletion,
+    stream_complete: bool,
+    cut_by: str | None,
+    sources_complete: bool,
+    marker: str | None,
+) -> None:
+    """`stream_complete` and `cut_by` keep their shape; `sources_complete`
+    alone tells a clean finish from one whose sources frame never arrived."""
+    result = AskResult("q", "A", "turbo", completion)
+    j = render_ask_json(result)
+    assert (j["stream_complete"], j["cut_by"], j["sources_complete"]) == (
+        stream_complete,
+        cut_by,
+        sources_complete,
+    )
+    lines = render_ask_text(result).splitlines()
+    assert [ln for ln in lines if ln.startswith("stream:")] == ([marker] if marker else [])
+
+
+def test_completion_table_covers_every_variant() -> None:
+    assert {type(c) for c, *_ in _COMPLETIONS} == {Finished, FinishedWithoutSources, Cut}
 
 
 def test_render_ask_with_sources() -> None:
     from pplx_agent_tools.verbs._ask_common import Source
 
-    result = AskResult("q", "Answer.", "turbo", True, [Source("https://a", "A", "snip")])
+    result = AskResult("q", "Answer.", "turbo", Finished(), [Source("https://a", "A", "snip")])
     out = render_ask_text(result)
     assert "— sources (1) —" in out and "[1] A" in out and "https://a" in out
     j = render_ask_json(result)
@@ -541,7 +586,7 @@ def test_ask_retries_on_rate_limit_then_succeeds() -> None:
     client = _RateLimitClient(2, _complete())  # fail twice, succeed on the 3rd attempt
     result = ask(client, "hi")
     assert result.answer == "Hello world."
-    assert result.stream_complete is True
+    assert result.completion == Finished()
 
 
 def test_ask_rate_limit_exhausted_reraises() -> None:

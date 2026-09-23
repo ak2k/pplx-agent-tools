@@ -17,7 +17,7 @@ from .errors import EXIT_OK, EXIT_PARTIAL
 from .grounding import Ungrounded
 from .render import grounding_summary, render_ask_json, render_ask_text
 from .verbs._ask_common import COPILOT_STALL_SECONDS
-from .verbs.ask import DEFAULT_MODEL, AskResult, ask
+from .verbs.ask import DEFAULT_MODEL, AskResult, Cut, ask
 
 # A hard cap, not the expected duration. A thinking model on a long multi-part
 # prompt can think for minutes and answer at ~5 min, so a tight cap turns a
@@ -96,7 +96,7 @@ def _finalize(result: AskResult) -> int:
             f"{grounding_summary(result.grounding)}",
             file=sys.stderr,
         )
-    if not result.stream_complete:
+    if isinstance(result.completion, Cut):
         print(
             "warning: ask stream did not reach COMPLETED (deadline, stall or cut); "
             "partial answer returned (exit 6)",

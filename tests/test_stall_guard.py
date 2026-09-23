@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable, Iterator
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 from curl_cffi import CurlECode
@@ -45,7 +45,14 @@ from pplx_agent_tools.verbs._ask_common import (
     no_content_error,
     run_ask_stream,
 )
-from pplx_agent_tools.verbs.ask import SOURCES_FRAME_MISSING, AskResult, ask
+from pplx_agent_tools.verbs.ask import (
+    SOURCES_FRAME_MISSING,
+    AskResult,
+    Cut,
+    Finished,
+    FinishedWithoutSources,
+    ask,
+)
 from pplx_agent_tools.verbs.fetch import FetchResult, fetch
 from pplx_agent_tools.verbs.research import ResearchResult, _text_changed, research
 
@@ -511,12 +518,29 @@ def test_ask_silent_after_text_completed_returns_within_the_settle_window(
     )
     result = ask(client, "q", timeout=None, stall_seconds=stall_seconds)
     assert result.answer == "the answer"
-    assert result.stream_complete is True
-    assert result.cut_by is None
+    assert result.completion == FinishedWithoutSources()
     assert result.warnings == [SOURCES_FRAME_MISSING]
     # Heartbeats drive the check, so the cut lands within one of the window.
     assert COPILOT_SETTLE_SECONDS < clock.now - 1000.0 <= COPILOT_SETTLE_SECONDS + 15
     assert client.deleted == [("BU", "RW")]
+
+
+def test_settle_window_counts_from_the_text_completed_frame(clock: _Clock) -> None:
+    """A `text_completed` frame that repeats blocks already seen is not new
+    content, yet it starts the settle window; the COMPLETED frame 5 s later
+    must still be read even though the last new block is 30 s old."""
+    client = _StreamClient(
+        [
+            (0, _chunk("the answer")),
+            *_heartbeats(30),
+            (0, _text_completed("the answer")),
+            (5, COMPLETED),
+        ],
+        clock,
+    )
+    result = ask(client, "q", timeout=None, stall_seconds=COPILOT_STALL_SECONDS)
+    assert result.completion == Finished()
+    assert result.warnings == []
 
 
 def test_ask_cli_silent_after_text_completed_exits_zero(
@@ -546,8 +570,7 @@ def test_ask_fully_silent_after_text_completed_ends_at_the_stall_window(clock: _
     )
     result = ask(client, "q", timeout=None, stall_seconds=COPILOT_STALL_SECONDS)
     assert result.answer == "the answer"
-    assert result.stream_complete is True
-    assert result.cut_by is None
+    assert result.completion == FinishedWithoutSources()
     assert result.warnings == [SOURCES_FRAME_MISSING]
     assert clock.now - 1000.0 == COPILOT_STALL_SECONDS
     assert client.session.timeout[0] + client.session.timeout[1] == COPILOT_STALL_SECONDS
@@ -655,8 +678,9 @@ def test_cutoff_cause_names_the_bound(
     assert cutoff_cause(AskStreamState(cutoff=cutoff)) == expected
 
 
-_CUT_RESULTS: list[Callable[[str | None], Any]] = [
-    lambda cut_by: AskResult("q", "partial", "turbo", stream_complete=False, cut_by=cut_by),
+_Bound = Literal["stall", "deadline"]
+_CUT_RESULTS: list[Callable[[_Bound | None], Any]] = [
+    lambda cut_by: AskResult("q", "partial", "turbo", Cut(cut_by or "server")),
     lambda cut_by: ResearchResult("q", "partial", [], "research", False, cut_by=cut_by),
     lambda cut_by: FetchResult(
         url="https://example.com",
@@ -686,7 +710,7 @@ _RENDERERS = [
     ids=["stall", "deadline", "server"],
 )
 def test_incomplete_marker_and_json_name_the_cause(
-    verb: int, cut_by: str | None, marker: str
+    verb: int, cut_by: _Bound | None, marker: str
 ) -> None:
     result = _CUT_RESULTS[verb](cut_by)
     render_text, render_json = _RENDERERS[verb]

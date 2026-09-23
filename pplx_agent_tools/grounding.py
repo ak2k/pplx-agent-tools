@@ -13,15 +13,18 @@ Checkable terms:
   figure matches evidence that equals it at the coarser of the two
   precisions ("1.2 million" and "1,234,567" support each other).
   A leading minus sign is part of the value, so "-5.0" needs "-5.0".
+  Small non-negative bare integers ("3 reasons") are counts, not figures.
 - Names: runs of two or more capitalized words ("Wine Spectator"), matched
-  as adjacent words. Single capitalized words are skipped, as are headings,
-  bold labels, table headers and names made only of the query's own words.
+  as adjacent words, a possessive "'s" ignored on both sides. Single
+  capitalized words are skipped, as are headings, bold labels, table headers
+  and names made only of the query's own words: those appear in any source
+  about the subject, so they would mask fabricated ones.
   A sentence-initial run may carry an ordinary word capitalized only by its
   position, so it is also supported by its remainder ("Critic James Suckling"
   by "James Suckling").
 
-Terms that also occur in the query are not checked: echoing the question is
-not a claim.
+A figure the answer restates from the query is checked: "Yes, it was $45"
+claims $45.
 """
 
 from __future__ import annotations
@@ -47,7 +50,7 @@ UngroundedReason = Literal["no_sources", "site_roots", "low_support"]
 UncheckedReason = Literal["disabled", "no_checkable_terms"]
 
 Term = NewType("Term", str)
-"""A figure or name as written in the answer. Only `_extract_terms` makes one."""
+"""A figure or name as written in the answer. Only `_term` makes one."""
 
 _SCALES = {
     "k": Decimal(1_000),
@@ -207,7 +210,7 @@ def _parse_figures(text: str) -> list[_Figure]:
 
 def _is_checkable_figure(fig: _Figure) -> bool:
     """Bare small integers ("3 reasons", "2 options") are counts, not claims."""
-    return not (fig.bare and fig.value <= 10)
+    return not (fig.bare and 0 <= fig.value <= 10)
 
 
 def _fold(text: str) -> str:
@@ -217,7 +220,9 @@ def _fold(text: str) -> str:
 
 
 def _word_list(text: str) -> list[str]:
-    return re.findall(r"[a-z0-9]+", _fold(text))
+    """Answer names and evidence share this tokenizer, so "Moody's" in one
+    matches "Moody's" or "Moody" in the other."""
+    return re.findall(r"[a-z0-9]+", re.sub(r"['\u2019]s\b", "", _fold(text)))
 
 
 def _words(text: str) -> set[str]:
@@ -280,7 +285,7 @@ def _names_in_clause(tokens: list[str], sentence_start: bool) -> list[tuple[str,
         if is_cap or (run and word.lower() in _NAME_CONNECTORS):
             if not run:
                 run_start = i
-            run.append(word)
+            run.append(tok)
             continue
         flush()
         run = []
@@ -327,19 +332,22 @@ def _name_supported(name: str, fallback: str | None, evidence: str) -> bool:
     return any(n is not None and _phrase(n) in evidence for n in (name, fallback))
 
 
+def _term(text: str) -> Term:
+    return Term(text)
+
+
 def _extract_terms(answer: str, query: str) -> list[_FigureTerm | _NameTerm]:
     """The answer's checkable terms, figures first, each once."""
     text = _clean_markdown(answer)
-    query_values = {f.value for f in _parse_figures(query)}
     query_words = _words(query)
     figures: dict[Decimal, _FigureTerm] = {}
     for fig in _parse_figures(text):
-        if fig.value not in query_values and _is_checkable_figure(fig):
-            figures.setdefault(fig.value, _FigureTerm(Term(fig.text), fig))
+        if _is_checkable_figure(fig):
+            figures.setdefault(fig.value, _FigureTerm(_term(fig.text), fig))
     names: dict[str, _NameTerm] = {}
     for name, fallback in _extract_names(text):
         if not _words(name) <= query_words:
-            names.setdefault(_fold(name), _NameTerm(Term(name), fallback))
+            names.setdefault(_phrase(name), _NameTerm(_term(name), fallback))
     return [*figures.values(), *names.values()]
 
 

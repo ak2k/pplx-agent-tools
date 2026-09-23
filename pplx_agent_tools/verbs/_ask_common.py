@@ -19,7 +19,7 @@ import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from ..errors import (
@@ -81,7 +81,7 @@ def cutoff_warnings(state: AskStreamState) -> list[str]:
     return [f"stream cut before COMPLETED, returning partial content: {state.cutoff}"]
 
 
-def cutoff_cause(state: AskStreamState) -> str | None:
+def cutoff_cause(state: AskStreamState) -> Literal["stall", "deadline"] | None:
     """Which bound cut the stream: "stall", "deadline", or None when neither did
     (a completed stream, or one the server closed early).
 
@@ -181,32 +181,9 @@ def extract_web_results(event: dict[str, Any]) -> list[Any]:
 
 
 def extract_chunks_from_event(event: dict[str, Any]) -> list[str]:
-    """Pure: pull the streamed markdown chunks added by one copilot SSE event.
-
-    Total function: never raises, returns `[]` for any event without the expected
-    `ask_text` markdown_block structure. We only consume `intended_usage ==
-    "ask_text"` blocks, not the parallel `ask_text_0_markdown` blocks the server
-    also emits — they carry the same chunks and reading both double-counts.
-    """
-    data = event.get("data")
-    if not isinstance(data, dict):
-        return []
-    blocks = data.get("blocks")
-    if not isinstance(blocks, list):
-        return []
-    out: list[str] = []
-    for block in blocks:
-        if not isinstance(block, dict):
-            continue
-        if block.get("intended_usage") != "ask_text":
-            continue
-        mb = block.get("markdown_block")
-        if not isinstance(mb, dict):
-            continue
-        chunks = mb.get("chunks") or []
-        if isinstance(chunks, list):
-            out.extend(str(c) for c in chunks)
-    return out
+    """Pure: the streamed markdown chunks added by one copilot SSE event, in
+    order, for a caller that stops at `text_completed` and appends. Never raises."""
+    return [c for _, run in extract_chunk_patches(event) for c in run]
 
 
 def extract_chunk_patches(event: dict[str, Any]) -> list[tuple[int | None, list[str]]]:
@@ -215,7 +192,9 @@ def extract_chunk_patches(event: dict[str, Any]) -> list[tuple[int | None, list[
 
     The terminal COMPLETED frame repaints every chunk from offset 0, so a
     caller that reads past `text_completed` must place chunks by offset rather
-    than append them. Never raises."""
+    than append them. Only `intended_usage == "ask_text"` blocks are read, not
+    the parallel `ask_text_0_markdown` blocks: they carry the same chunks and
+    reading both double-counts. Never raises."""
     data = event.get("data")
     if not isinstance(data, dict):
         return []
@@ -335,8 +314,9 @@ def run_ask_stream(
     `Client.sse_post`); None counts any event carrying data.
 
     `settle_seconds`, for a caller that reads past `text_completed`, shrinks
-    the stall window to that many seconds once `text_completed` arrives: the
-    answer is whole by then and only the terminal frame is outstanding. The
+    the stall window to that many seconds, counted from the first
+    `text_completed` frame: the answer is whole by then and only the terminal
+    frame is outstanding. The
     resulting stall cutoff lands in `state.cutoff` like any other.
     """
     overall_deadline = (time.monotonic() + timeout) if timeout else None
@@ -445,10 +425,26 @@ def _drive_one(
 ) -> None:
     event_count = 0
     window = stall_seconds
+    settling = False
     # Passed only when used, so `sse_post` overrides without the parameter keep working.
     extra: dict[str, Any] = {}
     if settle_seconds is not None:
         extra["stall_window"] = lambda: window
+        new_content = is_progress
+
+        # The first `text_completed` frame counts as progress even when its
+        # blocks repeat earlier ones, so the settle window runs from that frame
+        # rather than from the last new block.
+        def settle_or_progress(event: dict[str, Any]) -> bool:
+            nonlocal window, settling
+            progressed = new_content is None or new_content(event)
+            if settling or not event_marks_completed(event):
+                return progressed
+            settling = True
+            window = settle_seconds if window is None else min(window, settle_seconds)
+            return True
+
+        is_progress = settle_or_progress
     try:
         for event in client.sse_post(
             endpoint,
@@ -468,8 +464,6 @@ def _drive_one(
                 if state.read_write_token is None and isinstance(data.get("read_write_token"), str):
                     state.read_write_token = data["read_write_token"]
             on_event(event)
-            if settle_seconds is not None and event_marks_completed(event):
-                window = settle_seconds if window is None else min(window, settle_seconds)
             # FAILED frames still carry text/blocks, so check before treating the
             # event as normal progress.
             if _event_marks_failed(event):

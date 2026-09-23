@@ -10,7 +10,7 @@ from pplx_agent_tools import cli_ask, cli_runner
 from pplx_agent_tools.errors import EXIT_OK, EXIT_PARTIAL
 from pplx_agent_tools.grounding import Unchecked, check_grounding
 from pplx_agent_tools.verbs._ask_common import Source
-from pplx_agent_tools.verbs.ask import AskResult
+from pplx_agent_tools.verbs.ask import AskResult, Cut, Finished
 
 
 @pytest.fixture(autouse=True)
@@ -33,7 +33,7 @@ def _stub(monkeypatch: pytest.MonkeyPatch, result: AskResult) -> None:
 def test_complete_exits_zero(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
 ) -> None:
-    _stub(monkeypatch, AskResult("q", "the answer", "turbo", True))
+    _stub(monkeypatch, AskResult("q", "the answer", "turbo", Finished()))
     rc = cli_ask.main(["what is quic", "--timeout", "0"])
     cap = capsys.readouterr()
     assert rc == EXIT_OK
@@ -42,7 +42,7 @@ def test_complete_exits_zero(
 
 
 def test_partial_exits_six(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
-    _stub(monkeypatch, AskResult("q", "partial", "turbo", False))
+    _stub(monkeypatch, AskResult("q", "partial", "turbo", Cut("server")))
     rc = cli_ask.main(["q"])
     cap = capsys.readouterr()
     assert rc == EXIT_PARTIAL
@@ -51,7 +51,7 @@ def test_partial_exits_six(monkeypatch: pytest.MonkeyPatch, capsys: pytest.Captu
 
 
 def test_json_output(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
-    _stub(monkeypatch, AskResult("q", "A", "claude48opusthinking", True))
+    _stub(monkeypatch, AskResult("q", "A", "claude48opusthinking", Finished()))
     rc = cli_ask.main(["q", "--json", "--model", "claude48opusthinking"])
     assert rc == EXIT_OK
     out = capsys.readouterr().out
@@ -66,7 +66,7 @@ _UNGROUNDED = check_grounding("It is 4.0.", "q", [Source("https://a.test/", "t",
 def test_ungrounded_warns_and_keeps_exit_zero(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture, json_flag: list[str]
 ) -> None:
-    _stub(monkeypatch, AskResult("q", "It is 4.0.", "turbo", True, grounding=_UNGROUNDED))
+    _stub(monkeypatch, AskResult("q", "It is 4.0.", "turbo", Finished(), grounding=_UNGROUNDED))
     rc = cli_ask.main(["q", *json_flag])
     cap = capsys.readouterr()
     assert rc == EXIT_OK
@@ -81,14 +81,14 @@ def test_ungrounded_warns_and_keeps_exit_zero(
 def test_ungrounded_partial_keeps_exit_six(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
 ) -> None:
-    _stub(monkeypatch, AskResult("q", "It is 4.0.", "turbo", False, grounding=_UNGROUNDED))
+    _stub(monkeypatch, AskResult("q", "It is 4.0.", "turbo", Cut("server"), grounding=_UNGROUNDED))
     assert cli_ask.main(["q"]) == EXIT_PARTIAL
     assert "not grounded" in capsys.readouterr().err
 
 
 def test_grounded_is_silent(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
     grounded = check_grounding("It costs $45.", "q", [Source("https://a.test/p", "t", "$45")])
-    _stub(monkeypatch, AskResult("q", "A", "turbo", True, grounding=grounded))
+    _stub(monkeypatch, AskResult("q", "A", "turbo", Finished(), grounding=grounded))
     assert cli_ask.main(["q"]) == EXIT_OK
     assert "not grounded" not in capsys.readouterr().err
 
@@ -97,7 +97,7 @@ def test_nothing_to_check_is_silent(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
 ) -> None:
     unchecked = Unchecked("no_checkable_terms")
-    _stub(monkeypatch, AskResult("q", "Yes.", "turbo", True, grounding=unchecked))
+    _stub(monkeypatch, AskResult("q", "Yes.", "turbo", Finished(), grounding=unchecked))
     assert cli_ask.main(["q"]) == EXIT_OK
     cap = capsys.readouterr()
     assert "not grounded" not in cap.err
@@ -109,7 +109,7 @@ def test_no_grounded_check_flag_reaches_the_verb(monkeypatch: pytest.MonkeyPatch
 
     def _fake(*_a: Any, **k: Any) -> AskResult:
         seen.update(k)
-        return AskResult("q", "A", "turbo", True)
+        return AskResult("q", "A", "turbo", Finished())
 
     monkeypatch.setattr(cli_ask, "ask", _fake)
     cli_ask.main(["q"])
