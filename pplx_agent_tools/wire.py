@@ -10,6 +10,7 @@ accepts us as a real Chrome client. See balakumardev/perplexity-web-wrapper.
 
 from __future__ import annotations
 
+import codecs
 import contextlib
 import json
 import sys
@@ -272,7 +273,7 @@ class Client:
                     stall_seconds,
                 )
 
-        buffer = ""
+        framer = _SSEFramer()
         try:
             try:
                 for chunk in resp.iter_content(chunk_size=4096):
@@ -282,20 +283,17 @@ class Client:
                         )
                     if not chunk:
                         continue
-                    buffer += chunk.decode("utf-8", errors="replace")
-                    # Normalize CRLF that SSE protocol uses.
-                    buffer = buffer.replace("\r\n", "\n")
+                    raw_events = framer.feed(chunk)
                     # Bound memory against a server that trickles bytes without ever
                     # emitting an event terminator (`\n\n`): the per-chunk idle timeout
                     # wouldn't fire on a continuous trickle, so cap the un-dispatched
                     # buffer. A single SSE event over 16 MiB is pathological.
-                    if "\n\n" not in buffer and len(buffer) > _MAX_SSE_BUFFER_BYTES:
+                    if not raw_events and framer.pending_chars > _MAX_SSE_BUFFER_BYTES:
                         raise SchemaError(
                             f"SSE stream on {path} exceeded {_MAX_SSE_BUFFER_BYTES} bytes "
                             "without an event terminator"
                         )
-                    while "\n\n" in buffer:
-                        raw_event, buffer = buffer.split("\n\n", 1)
+                    for raw_event in raw_events:
                         parsed = _parse_sse_event(raw_event)
                         if parsed is not None:
                             if parsed["data"] is not None and (
@@ -399,6 +397,46 @@ class Client:
             return float(ra)
         except ValueError:
             return None
+
+
+class _SSEFramer:
+    """Splits an SSE byte stream into raw event blocks in time linear in its size.
+
+    Research snapshot events run to ~2.4 MB spread over hundreds of chunks, so
+    each chunk's work must not depend on how much of the event is already
+    buffered. A `\r` ending a chunk is held back until the next one shows whether
+    it opens a CRLF, and a multibyte UTF-8 character split across chunks is
+    decoded whole.
+    """
+
+    def __init__(self) -> None:
+        self._decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        self._parts: list[str] = []
+        self._held_cr = False
+        self.pending_chars = 0
+
+    def feed(self, chunk: bytes) -> list[str]:
+        """Consume one chunk; return the event blocks it completed, in order."""
+        text = self._decoder.decode(chunk)
+        if self._held_cr:
+            text = "\r" + text
+        self._held_cr = text.endswith("\r")
+        if self._held_cr:
+            text = text[:-1]
+        text = text.replace("\r\n", "\n")
+        if not text:
+            return []
+        straddles = text[0] == "\n" and bool(self._parts) and self._parts[-1].endswith("\n")
+        if not straddles and "\n\n" not in text:
+            self._parts.append(text)
+            self.pending_chars += len(text)
+            return []
+        self._parts.append(text)
+        events = "".join(self._parts).split("\n\n")
+        rest = events.pop()
+        self._parts = [rest] if rest else []
+        self.pending_chars = len(rest)
+        return events
 
 
 def _silence_bounds(

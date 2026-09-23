@@ -8,12 +8,13 @@ adversarial inputs to flush out crashes and shape regressions.
 
 from __future__ import annotations
 
+import itertools
 import json
 
 from hypothesis import given
 from hypothesis import strategies as st
 
-from pplx_agent_tools.wire import _parse_sse_event
+from pplx_agent_tools.wire import _parse_sse_event, _SSEFramer
 
 # JSON values we expect Perplexity to ever embed in a `data:` line.
 # `none` is excluded — `data: null` is technically valid but the parser
@@ -195,3 +196,55 @@ def test_parse_unicode_json_payload_roundtrips(text: str) -> None:
     out = _parse_sse_event(raw)
     assert out is not None
     assert out["data"] == {"text": text}
+
+
+# ---------- framing: chunk boundaries never change the events ----------
+
+
+def _frame_whole(stream: bytes) -> list[str]:
+    """Reference framing: decode the whole stream at once, then split."""
+    blocks = stream.decode("utf-8", errors="replace").replace("\r\n", "\n").split("\n\n")
+    return blocks[:-1]  # the tail has no terminator yet
+
+
+def _frame_chunked(stream: bytes, cuts: list[int]) -> list[str]:
+    framer = _SSEFramer()
+    bounds = [0, *sorted({c % (len(stream) + 1) for c in cuts}), len(stream)]
+    events: list[str] = []
+    for lo, hi in itertools.pairwise(bounds):
+        events.extend(framer.feed(stream[lo:hi]))
+    return events
+
+
+# Weighted toward the bytes that matter to framing: CR, LF, and a multibyte char.
+_stream_bytes = st.lists(
+    st.sampled_from([b"\r", b"\n", b"\r\n", b"\n\n", b"a", b"data: 1", "é€😀".encode()])
+    | st.binary(max_size=4),
+    max_size=40,
+).map(b"".join)
+
+
+@given(_stream_bytes, st.lists(st.integers(min_value=0, max_value=400), max_size=12))
+def test_framer_matches_whole_stream_for_any_chunking(stream: bytes, cuts: list[int]) -> None:
+    assert _frame_chunked(stream, cuts) == _frame_whole(stream)
+
+
+def test_framer_crlf_split_across_chunks() -> None:
+    framer = _SSEFramer()
+    assert framer.feed(b"data: 1\r") == []
+    assert framer.feed(b"\n\r") == []
+    assert framer.feed(b"\ndata: 2\r\n\r\n") == ["data: 1", "data: 2"]
+
+
+def test_framer_terminator_split_across_chunks() -> None:
+    framer = _SSEFramer()
+    assert framer.feed(b"data: 1\n") == []
+    assert framer.feed(b"\ndata: 2\n") == ["data: 1"]
+    assert framer.pending_chars == len("data: 2\n")
+
+
+def test_framer_multibyte_char_split_across_chunks() -> None:
+    framer = _SSEFramer()
+    euro = "€".encode()
+    assert framer.feed(b"data: " + euro[:1]) == []
+    assert framer.feed(euro[1:] + b"\n\n") == ["data: €"]
