@@ -294,41 +294,64 @@ def test_userinfo_is_not_in_error_messages(monkeypatch: pytest.MonkeyPatch, stat
 # RFC 3986 ends the authority at the first '/', '?' or '#', so a password
 # holding one unencoded reads as host "user" and a port. The prefix is a marker
 # no generated text can produce by accident.
-_USER = st.text(st.characters(blacklist_characters="/?#", blacklist_categories=("Cs",)))
-_PASSWORD = st.builds(
-    lambda a, d, b: f"S3cr{a}{d}{b}",
-    st.text(st.characters(blacklist_categories=("Cs",))),
-    st.sampled_from("/?#"),
-    st.text(st.characters(blacklist_categories=("Cs",))),
-)
+_TEXT = st.text(st.characters(blacklist_categories=("Cs",)))
 
 
 @pytest.mark.usefixtures("_no_cookies")
 @settings(suppress_health_check=[HealthCheck.function_scoped_fixture], deadline=None)
-@given(user=_USER, password=_PASSWORD, as_json=st.booleans())
+@given(
+    user=st.text(st.characters(blacklist_characters="/?#", blacklist_categories=("Cs",))),
+    head=_TEXT,
+    delim=st.sampled_from("/?#"),
+    tail=_TEXT,
+    as_json=st.booleans(),
+)
 def test_password_with_a_delimiter_is_refused_and_never_shown(
-    user: str, password: str, as_json: bool
+    monkeypatch: pytest.MonkeyPatch, user: str, head: str, delim: str, tail: str, as_json: bool
 ) -> None:
-    url = f"http://{user}:{password}@example.com/"
+    # An '@' in the password's head ends RFC 3986 userinfo early and may leave a
+    # valid host:port, which then fails DNS; without one the port is malformed.
+    _stub_dns(monkeypatch, {})
+    url = f"http://{user}:S3cr{head}{delim}{tail}@example.com/"
     out, err = io.StringIO(), io.StringIO()
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
         code = cli_fetch.main(["--json", url] if as_json else [url])
-    assert code == EXIT_GENERIC
+    assert code == EXIT_GENERIC or "@" in head
     for stream in (out.getvalue(), err.getvalue()):
         assert "S3cr" not in stream, stream
-    if as_json:
+    if as_json and code == EXIT_GENERIC:
         assert json.loads(out.getvalue())["error"]["type"] == "BlockedUrlError"
 
 
-def test_numeric_password_with_a_delimiter_is_refused_before_dns(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # "user:1234" is a valid host and port, so only the later '@' shows the password.
+def test_numeric_password_head_is_a_port_and_never_shown(monkeypatch: pytest.MonkeyPatch) -> None:
+    # RFC 3986 reads "user:1234" as a valid host and port, so the URL is
+    # accepted; messages still drop everything a reader could take as a password.
     _stub_dns(monkeypatch, {})
     with pytest.raises(PplxError) as ei:
         fetch_page("http://user:1234/x@example.com/", "example.com", max_chars=None)
-    assert isinstance(ei.value, errors.BlockedUrlError), repr(ei.value)
+    assert isinstance(ei.value, errors.NetworkError), repr(ei.value)
     assert "1234" not in str(ei.value)
+
+
+@pytest.mark.parametrize(
+    ("url", "path"),
+    [
+        (f"http://{HOST}/a@b", "/a@b"),
+        (f"http://{HOST}:8443/a@b", "/a@b"),
+        (f"http://{HOST}/?q=a@b", "/?q=a@b"),
+        (f"http://{HOST}:8443/?q=a@b", "/?q=a@b"),
+        (f"http://{HOST}/#x@y", "/"),
+        (f"http://{HOST}:8443/#x@y", "/"),
+    ],
+)
+def test_at_sign_after_the_authority_is_allowed(
+    monkeypatch: pytest.MonkeyPatch, url: str, path: str
+) -> None:
+    _stub_dns(monkeypatch, {HOST: ["8.8.8.8"]})
+    sess = _Session(_page())
+    result = fetch_page(url, HOST, max_chars=None, session=sess)  # type: ignore[arg-type]
+    assert sess.requested[0].endswith(path)
+    assert result.url == url
 
 
 def test_userinfo_is_not_in_refusal_messages() -> None:

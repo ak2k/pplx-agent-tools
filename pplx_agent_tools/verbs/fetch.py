@@ -32,7 +32,14 @@ from ..errors import (
     SchemaError,
     TargetHttpError,
 )
-from ..netguard import PublicUrl, check_url, join_location, redact, refuse_hidden_password
+from ..netguard import (
+    PublicUrl,
+    check_authority,
+    check_url,
+    join_location,
+    redact,
+    strip_userinfo,
+)
 from ..wire import Client
 from ._ask_common import (
     AskStreamState,
@@ -135,8 +142,8 @@ def fetch(
     """
     if prompt is None:
         return fetch_plain(url, max_chars=max_chars)
-    refuse_hidden_password(url)
-    shown = redact(url)
+    check_authority(url)
+    shown = strip_userinfo(url)
     if shown != url:
         print("pplx fetch: removed credentials from the URL sent to Perplexity", file=sys.stderr)
     return _fetch_with_prompt(
@@ -246,7 +253,7 @@ def fetch_page(
         truncated = True
 
     return FetchResult(
-        url=shown,
+        url=strip_userinfo(url),
         title=title,
         domain=domain,
         content=content,

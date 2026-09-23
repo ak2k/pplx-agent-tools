@@ -239,12 +239,13 @@ class HttpUrl:
 
 
 def _userinfo_span(url: str) -> tuple[int, int, bool] | None:
-    """Start and end of `url`'s user:password, and whether it runs past the authority.
+    """Start and end of what in `url` may be a user:password, if anything.
 
-    The authority ends at the first '/', '?' or '#', so in `user:pa/ss@host`
-    the password's head reads as a port and its tail as path. Any authority
-    with a ':' and a later '@' is taken to be that shape: the '@' could be
-    path text, but no parser can tell, and the password must not be shown.
+    The third item is False for RFC 3986 userinfo: the authority, which ends at
+    the first '/', '?' or '#', up to its last '@'. It is True when the span is
+    only credential-shaped: an authority whose host:port holds a ':', then a
+    later '@', as in `user:pa/ss@host` (a password with an unencoded '/'). That
+    '@' may be path text, so only messages drop such a span, never results.
     """
     m = _AUTHORITY.match(url)
     if m is None:
@@ -257,26 +258,56 @@ def _userinfo_span(url: str) -> tuple[int, int, bool] | None:
     return (start, at + 1, False) if at >= 0 else None
 
 
+def strip_userinfo(url: str) -> str:
+    """`url` without its RFC 3986 userinfo, for results and requests.
+
+    A URL with a malformed host:port gets `redact` instead: it is refused
+    anyway, and its "port" may be the head of a password.
+    """
+    m = _AUTHORITY.match(url)
+    if m is None:
+        return url
+    at = url.rfind("@", m.end(1), m.end(2))
+    try:
+        _split_hostport(url[max(at + 1, m.end(1)) : m.end(2)])
+    except ValueError:
+        return redact(url)
+    return url if at < 0 else url[: m.end(1)] + url[at + 1 :]
+
+
 def redact(url: str) -> str:
-    """`url` without its user:password, for messages and results."""
+    """`url` for messages: without its userinfo or anything shaped like one."""
     span = _userinfo_span(url)
     return url if span is None else url[: span[0]] + url[span[1] :]
 
 
-def _scrub(text: str, url: str) -> str:
-    """`text` (a parser's message about `url`) without `url`'s user:password."""
+def _detail(error: ValueError, url: str) -> str:
+    """A parser's message about `url`, which may quote its netloc, made safe to show."""
     span = _userinfo_span(url)
-    return text if span is None else text.replace(url[span[0] : span[1]], "")
+    if span is None:
+        return str(error)
+    if span[2]:
+        # The parser's text may quote the password's head as a port or host.
+        return "malformed authority (a password must percent-encode '/', '?' and '#')"
+    return str(error).replace(url[span[0] : span[1]], "")
 
 
-def refuse_hidden_password(url: str) -> None:
-    """Raise BlockedUrlError when `url` has a password running past its authority."""
-    span = _userinfo_span(url)
-    if span is not None and span[2]:
-        raise BlockedUrlError(
-            f"fetch {redact(url)}: '@' after a host:port reads as a password holding "
-            "'/', '?' or '#'; percent-encode those in a password, or the '@' as %40"
-        )
+def check_authority(url: str) -> None:
+    """Raise BlockedUrlError when `url`'s RFC 3986 host:port is malformed.
+
+    `fetch --prompt` sends the URL on rather than parsing it, so it needs this
+    much: a password holding an unencoded '/', '?' or '#' leaves a
+    malformed port like the "pa" of `user:pa/ss@host`.
+    """
+    m = _AUTHORITY.match(url)
+    if m is None or (not m.group(1) and "@" not in url):
+        return
+    try:
+        host, bracketed, _ = _split_hostport(m.group(2).rpartition("@")[2])
+        if m.group(1) and not host and not bracketed:
+            raise ValueError("no host")
+    except ValueError as e:
+        raise BlockedUrlError(f"fetch {redact(url)}: malformed URL: {_detail(e, url)}") from e
 
 
 def join_location(base: str, location: str) -> str:
@@ -285,7 +316,6 @@ def join_location(base: str, location: str) -> str:
     A Location with a scheme or a leading '//' must name its host: urljoin
     reads `http:///x` as path /x on `base`'s host, WHATWG as host "x".
     """
-    refuse_hidden_password(location)
     shown = f"fetch {redact(base)}: redirect to {redact(location)!r}"
     try:
         parts = urlsplit(location)
@@ -293,7 +323,7 @@ def join_location(base: str, location: str) -> str:
             raise BlockedUrlError(f"{shown}: Location has no host")
         return urljoin(base, location)
     except ValueError as e:
-        raise BlockedUrlError(f"{shown}: malformed Location: {_scrub(str(e), location)}") from e
+        raise BlockedUrlError(f"{shown}: malformed Location: {_detail(e, location)}") from e
 
 
 def _parse_host(text: str, bracketed: bool) -> Host:
@@ -336,17 +366,15 @@ def _split_hostport(hostport: str) -> tuple[str, bool, int | None]:
 def parse_url(url: str) -> HttpUrl:
     """Parse `url` into an `HttpUrl` or raise BlockedUrlError.
 
-    Refuses a password running past the authority, a non-http(s) scheme, a
-    missing host, a bad port, and any host
+    Refuses a non-http(s) scheme, a missing host, a bad port, and any host
     other than canonical dotted-decimal IPv4, bracketed IPv6 without a zone id,
     or a DNS name whose last label is not numeric.
     """
-    refuse_hidden_password(url)
     shown = redact(url)
     try:
         parts = urlsplit(url)
     except ValueError as e:
-        raise BlockedUrlError(f"fetch {shown}: malformed URL: {_scrub(str(e), url)}") from e
+        raise BlockedUrlError(f"fetch {shown}: malformed URL: {_detail(e, url)}") from e
     scheme = _SCHEMES.get(parts.scheme)
     if scheme is None:
         raise BlockedUrlError(
@@ -366,7 +394,7 @@ def parse_url(url: str) -> HttpUrl:
             auth=(unquote(user), unquote(password)) if userinfo else None,
         )
     except ValueError as e:  # includes UnicodeError from IDNA encoding
-        raise BlockedUrlError(f"fetch {shown}: malformed host: {e}") from e
+        raise BlockedUrlError(f"fetch {shown}: malformed host: {_detail(e, url)}") from e
 
 
 @dataclass(frozen=True)

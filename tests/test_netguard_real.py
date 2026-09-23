@@ -171,3 +171,19 @@ def test_malformed_redirect_location_is_a_refusal(loopback: _Server, location: s
         assert loopback.hits == []
     finally:
         origin.close()
+
+
+@pytest.mark.usefixtures("ipv6_origin_allowed")
+@pytest.mark.parametrize(
+    ("path", "received"),
+    [("/a@b", "/a@b"), ("/?q=a@b", "/?q=a@b"), ("/#x@y", "/"), ("/@user", "/@user")],
+)
+def test_at_sign_after_an_explicit_port_is_fetched(path: str, received: str) -> None:
+    origin = _Server(socket.AF_INET6, "::1", None)
+    try:
+        url = f"http://[::1]:{origin.port}{path}"
+        result = fetch_page(url, "[::1]", max_chars=None)
+        assert origin.hits == [received]
+        assert result.url == url
+    finally:
+        origin.close()

@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..errors import PplxError, SchemaError
+from ..netguard import strip_userinfo
 from ..wire import Client
 
 DEFAULT_MAX_TOKENS = 4000
@@ -108,7 +109,7 @@ def snippets(
         return SnippetsResult(
             query=query,
             results=[
-                UrlSnippets(url=url, error=err or "no extractable paragraphs")
+                UrlSnippets(url=strip_userinfo(url), error=err or "no extractable paragraphs")
                 for url, _, err in pages
             ],
         )
@@ -131,7 +132,9 @@ def snippets(
         fts_query = _fts5_escape(query)
         query_blob = _vec_to_blob(query_vec)
 
-        by_url: dict[str, UrlSnippets] = {url: UrlSnippets(url=url) for url, *_ in pages}
+        by_url: dict[str, UrlSnippets] = {
+            url: UrlSnippets(url=strip_userinfo(url)) for url, *_ in pages
+        }
         for url, _, err in pages:
             if err is not None:
                 by_url[url].error = err

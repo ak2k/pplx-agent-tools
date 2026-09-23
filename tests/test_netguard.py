@@ -21,6 +21,7 @@ from pplx_agent_tools.netguard import (
     classify,
     parse_url,
     redact,
+    strip_userinfo,
 )
 from tests.test_fetch_refusals import ALLOWED, BLOCKED, IANA_V4, IANA_V6
 
@@ -225,6 +226,21 @@ def test_literal_host_is_checked_without_the_resolver(monkeypatch: pytest.Monkey
 )
 def test_redact_drops_only_userinfo(url: str, shown: str) -> None:
     assert redact(url) == shown
+
+
+@pytest.mark.parametrize(
+    ("url", "stripped"),
+    [
+        ("http://u:p@host.test/x", "http://host.test/x"),
+        ("https://h.test:8443/?q=a@b", "https://h.test:8443/?q=a@b"),
+        ("http://user:1234/x@host.test/", "http://user:1234/x@host.test/"),
+        ("https://medium.com/@user", "https://medium.com/@user"),
+        ("http://u:pa/ss@host.test/x", "http://host.test/x"),
+        ("u:p@host.test/x", "host.test/x"),
+    ],
+)
+def test_strip_userinfo_keeps_a_valid_url_whole(url: str, stripped: str) -> None:
+    assert strip_userinfo(url) == stripped
 
 
 @pytest.mark.parametrize(

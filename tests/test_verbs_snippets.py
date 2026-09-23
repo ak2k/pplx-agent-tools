@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import json
 import struct
+import sys
+import types
+from collections.abc import Iterable, Iterator
 
 import pytest
 
+from pplx_agent_tools.render import render_snippets_json, render_snippets_text
 from pplx_agent_tools.verbs import snippets as snippets_mod
 from pplx_agent_tools.verbs.snippets import (
     SnippetsResult,
@@ -132,3 +137,39 @@ def test_snippets_empty_input_returns_empty(monkeypatch: pytest.MonkeyPatch) -> 
     result = snippets("query", [])
     assert result.results == []
     assert called is False
+
+
+# ---------- URL credentials never reach output ----------
+
+
+class _FakeEmbedding:
+    def __init__(self, model_name: str) -> None:
+        _ = model_name
+
+    def embed(self, texts: Iterable[str]) -> Iterator[list[float]]:
+        return iter([[1.0, 0.0, 0.0] for _ in texts])
+
+    def query_embed(self, texts: Iterable[str]) -> Iterator[list[float]]:
+        return iter([[1.0, 0.0, 0.0] for _ in texts])
+
+
+@pytest.mark.parametrize("indexed", [True, False], ids=["indexed", "all-failed"])
+def test_snippets_output_has_no_url_credentials(
+    monkeypatch: pytest.MonkeyPatch, indexed: bool
+) -> None:
+    good = "https://user:s3cret@a.example/page"
+    bad = "http://user:S3cr/et@b.example/"
+    content = "alpha beta gamma delta epsilon" if indexed else ""
+
+    def fake_fetch_all(urls: list[str]) -> list[tuple[str, str, str | None]]:
+        return [(good, content, None), (bad, "", "fetch http://b.example/: refused")]
+
+    fake = types.ModuleType("fastembed")
+    fake.TextEmbedding = _FakeEmbedding  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "fastembed", fake)
+    monkeypatch.setattr(snippets_mod, "_fetch_all", fake_fetch_all)
+    result = snippets("alpha", [good, bad])
+    assert [u.url for u in result.results] == ["https://a.example/page", "http://b.example/"]
+    assert bool(result.results[0].snippets) is indexed
+    shown = render_snippets_text(result) + json.dumps(render_snippets_json(result))
+    assert "s3cret" not in shown and "S3cr" not in shown

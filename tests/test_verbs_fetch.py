@@ -7,11 +7,15 @@ double-counts).
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 from collections.abc import Callable, Iterator
 from typing import Any
 
 import pytest
+from hypothesis import given
+from hypothesis import strategies as st
 
 from pplx_agent_tools.errors import (
     BlockedUrlError,
@@ -635,7 +639,6 @@ def test_prompt_mode_without_userinfo_prints_no_note(capsys: pytest.CaptureFixtu
         "http://user:S3cr/et@example.com/",
         "http://user:S3cr?et@example.com/",
         "http://user:S3cr#et@example.com/",
-        "https://user:1234/S3cr@example.com/",
         "user:S3cr/et@example.com/",
     ],
 )
@@ -649,3 +652,51 @@ def test_prompt_mode_refuses_a_password_with_a_delimiter(
     assert "S3cr" not in str(ei.value)
     captured = capsys.readouterr()
     assert "S3cr" not in captured.out + captured.err
+
+
+_TEXT = st.text(st.characters(blacklist_categories=("Cs",)))
+
+
+@given(
+    user=st.text(st.characters(blacklist_characters="/?#", blacklist_categories=("Cs",))),
+    head=_TEXT,
+    delim=st.sampled_from("/?#"),
+    tail=_TEXT,
+)
+def test_prompt_mode_never_shows_or_sends_a_delimiter_password(
+    user: str, head: str, delim: str, tail: str
+) -> None:
+    # An '@' in the password's head ends RFC 3986 userinfo early and may leave a
+    # valid host:port, which is accepted; without one the port is malformed.
+    client = _BodyRecordingClient([_ev([_block("ask_text", ["ok"])], status="COMPLETED")])
+    url = f"https://{user}:S3cr{head}{delim}{tail}@example.com/"
+    err = io.StringIO()
+    shown = ""
+    with contextlib.redirect_stderr(err):
+        try:
+            shown = fetch(client, url, prompt="summarize").url
+        except BlockedUrlError as e:
+            shown = str(e)
+            assert client.bodies == []
+        else:
+            assert "@" in head
+    assert "S3cr" not in shown + err.getvalue() + json.dumps(client.bodies)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://h.example:8443/?q=a@b",
+        "https://h.example/a@b",
+        "https://h.example:8443/a@b#c@d",
+        "https://medium.com/@user",
+    ],
+)
+def test_prompt_mode_sends_an_at_sign_after_the_authority_unchanged(
+    capsys: pytest.CaptureFixture[str], url: str
+) -> None:
+    client = _BodyRecordingClient([_ev([_block("ask_text", ["ok"])], status="COMPLETED")])
+    result = fetch(client, url, prompt="summarize")
+    assert f"For URL: {url}" in client.bodies[0]["query_str"]
+    assert result.url == url
+    assert capsys.readouterr().err == ""
