@@ -11,9 +11,9 @@ Accepts two on-disk shapes:
   - Cookie-Editor array: [{"name": "...", "value": "...", "domain": "...", ...}, ...]
 
 Both are flattened to {name: value} for curl_cffi's session cookies kwarg.
-Every name and value must be a string that cannot split the Cookie header
-(no control characters or ';'; names also no '='). Anything else is refused
-with AuthError rather than coerced.
+Every name and value must be a string the transport can send intact (see
+`_cookie_text_ok`). Files and $PPLX_COOKIES are refused whole on any bad pair;
+browser import skips bad rows with a warning.
 
 Cookie files must be mode 0600. World-readable files are refused; group-readable
 files are auto-chmodded with a warning to stderr.
@@ -168,24 +168,51 @@ def _enforce_perms(path: Path) -> None:
             raise AuthError(f"could not tighten perms on cookie file: {path}: {e.strerror}") from e
 
 
-def _header_safe(s: str, *, extra: str = "") -> bool:
-    return not any(c in extra or c == ";" or ord(c) < 0x20 or ord(c) == 0x7F for c in s)
+# RFC 6265bis 5.6 (the user-agent storage rule): a name or value holding a CTL
+# other than HTAB is refused, and ';' ends the pair. HTAB is refused as well,
+# because curl's Netscape cookie lines are tab-delimited and a tab silently
+# drops the cookie. Lone surrogates cannot be UTF-8 encoded by curl_cffi.
+_FORBIDDEN = frozenset([*map(chr, range(0x20)), "\x7f", ";"])
+
+
+def _cookie_text_ok(s: str, *, extra: str = "") -> bool:
+    if any(c in _FORBIDDEN or c in extra for c in s):
+        return False
+    try:
+        s.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
 
 
 def _cookie_pair(name: object, value: object, *, where: str) -> tuple[str, str]:
     """The single gate every cookie passes before reaching the HTTP layer.
 
-    Errors name the location only, never the value: these are session secrets.
+    Errors name the cookie at most, never the value: values are session secrets.
     """
-    if not isinstance(name, str) or not name or not _header_safe(name, extra="="):
+    if not isinstance(name, str) or not name or not _cookie_text_ok(name, extra="="):
         raise AuthError(
-            f"{where}: cookie name must be a non-empty string without ';', '=' or control characters"
+            f"{where}: cookie name must be a non-empty string without ';', '=', "
+            "control characters or unpaired surrogates"
         )
-    if not isinstance(value, str) or not _header_safe(value):
+    if value is None:
+        raise AuthError(f"{where}: cookie {name!r} has no value")
+    if not isinstance(value, str) or not _cookie_text_ok(value):
         raise AuthError(
-            f"{where}: value of cookie {name!r} must be a string without ';' or control characters"
+            f"{where}: value of cookie {name!r} must be a string without ';', "
+            "control characters or unpaired surrogates"
         )
     return name, value
+
+
+def _cookie_entry(entry: object, *, where: str) -> tuple[str, str]:
+    """One Cookie-Editor / rookiepy row: {"name": ..., "value": ..., ...}."""
+    if not isinstance(entry, dict):
+        raise AuthError(f"{where} is not an object")
+    fields = cast("dict[object, object]", entry)
+    if "name" not in fields or "value" not in fields:
+        raise AuthError(f"{where} missing 'name' or 'value'")
+    return _cookie_pair(fields["name"], fields["value"], where=where)
 
 
 def _normalize(data: object, *, source: str) -> dict[str, str]:
@@ -200,14 +227,7 @@ def _normalize(data: object, *, source: str) -> dict[str, str]:
             flat[name] = value
     elif isinstance(data, list):
         for i, entry in enumerate(cast("list[object]", data)):
-            if not isinstance(entry, dict):
-                raise AuthError(f"cookie entry {i} in {source} is not an object")
-            fields = cast("dict[object, object]", entry)
-            if "name" not in fields or "value" not in fields:
-                raise AuthError(f"cookie entry {i} in {source} missing 'name' or 'value'")
-            name, value = _cookie_pair(
-                fields["name"], fields["value"], where=f"cookie entry {i} in {source}"
-            )
+            name, value = _cookie_entry(entry, where=f"cookie entry {i} in {source}")
             flat[name] = value
     else:
         raise AuthError(
@@ -228,6 +248,9 @@ def import_from_browser(browser: str, profile: str | None = None) -> Path:
     v10/v11 prefix dispatch, host-key integrity-binding strip.
 
     Returned shape is Cookie-Editor array; we flatten name→value before write.
+    Unlike a cookie file, a bad row is skipped with a warning: the jar holds
+    third-party cookies the user cannot edit, and one of them must not block
+    the import.
     """
     if browser not in SUPPORTED_BROWSERS:
         supported = ", ".join(SUPPORTED_BROWSERS)
@@ -249,11 +272,21 @@ def import_from_browser(browser: str, profile: str | None = None) -> Path:
     except Exception as e:
         raise AuthError(f"rookiepy.{browser} failed: {e}") from e
 
-    if not rows:
+    if not isinstance(rows, list):
+        raise AuthError(f"rookiepy.{browser} returned {type(rows).__name__}, expected a list")
+    cookies: dict[str, str] = {}
+    for i, row in enumerate(cast("list[object]", rows)):
+        try:
+            name, value = _cookie_entry(row, where=f"cookie entry {i} from {browser}")
+        except AuthError as e:
+            print(f"warning: skipping {e}", file=sys.stderr)
+            continue
+        cookies[name] = value
+
+    if not cookies:
         raise AuthError(
-            f"no cookies for *.{_COOKIE_DOMAIN} in {browser}; "
+            f"no usable cookies for *.{_COOKIE_DOMAIN} in {browser}; "
             f"sign in at perplexity.ai in {browser} first"
         )
-    cookies = _normalize(rows, source=f"rookiepy.{browser}")
 
     return save_cookies(cookies, profile=profile)

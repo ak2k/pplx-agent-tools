@@ -280,8 +280,38 @@ def test_save_cookies_then_load_roundtrip(monkeypatch: pytest.MonkeyPatch, tmp_p
 # ---------- cookie-pair boundary (property) ----------
 
 # Text biased toward the characters that split or inject a Cookie header.
-_hostile_text = st.text(alphabet=st.sampled_from(["a", "b", "=", ";", "\r", "\n", "\x00", " "]))
+# One sample from every class the gate refuses, plus allowed near-misses
+# (space, non-ASCII, C1 control) so acceptance is exercised too.
+_hostile_text = st.text(
+    alphabet=st.sampled_from(
+        [
+            "a",
+            "=",
+            ";",
+            "\r",
+            "\n",
+            "\x00",
+            "\x01",
+            "\t",
+            "\x1f",
+            "\x7f",
+            "\ud800",
+            "\udfff",
+            " ",
+            "é",
+            "\x85",
+            '"',
+            ",",
+        ]
+    )
+)
+_safe_text = st.text(alphabet=st.sampled_from(["a", "Z", "0", " ", "é", "\x85", '"', ",", "-"]))
+_bad_chars = ["=", ";", "\r", "\n", "\x00", "\x01", "\t", "\x1f", "\x7f", "\ud800", "\udfff"]
+# Clean text with exactly one bad character, so each class is tested alone
+# instead of hiding behind another one the gate already rejects.
+_one_bad = st.builds(lambda a, c, b: a + c + b, _safe_text, st.sampled_from(_bad_chars), _safe_text)
 _json_scalar = st.one_of(
+    _one_bad,
     st.none(),
     st.booleans(),
     st.integers(),
@@ -296,7 +326,7 @@ _json_any = st.recursive(
     ),
     max_leaves=8,
 )
-_cookie_key = st.one_of(st.text(max_size=8), _hostile_text)
+_cookie_key = st.one_of(st.text(max_size=8), _hostile_text, _one_bad)
 _dict_shape = st.dictionaries(_cookie_key, _json_any, max_size=5)
 _entry_shape = st.one_of(
     _json_any,
@@ -305,13 +335,17 @@ _entry_shape = st.one_of(
 _list_shape = st.lists(_entry_shape, max_size=5)
 
 
+def _sendable(s: str) -> bool:
+    # Stated independently of auth._cookie_text_ok so the test pins the rule.
+    return not any(ord(c) < 0x20 or c in {"\x7f", ";"} or 0xD800 <= ord(c) <= 0xDFFF for c in s)
+
+
 def _assert_clean(out: dict[str, str]) -> None:
     assert out
     for name, value in out.items():
         assert type(name) is str and type(value) is str
-        assert name
-        for s in (name, value):
-            assert not any(c in s for c in "\r\n;")
+        assert name and "=" not in name
+        assert _sendable(name) and _sendable(value)
 
 
 @given(st.one_of(_dict_shape, _list_shape, _json_any))
@@ -323,6 +357,18 @@ def test_normalize_yields_clean_pairs_or_auth_error(payload: object) -> None:
     _assert_clean(out)
 
 
+@given(st.one_of(_safe_text, _one_bad), st.one_of(_safe_text, _one_bad))
+def test_single_pair_accepted_iff_sendable(name: str, value: str) -> None:
+    expect_ok = bool(name) and "=" not in name and _sendable(name) and _sendable(value)
+    try:
+        out = _normalize({name: value}, source="prop")
+    except AuthError:
+        assert not expect_ok
+        return
+    assert expect_ok
+    assert out == {name: value}
+
+
 @pytest.mark.parametrize(
     "payload",
     [
@@ -330,6 +376,14 @@ def test_normalize_yields_clean_pairs_or_auth_error(payload: object) -> None:
         {"a": {"x": 1}},
         {"a": 1},
         {"a": "v\r\nX-Injected: 1"},
+        {"a": "v\x00"},
+        {"a": "v\x01"},
+        {"a": "v\tw"},
+        {"a": "v\x7f"},
+        {"a": "\ud800"},
+        {"\udc00": "v"},
+        {"a=b": "v"},
+        {"a\tb": "v"},
         {"a": "v;b=c"},
         {"c\r\nX": "v"},
         {"": "v"},
@@ -341,6 +395,11 @@ def test_normalize_yields_clean_pairs_or_auth_error(payload: object) -> None:
 def test_normalize_rejects_non_string_or_header_breaking(payload: object) -> None:
     with pytest.raises(AuthError):
         _normalize(payload, source="t")
+
+
+@pytest.mark.parametrize("value", ["", "a b", "é", "\x85", '"x, y"', "x\\y"])
+def test_normalize_accepts_sendable_values(value: str) -> None:
+    assert _normalize({"a": value}, source="t") == {"a": value}
 
 
 def test_normalize_error_omits_cookie_value() -> None:
@@ -365,12 +424,36 @@ def test_import_from_browser_saves_rows(monkeypatch: pytest.MonkeyPatch, tmp_pat
     assert json.loads(dest.read_text()) == {"a": "1"}
 
 
-def test_import_from_browser_refuses_bad_row(
+def test_import_from_browser_skips_bad_rows_with_warning(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    rows = [
+        {"name": "session", "value": "good"},
+        {"name": "nullish", "value": None},
+        {"name": "crlf", "value": "SECRET1\r\nX: y"},
+        {"name": "tabbed", "value": "SECRET2\tz"},
+        {"name": "surr", "value": "SECRET3\ud800"},
+        {"name": "a;b", "value": "SECRET4"},
+        "not a row",
+    ]
+    _fake_rookiepy(monkeypatch, rows)
+    dest = import_from_browser("brave")
+    assert json.loads(dest.read_text()) == {"session": "good"}
+    err = capsys.readouterr().err
+    assert err.count("warning: skipping") == 6
+    for name in ("nullish", "crlf", "tabbed", "surr"):
+        assert repr(name) in err
+    assert "has no value" in err
+    assert "SECRET" not in err
+
+
+def test_import_from_browser_all_rows_bad_writes_nothing(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     _fake_rookiepy(monkeypatch, [{"name": "a", "value": "x\r\ny"}])
-    with pytest.raises(AuthError):
+    with pytest.raises(AuthError, match="sign in"):
         import_from_browser("brave")
     assert not default_cookies_path().exists()
 
