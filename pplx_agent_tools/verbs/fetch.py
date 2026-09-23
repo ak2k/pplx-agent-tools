@@ -31,7 +31,7 @@ from ..errors import (
     SchemaError,
     TargetHttpError,
 )
-from ..netguard import PublicUrl, check_url
+from ..netguard import PublicUrl, check_url, redact
 from ..wire import Client
 from ._ask_common import (
     AskStreamState,
@@ -61,7 +61,7 @@ def _fetch_hop(
     timeout: float,
 ) -> cf_requests.Response:
     """The one place plain fetch sends a request; only a checked URL gets here."""
-    return session.get(target.url, timeout=timeout, allow_redirects=False)
+    return session.get(target.url, timeout=timeout, allow_redirects=False, auth=target.auth)
 
 
 def _get_guarded(
@@ -79,7 +79,7 @@ def _get_guarded(
             current = urljoin(current, location)
             continue
         return resp
-    raise TargetHttpError(f"fetch {url}: exceeded {_MAX_REDIRECTS} redirects")
+    raise TargetHttpError(f"fetch {redact(url)}: exceeded {_MAX_REDIRECTS} redirects")
 
 
 @dataclass
@@ -188,6 +188,7 @@ def fetch_page(
     host is markedly less Cloudflare-antagonizing than rapid TCP setups.
     When None (default), a fresh session is created and torn down per call.
     """
+    shown = redact(url)
     try:
         if session is None:
             # Standalone path: fresh session, torn down on exit. curl_cffi
@@ -201,15 +202,15 @@ def fetch_page(
     except PplxError:
         raise
     except Exception as e:
-        raise NetworkError(f"fetch {url}: {e!s}") from e
+        raise NetworkError(f"fetch {shown}: {e!s}") from e
 
     status = resp.status_code
     if status == 429:
-        raise RateLimitError(f"fetch {url}: HTTP 429")
+        raise RateLimitError(f"fetch {shown}: HTTP 429")
     if status == 408 or status >= 500:
-        raise NetworkError(f"fetch {url}: HTTP {status}")
+        raise NetworkError(f"fetch {shown}: HTTP {status}")
     if status >= 400:
-        raise TargetHttpError(f"fetch {url}: HTTP {status}")
+        raise TargetHttpError(f"fetch {shown}: HTTP {status}")
 
     html = resp.text or ""
     try:
@@ -240,7 +241,7 @@ def fetch_page(
         truncated = True
 
     return FetchResult(
-        url=url,
+        url=shown,
         title=title,
         domain=domain,
         content=content,
@@ -318,7 +319,7 @@ def _fetch_with_prompt(
         truncated = True
 
     return FetchResult(
-        url=url,
+        url=redact(url),
         title=None,  # not available from the chat response (no header equivalent)
         domain=domain,
         content=content,

@@ -1,8 +1,10 @@
 """Outbound-address policy for user-supplied fetch URLs (SSRF guard).
 
 `classify` is the only judge of an address, and `PublicAddress` is the only
-value it allows; `check_url` turns a URL into a `PublicUrl`, which holds only
-`PublicAddress`es, and the fetch path sends requests for `PublicUrl`s alone.
+value it allows. `parse_url` turns a URL string into an `HttpUrl` whose host has
+exactly one reading; `check_url` resolves it into a `PublicUrl`, which holds only
+`PublicAddress`es, and the fetch path hands curl a `PublicUrl`'s rebuilt URL
+alone, never the caller's string.
 
 Address data: the IANA IPv4 and IPv6 Special-Purpose Address Registries, both
 last updated 2025-10-09:
@@ -13,16 +15,18 @@ https://www.iana.org/assignments/iana-ipv6-special-registry/
 from __future__ import annotations
 
 import ipaddress
+import re
 import socket
-from dataclasses import dataclass
-from typing import TypeAlias
-from urllib.parse import urlparse
+from dataclasses import dataclass, field
+from typing import Literal, TypeAlias
+from urllib.parse import unquote, urlsplit
 
 from .errors import BlockedUrlError, NetworkError
 
 IPAddress: TypeAlias = ipaddress.IPv4Address | ipaddress.IPv6Address
+Scheme: TypeAlias = Literal["http", "https"]
 
-_ALLOWED_SCHEMES = frozenset({"http", "https"})
+_SCHEMES: dict[str, Scheme] = {"http": "http", "https": "https"}
 
 # Every registry entry is refused, including the few the registry marks globally
 # reachable (anycast services, AS112, AMT, ORCHIDv2, DETs): none of them serves
@@ -163,70 +167,214 @@ def classify(ip: IPAddress) -> PublicAddress | BlockedAddress:
     return BlockedAddress(ip, reason)
 
 
+_LABEL = re.compile(r"[a-z0-9_-]{1,63}")
+# WHATWG's "ends in a number": curl and inet_aton read such a host as IPv4 in
+# octal, hex, short or integer form, and platforms disagree on those readings
+# (Darwin's getaddrinfo reads 0177.0.0.1 as decimal), so only the canonical
+# dotted-decimal form, parsed by `ipaddress`, is accepted.
+_NUMERIC_LABEL = re.compile(r"[0-9]+|0x[0-9a-f]*")
+_PORT = re.compile(r"[0-9]{1,5}")
+_USERINFO = re.compile(r"^([^:/?#]*:)?//[^/?#]*@")
+
+
+def _dns_name_error(name: str) -> str | None:
+    bare = name[:-1] if name.endswith(".") else name
+    labels = bare.split(".")
+    if not bare or len(bare) > 253 or not all(_LABEL.fullmatch(label) for label in labels):
+        return f"invalid host name {name!r}"
+    if _NUMERIC_LABEL.fullmatch(labels[-1]):
+        return f"numeric host {name!r} is not a dotted-decimal IPv4 address"
+    return None
+
+
+@dataclass(frozen=True)
+class DnsName:
+    """A lowercase ASCII (IDNA) host name that no parser reads as an address."""
+
+    name: str
+
+    def __post_init__(self) -> None:
+        error = _dns_name_error(self.name)
+        if error is not None:
+            raise ValueError(error)
+
+
+Host: TypeAlias = IPAddress | DnsName
+
+
+@dataclass(frozen=True)
+class HttpUrl:
+    """An http(s) URL held as parts; `url` is the only string curl is given."""
+
+    scheme: Scheme
+    host: Host
+    port: int | None
+    path: str  # path plus "?query"
+    auth: tuple[str, str] | None = field(default=None, repr=False)
+
+    def __post_init__(self) -> None:
+        if isinstance(self.host, ipaddress.IPv6Address) and self.host.scope_id:
+            raise ValueError(f"host [{self.host}] has a zone id")
+        if self.port is not None and not 1 <= self.port <= 65535:
+            raise ValueError(f"port {self.port} out of range")
+        if not self.path.startswith("/") or "#" in self.path:
+            raise ValueError(f"path {self.path!r} must start with '/' and hold no fragment")
+
+    @property
+    def host_text(self) -> str:
+        if isinstance(self.host, DnsName):
+            return self.host.name
+        if isinstance(self.host, ipaddress.IPv6Address):
+            return f"[{self.host}]"
+        return str(self.host)
+
+    @property
+    def url(self) -> str:
+        port = "" if self.port is None else f":{self.port}"
+        return f"{self.scheme}://{self.host_text}{port}{self.path}"
+
+
+def redact(url: str) -> str:
+    """`url` without its user:password, for messages and results."""
+    return _USERINFO.sub(r"\1//", url, count=1)
+
+
+def _parse_host(text: str, bracketed: bool) -> Host:
+    if "%" in text:
+        # A zone id in brackets; percent-encoding otherwise, which curl decodes.
+        raise ValueError(f"host {text!r} contains '%'")
+    if bracketed:
+        return ipaddress.IPv6Address(text)
+    # The IDNA codec is the one getaddrinfo applies, and curl then gets only its
+    # ASCII output, so curl's own IDN conversion never runs.
+    ascii_host = text.lower().encode("idna").decode("ascii")
+    try:
+        return ipaddress.IPv4Address(ascii_host)
+    except ValueError:
+        return DnsName(ascii_host)
+
+
+def _split_hostport(hostport: str) -> tuple[str, bool, int | None]:
+    if hostport.startswith("["):
+        end = hostport.find("]")
+        if end < 0:
+            raise ValueError("unclosed '['")
+        host, rest, bracketed = hostport[1:end], hostport[end + 1 :], True
+    else:
+        host, sep, port_text = hostport.partition(":")
+        rest, bracketed = sep + port_text, False
+    if rest in ("", ":"):
+        return host, bracketed, None
+    if not rest.startswith(":") or not _PORT.fullmatch(rest[1:]):
+        raise ValueError(f"bad port {rest!r}")
+    return host, bracketed, int(rest[1:])
+
+
+def parse_url(url: str) -> HttpUrl:
+    """Parse `url` into an `HttpUrl` or raise BlockedUrlError.
+
+    Refuses a non-http(s) scheme, a missing host, a bad port, and any host
+    other than canonical dotted-decimal IPv4, bracketed IPv6 without a zone id,
+    or a DNS name whose last label is not numeric.
+    """
+    shown = redact(url)
+    try:
+        parts = urlsplit(url)
+    except ValueError as e:
+        raise BlockedUrlError(f"fetch {shown}: malformed URL: {e}") from e
+    scheme = _SCHEMES.get(parts.scheme)
+    if scheme is None:
+        raise BlockedUrlError(
+            f"fetch {shown}: unsupported URL scheme {parts.scheme!r} (only http/https allowed)"
+        )
+    userinfo, _, hostport = parts.netloc.rpartition("@")
+    try:
+        host_text, bracketed, port = _split_hostport(hostport)
+        if not host_text and not bracketed:
+            raise BlockedUrlError(f"fetch {shown}: URL has no host")
+        user, _, password = userinfo.partition(":")
+        return HttpUrl(
+            scheme=scheme,
+            host=_parse_host(host_text, bracketed),
+            port=port,
+            path=(parts.path or "/") + (f"?{parts.query}" if parts.query else ""),
+            auth=(unquote(user), unquote(password)) if userinfo else None,
+        )
+    except ValueError as e:  # includes UnicodeError from IDNA encoding
+        raise BlockedUrlError(f"fetch {shown}: malformed host: {e}") from e
+
+
 @dataclass(frozen=True)
 class PublicUrl:
-    """An http(s) URL whose host resolved only to public addresses when checked.
+    """An `HttpUrl` whose host had only public addresses when checked.
 
-    `addresses` is what the check saw; curl resolves the host again at connect
-    time, so a DNS answer that changes in between is not covered here.
+    An IP-literal host must be its one address. For a DNS name `addresses` is
+    what the resolver answered; curl resolves the name again at connect time,
+    so a DNS answer that changes in between is not covered here.
     """
 
-    url: str
-    host: str
+    parts: HttpUrl
     addresses: tuple[PublicAddress, ...]
 
     def __post_init__(self) -> None:
         if not self.addresses:
             raise ValueError(f"{self.url}: a PublicUrl needs at least one address")
+        host = self.parts.host
+        if not isinstance(host, DnsName) and [a.ip for a in self.addresses] != [host]:
+            raise ValueError(f"{self.url}: addresses must be exactly the literal host {host}")
+
+    @property
+    def url(self) -> str:
+        return self.parts.url
+
+    @property
+    def host(self) -> str:
+        return self.parts.host_text
+
+    @property
+    def auth(self) -> tuple[str, str] | None:
+        return self.parts.auth
 
 
-def _resolve(url: str, host: str) -> list[IPAddress]:
+def _resolve(shown: str, name: str) -> list[IPAddress]:
     try:
-        infos = socket.getaddrinfo(host, None)
-    except ValueError as e:  # includes UnicodeError from IDNA encoding
-        raise BlockedUrlError(f"fetch {url}: invalid host {host!r}: {e}") from e
+        infos = socket.getaddrinfo(name, None)
+    except ValueError as e:
+        raise BlockedUrlError(f"fetch {shown}: invalid host {name!r}: {e}") from e
     except OSError as e:
-        raise NetworkError(f"fetch {url}: cannot resolve host {host!r}: {e}") from e
+        raise NetworkError(f"fetch {shown}: cannot resolve host {name!r}: {e}") from e
     addrs: list[IPAddress] = []
     for info in infos:
         raw = info[4][0]
         if not isinstance(raw, str):
-            raise BlockedUrlError(f"fetch {url}: host {host!r} resolves to non-IP {raw!r}")
+            raise BlockedUrlError(f"fetch {shown}: host {name!r} resolves to non-IP {raw!r}")
         try:
             addrs.append(ipaddress.ip_address(raw))
         except ValueError as e:
-            raise BlockedUrlError(f"fetch {url}: host {host!r} resolves to {raw!r}: {e}") from e
+            raise BlockedUrlError(f"fetch {shown}: host {name!r} resolves to {raw!r}: {e}") from e
     return addrs
 
 
 def check_url(url: str) -> PublicUrl:
     """Parse and resolve `url`; return it as a `PublicUrl` or raise.
 
-    Raises BlockedUrlError for a non-http(s) scheme, a missing or malformed
-    host or port, or any resolved address that is not public (one internal
-    answer refuses the whole host). Raises NetworkError when resolution fails.
+    Raises BlockedUrlError for anything `parse_url` refuses or any resolved
+    address that is not public (one internal answer refuses the whole host).
+    Raises NetworkError when resolution fails.
     """
-    try:
-        parsed = urlparse(url)
-        host = parsed.hostname
-        _ = parsed.port
-    except ValueError as e:
-        raise BlockedUrlError(f"fetch {url}: malformed URL: {e}") from e
-    if parsed.scheme not in _ALLOWED_SCHEMES:
-        raise BlockedUrlError(
-            f"fetch {url}: unsupported URL scheme {parsed.scheme!r} (only http/https allowed)"
-        )
-    if not host:
-        raise BlockedUrlError(f"fetch {url}: URL has no host")
+    parts = parse_url(url)
+    shown = redact(url)
+    host = parts.host
+    ips = _resolve(shown, host.name) if isinstance(host, DnsName) else [host]
     public: list[PublicAddress] = []
-    for ip in _resolve(url, host):
+    for ip in ips:
         verdict = classify(ip)
         if isinstance(verdict, BlockedAddress):
             raise BlockedUrlError(
-                f"fetch {url}: host {host!r} resolves to non-public address "
+                f"fetch {shown}: host {parts.host_text!r} resolves to non-public address "
                 f"{verdict.ip} ({verdict.reason})"
             )
         public.append(verdict)
     if not public:
-        raise NetworkError(f"fetch {url}: host {host!r} resolved to no addresses")
-    return PublicUrl(url=url, host=host, addresses=tuple(public))
+        raise NetworkError(f"fetch {shown}: host {parts.host_text!r} resolved to no addresses")
+    return PublicUrl(parts=parts, addresses=tuple(public))

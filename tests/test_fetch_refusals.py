@@ -145,9 +145,11 @@ class _Session:
     def __init__(self, *responses: _Resp) -> None:
         self._responses = list(responses)
         self.requested: list[str] = []
+        self.auth: list[object] = []
 
-    def get(self, url: str, timeout: float | None = None, allow_redirects: bool = False) -> _Resp:
+    def get(self, url: str, **kwargs: object) -> _Resp:
         self.requested.append(url)
+        self.auth.append(kwargs.get("auth"))
         return self._responses.pop(0)
 
 
@@ -244,6 +246,51 @@ def test_cli_refusal_exits_1_with_blocked_type(
     payload = json.loads(capsys.readouterr().out)
     assert payload["error"]["type"] == "BlockedUrlError"
     assert payload["error"]["exit_code"] == EXIT_GENERIC
+
+
+@pytest.mark.usefixtures("_no_cookies")
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://1.1.1.1./",
+        "http://127.0.0.1./",
+        "http://%31%32%37.0.0.1/",
+        "http://exa%6dple.com/",
+        "http://0177.0.0.1/",
+        "http://[fe80::1%25lo0]/",
+    ],
+)
+def test_malformed_host_exits_1(url: str, capsys: pytest.CaptureFixture[str]) -> None:
+    assert cli_fetch.main(["--json", url]) == EXIT_GENERIC
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["error"]["type"] == "BlockedUrlError"
+
+
+# ---------- userinfo: sent as auth, never shown ----------
+
+
+def test_userinfo_is_sent_as_auth_and_never_shown(monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_dns(monkeypatch, {HOST: ["8.8.8.8"]})
+    sess = _Session(_page())
+    result = fetch_page(f"http://u%40x:p%3Aw@{HOST}/a?b=1", HOST, max_chars=None, session=sess)  # type: ignore[arg-type]
+    assert sess.requested == [f"http://{HOST}/a?b=1"]
+    assert sess.auth == [("u@x", "p:w")]
+    assert result.url == f"http://{HOST}/a?b=1"
+
+
+@pytest.mark.parametrize("status", [404, 429, 503])
+def test_userinfo_is_not_in_error_messages(monkeypatch: pytest.MonkeyPatch, status: int) -> None:
+    _stub_dns(monkeypatch, {HOST: ["8.8.8.8"]})
+    sess = _Session(_page(status))
+    with pytest.raises(PplxError) as ei:
+        fetch_page(f"http://user:secret@{HOST}/", HOST, max_chars=None, session=sess)  # type: ignore[arg-type]
+    assert "secret" not in str(ei.value) and "user" not in str(ei.value)
+
+
+def test_userinfo_is_not_in_refusal_messages() -> None:
+    with pytest.raises(PplxError) as ei:
+        fetch_page("http://user:secret@127.0.0.1/", "127.0.0.1", max_chars=None)
+    assert "secret" not in str(ei.value) and "user" not in str(ei.value)
 
 
 # ---------- target HTTP status → exit code ----------

@@ -344,8 +344,8 @@ def test_check_url_rejects_non_http(url: str) -> None:
     ["http://8.8.8.8/", "https://8.8.8.8/path?q=1", "HTTPS://8.8.8.8/"],
 )
 def test_check_url_accepts_http_https(url: str) -> None:
-    # IP literals keep this offline; urlparse lowercases the scheme, so HTTPS works.
-    assert check_url(url).url == url
+    # IP literals keep this offline; the checked URL is rebuilt in canonical form.
+    assert check_url(url).url == url.replace("HTTPS", "https")
 
 
 def test_check_url_rejects_missing_host() -> None:

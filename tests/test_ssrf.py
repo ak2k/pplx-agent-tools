@@ -28,9 +28,7 @@ class _FakeSession:
         self._responses = responses
         self.requested: list[str] = []
 
-    def get(
-        self, url: str, timeout: float | None = None, allow_redirects: bool = False
-    ) -> _FakeResp:
+    def get(self, url: str, **_: object) -> _FakeResp:
         self.requested.append(url)
         return self._responses.pop(0)
 
