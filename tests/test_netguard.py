@@ -121,6 +121,15 @@ def test_check_url_keeps_every_public_answer(monkeypatch: pytest.MonkeyPatch) ->
         ("http://\uff11\uff12\uff17.\uff10.\uff10.\uff11/", "http://127.0.0.1/"),
         ("http://127\u30020.0.1/", "http://127.0.0.1/"),
         ("http://bücher.example/", "http://xn--bcher-kva.example/"),
+        # UTS 46 non-transitional (IDNA2008): deviation characters are kept.
+        ("http://stra\u00dfe.de/", "http://xn--strae-oqa.de/"),
+        ("http://STRASSE.de/", "http://strasse.de/"),
+        ("http://\u03c2.gr/", "http://xn--3xa.gr/"),
+        ("http://\u03a3.gr/", "http://xn--4xa.gr/"),
+        ("http://\u0915\u094d\u200d\u0937.example/", "http://xn--11b2ezcw70k.example/"),
+        ("http://\u0915\u094d\u200c\u0937.example/", "http://xn--11b2ezcs70k.example/"),
+        # ASCII hosts are only lowercased; UTS 46 hyphen rules would refuse these.
+        ("http://r3---sn-abc.googlevideo.com/", "http://r3---sn-abc.googlevideo.com/"),
     ],
 )
 def test_parse_url_rebuilds_one_canonical_spelling(url: str, canonical: str) -> None:
@@ -163,6 +172,9 @@ def test_parse_url_rebuilds_one_canonical_spelling(url: str, canonical: str) -> 
         "example.com:8a",
         "example.com:80:80",
         "[::1]x",
+        # ZWJ/ZWNJ outside the contexts IDNA2008 allows them in
+        "a\u200db.com",
+        "a\u200cb.com",
     ],
 )
 def test_parse_url_refuses_ambiguous_or_malformed_hosts(host: str) -> None:
@@ -204,7 +216,37 @@ def test_literal_host_is_checked_without_the_resolver(monkeypatch: pytest.Monkey
         ("http://host.test/@x", "http://host.test/@x"),
         ("http://host.test/?next=//u:p@y", "http://host.test/?next=//u:p@y"),
         ("not a url", "not a url"),
+        ("u:p@host.test/x", "host.test/x"),
+        ("host.test/?q=a@b", "host.test/?q=a@b"),
     ],
 )
 def test_redact_drops_only_userinfo(url: str, shown: str) -> None:
     assert redact(url) == shown
+
+
+@pytest.mark.parametrize(
+    ("host", "a_label"),
+    [
+        ("stra\u00dfe.de", "xn--strae-oqa.de"),
+        ("\u03c2.gr", "xn--3xa.gr"),
+        ("\u24dbocalhost", "localhost"),
+    ],
+)
+def test_resolver_gets_the_same_a_label_as_curl(
+    monkeypatch: pytest.MonkeyPatch, host: str, a_label: str
+) -> None:
+    asked: list[object] = []
+
+    def _getaddrinfo(name: object, *_a: object, **_k: object) -> object:
+        asked.append(name)
+        return [(socket.AF_INET, 1, 6, "", ("8.8.8.8", 0))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", _getaddrinfo)
+    target = check_url(f"http://{host}/")
+    assert asked == [a_label]
+    assert target.url == f"http://{a_label}/"
+
+
+def test_localhost_in_unicode_is_refused_as_localhost() -> None:
+    with pytest.raises(BlockedUrlError, match="host 'localhost' resolves to non-public"):
+        check_url("http://\u24dbocalhost/")

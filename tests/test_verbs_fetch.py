@@ -7,6 +7,7 @@ double-counts).
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Iterator
 from typing import Any
 
@@ -22,6 +23,7 @@ from pplx_agent_tools.netguard import check_url
 from pplx_agent_tools.verbs.fetch import (
     _build_chat_body,
     _fetch_with_prompt,
+    fetch,
     fetch_page,
 )
 from tests._doubles import _TestClientBase
@@ -587,3 +589,41 @@ def test_progress_silent_when_disabled(
     err = capsys.readouterr().err
     # No heartbeat output. The fake's delete_thread path doesn't emit either.
     assert err == ""
+
+
+class _BodyRecordingClient(FakeClient):
+    def __init__(self, events: list[dict[str, Any]]) -> None:
+        super().__init__(events)
+        self.bodies: list[dict[str, Any]] = []
+
+    def sse_post(  # type: ignore[override]
+        self, path: str, body: dict[str, Any], **kwargs: Any
+    ) -> Iterator[dict[str, Any]]:
+        self.bodies.append(body)
+        return super().sse_post(path, body, **kwargs)
+
+
+@pytest.mark.parametrize(
+    ("url", "sent"),
+    [
+        ("https://user:s3cret@example.com/page", "https://example.com/page"),
+        ("user:s3cret@example.com/page", "example.com/page"),
+    ],
+)
+def test_prompt_mode_never_sends_userinfo(
+    capsys: pytest.CaptureFixture[str], url: str, sent: str
+) -> None:
+    client = _BodyRecordingClient([_ev([_block("ask_text", ["ok"])], status="COMPLETED")])
+    result = fetch(client, url, prompt="summarize")
+    body = json.dumps(client.bodies)
+    assert "s3cret" not in body and "user:" not in body
+    assert f"For URL: {sent}" in client.bodies[0]["query_str"]
+    assert result.url == sent
+    assert "credentials" in capsys.readouterr().err
+
+
+def test_prompt_mode_without_userinfo_prints_no_note(capsys: pytest.CaptureFixture[str]) -> None:
+    client = _BodyRecordingClient([_ev([_block("ask_text", ["ok"])], status="COMPLETED")])
+    fetch(client, "https://example.com/a@b", prompt="summarize")
+    assert "For URL: https://example.com/a@b" in client.bodies[0]["query_str"]
+    assert capsys.readouterr().err == ""

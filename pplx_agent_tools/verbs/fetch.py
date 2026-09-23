@@ -18,6 +18,7 @@ signals but keeps the agent-shape single-command primitive.
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urljoin, urlparse
@@ -134,11 +135,14 @@ def fetch(
     """
     if prompt is None:
         return fetch_plain(url, max_chars=max_chars)
+    shown = redact(url)
+    if shown != url:
+        print("pplx fetch: removed credentials from the URL sent to Perplexity", file=sys.stderr)
     return _fetch_with_prompt(
         client,
-        url,
+        shown,
         prompt,
-        _domain(url),
+        _domain(shown),
         max_chars=max_chars,
         keep_thread=keep_thread,
         timeout=timeout,
@@ -319,7 +323,7 @@ def _fetch_with_prompt(
         truncated = True
 
     return FetchResult(
-        url=redact(url),
+        url=url,
         title=None,  # not available from the chat response (no header equivalent)
         domain=domain,
         content=content,

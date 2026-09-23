@@ -21,6 +21,8 @@ from dataclasses import dataclass, field
 from typing import Literal, TypeAlias
 from urllib.parse import unquote, urlsplit
 
+import idna
+
 from .errors import BlockedUrlError, NetworkError
 
 IPAddress: TypeAlias = ipaddress.IPv4Address | ipaddress.IPv6Address
@@ -174,7 +176,8 @@ _LABEL = re.compile(r"[a-z0-9_-]{1,63}")
 # dotted-decimal form, parsed by `ipaddress`, is accepted.
 _NUMERIC_LABEL = re.compile(r"[0-9]+|0x[0-9a-f]*")
 _PORT = re.compile(r"[0-9]{1,5}")
-_USERINFO = re.compile(r"^([^:/?#]*:)?//[^/?#]*@")
+# Also matches a scheme-less `user:pass@host`, which curl and people read as userinfo.
+_USERINFO = re.compile(r"^((?:[A-Za-z][A-Za-z0-9+.-]*:)?//|)[^/?#]*@")
 
 
 def _dns_name_error(name: str) -> str | None:
@@ -236,7 +239,7 @@ class HttpUrl:
 
 def redact(url: str) -> str:
     """`url` without its user:password, for messages and results."""
-    return _USERINFO.sub(r"\1//", url, count=1)
+    return _USERINFO.sub(r"\1", url, count=1)
 
 
 def _parse_host(text: str, bracketed: bool) -> Host:
@@ -245,9 +248,15 @@ def _parse_host(text: str, bracketed: bool) -> Host:
         raise ValueError(f"host {text!r} contains '%'")
     if bracketed:
         return ipaddress.IPv6Address(text)
-    # The IDNA codec is the one getaddrinfo applies, and curl then gets only its
-    # ASCII output, so curl's own IDN conversion never runs.
-    ascii_host = text.lower().encode("idna").decode("ascii")
+    # UTS 46 non-transitional, as curl and browsers use, so "straße" keeps its ß.
+    # Both getaddrinfo and curl get this A-label, and curl's own IDN conversion
+    # never runs. ASCII is only lowercased: UTS 46 hyphen rules would refuse
+    # real hosts such as r3---sn-abc.googlevideo.com.
+    ascii_host = (
+        text.lower()
+        if text.isascii()
+        else idna.encode(text, uts46=True, transitional=False).decode("ascii")
+    )
     try:
         return ipaddress.IPv4Address(ascii_host)
     except ValueError:
