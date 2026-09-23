@@ -25,6 +25,9 @@ What gets replaced (deterministically, so reruns are diff-free):
   - thread_url_slug (often the backend_uuid again)
   - any email-shaped substring in any string value, including one that only
     exists across a `chunks` slice boundary (see `_scrub_chunks`)
+  - account metadata (`ACCOUNT_KEYS` under `_extras` / `telemetry_data`) becomes
+    a fixed placeholder: no test reads it, and it describes the capturing
+    account, not the wire shape.
 
 Scrubbing is per-event, but the answer is streamed as one chunk per event, so
 an address split across two events is invisible to every individual scrub and
@@ -96,6 +99,8 @@ _REDACTED_KEY_PREFIXES = ("author_", "user_")
 # Exceptions to the prefix rule: these name a request setting, not a person,
 # and redacting them would destroy behavior the fixture exists to pin.
 _PRESERVED_PREFIXED_KEYS = frozenset({"user_selected_model"})
+ACCOUNT_KEYS = ("subscription_tier", "payment_tier", "country")
+_ACCOUNT_METADATA_PARENTS = frozenset({"_extras", "telemetry_data"})
 # Keys whose string value is itself a JSON document.
 _EMBEDDED_JSON_KEYS = frozenset({"text"})
 
@@ -172,6 +177,12 @@ def _scrub_node(node: Any, key: str | None = None) -> Any:
         for k, v in node.items():
             if k == "chunks" and isinstance(v, list) and all(isinstance(i, str) for i in v):
                 out[k] = _scrub_chunks(v)
+            elif k in _ACCOUNT_METADATA_PARENTS and isinstance(v, dict):
+                meta = _scrub_node(v, k)
+                for account_key in ACCOUNT_KEYS:
+                    if meta.get(account_key) is not None:
+                        meta[account_key] = SENTINEL_REDACTED
+                out[k] = meta
             else:
                 out[k] = _scrub_node(v, k)
         return out

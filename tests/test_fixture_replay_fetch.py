@@ -317,6 +317,32 @@ def test_scrub_redacts_identities_under_every_json_type(sanitizer: ModuleType) -
     assert out["read_write_token"] == SENTINEL_RW_TOKEN
 
 
+def test_scrub_redacts_account_metadata(sanitizer: ModuleType) -> None:
+    out = sanitizer._scrub_node(
+        {
+            "_extras": {"subscription_tier": "max", "payment_tier": "paid", "country": "US"},
+            "telemetry_data": {"country": "US", "region": "us-east-1"},
+        }
+    )
+
+    assert out["_extras"] == {k: SENTINEL_REDACTED for k in sanitizer.ACCOUNT_KEYS}
+    assert out["telemetry_data"] == {"country": SENTINEL_REDACTED, "region": "us-east-1"}
+
+
+def test_committed_fixtures_carry_no_account_metadata(sanitizer: ModuleType) -> None:
+    for path in sorted(FIXTURES.glob("*.events.jsonl")):
+        for line in path.read_text().splitlines():
+            if not line.strip():
+                continue
+            event = json.loads(line)
+            for parent in ("_extras", "telemetry_data"):
+                meta = event.get(parent)
+                if not isinstance(meta, dict):
+                    continue
+                for key in sanitizer.ACCOUNT_KEYS:
+                    assert meta.get(key) in (None, SENTINEL_REDACTED), (path.name, parent, key)
+
+
 def test_scrub_preserves_settings_and_shape(sanitizer: ModuleType) -> None:
     out = sanitizer._scrub_node(dict(DIRTY_PAYLOAD))
     # A model id is a request setting, not a person; the empty uuid is an

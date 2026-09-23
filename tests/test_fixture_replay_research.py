@@ -456,15 +456,17 @@ def test_sanitizer_caps_repeated_steps_but_not_the_answer() -> None:
 def test_sanitizer_redacts_account_metadata() -> None:
     san = _sanitizer()
     extras = {"country": "US", "subscription_tier": "max", "payment_tier": "paid", "next": None}
+    telemetry = {"country": "US", "region": "us-east-1"}
 
-    out = san._scrub_payload({"_extras": extras})["_extras"]
+    out = san._scrub_payload({"_extras": extras, "telemetry_data": telemetry})
 
-    assert out == {
+    assert out["_extras"] == {
         "country": "REDACTED",
         "subscription_tier": "REDACTED",
         "payment_tier": "REDACTED",
         "next": None,
     }
+    assert out["telemetry_data"] == {"country": "REDACTED", "region": "us-east-1"}
 
 
 def test_committed_fixtures_carry_no_account_metadata(
@@ -473,11 +475,12 @@ def test_committed_fixtures_carry_no_account_metadata(
     san = _sanitizer()
     for path in (weather_fixture, ocio_fixture):
         for payload in _payloads(path):
-            extras = payload.get("_extras") if isinstance(payload, dict) else None
-            if not isinstance(extras, dict):
-                continue
-            for key in san.ACCOUNT_KEYS:
-                assert extras.get(key) in (None, san.SENTINEL_ACCOUNT_VALUE), (path, key)
+            for parent in ("_extras", "telemetry_data"):
+                meta = payload.get(parent) if isinstance(payload, dict) else None
+                if not isinstance(meta, dict):
+                    continue
+                for key in san.ACCOUNT_KEYS:
+                    assert meta.get(key) in (None, san.SENTINEL_ACCOUNT_VALUE), (path, key)
 
 
 def test_sentinels_match_sanitizer_script() -> None:

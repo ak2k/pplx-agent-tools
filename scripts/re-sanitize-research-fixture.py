@@ -37,8 +37,9 @@ AND inside the FINAL block's `content.answer` (a JSON string again):
   - the RESEARCH_ANSWER report URL: a *signed* CloudFront/S3 link (custom- or
     canned-policy query params), i.e. a time-limited credential
   - any email-shaped string anywhere
-  - `_extras` account metadata (ACCOUNT_KEYS) becomes a fixed placeholder: no
-    test reads it, and it describes the capturing account, not the wire shape.
+  - account metadata (ACCOUNT_KEYS under `_extras` / `telemetry_data`) becomes a
+    fixed placeholder: no test reads it, and it describes the capturing
+    account, not the wire shape.
 
 Preserved verbatim: `status`, `text_completed`, `step_type`s, the report body
 (`assets[].research_report.source_content`), FINAL `answer`/`chunks` — the
@@ -106,6 +107,7 @@ MAX_STEP_BLOCKS = 4
 ANSWER_STEPS = {"FINAL", "RESEARCH_ANSWER"}
 ACCOUNT_KEYS = ("subscription_tier", "payment_tier", "country")
 SENTINEL_ACCOUNT_VALUE = "REDACTED"
+_ACCOUNT_METADATA_PARENTS = {"_extras", "telemetry_data"}
 _CITATION_RE = re.compile(r"\[(\d+)\]")
 
 
@@ -188,7 +190,7 @@ def _scrub(node: Any) -> Any:
                 out[key] = _scrub_chunks(value)
             elif key == "web_results" and isinstance(value, list):
                 out[key] = [_scrub(v) for v in value[:MAX_WEB_RESULTS]]
-            elif key == "_extras" and isinstance(value, dict):
+            elif key in _ACCOUNT_METADATA_PARENTS and isinstance(value, dict):
                 extras = _scrub(value)
                 for account_key in ACCOUNT_KEYS:
                     if extras.get(account_key) is not None:
