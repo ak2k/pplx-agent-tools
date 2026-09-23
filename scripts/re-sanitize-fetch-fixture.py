@@ -25,9 +25,8 @@ What gets replaced (deterministically, so reruns are diff-free):
   - thread_url_slug (often the backend_uuid again)
   - any email-shaped substring in any string value, including one that only
     exists across a `chunks` slice boundary (see `_scrub_chunks`)
-  - account metadata (`ACCOUNT_KEYS` under `_extras` / `telemetry_data`) becomes
-    a fixed placeholder: no test depends on the real value, and it describes
-    the capturing account, not the wire shape.
+  - account metadata, per the policy in `_fixture_account.py`, including a
+    container that is itself a JSON string
 
 Scrubbing is per-event, but the answer is streamed as one chunk per event, so
 an address split across two events is invisible to every individual scrub and
@@ -72,6 +71,8 @@ import tempfile
 from pathlib import Path
 from typing import Any, NamedTuple, cast
 
+from _fixture_account import ACCOUNT_PARENTS, scrub_account_parent
+
 # Fixed sentinel values — any test asserting on these can hard-code them.
 SENTINELS = {
     "backend_uuid": "00000000-0000-4000-8000-000000000001",
@@ -99,8 +100,6 @@ _REDACTED_KEY_PREFIXES = ("author_", "user_")
 # Exceptions to the prefix rule: these name a request setting, not a person,
 # and redacting them would destroy behavior the fixture exists to pin.
 _PRESERVED_PREFIXED_KEYS = frozenset({"user_selected_model"})
-ACCOUNT_KEYS = ("subscription_tier", "payment_tier", "country")
-_ACCOUNT_METADATA_PARENTS = frozenset({"_extras", "telemetry_data"})
 
 _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 
@@ -173,11 +172,9 @@ def _scrub_node(node: Any, key: str | None = None) -> Any:
         for k, v in node.items():
             if k == "chunks" and isinstance(v, list) and all(isinstance(i, str) for i in v):
                 out[k] = _scrub_chunks(v)
-            elif k in _ACCOUNT_METADATA_PARENTS and isinstance(v, dict):
-                meta = _scrub_node(v, k)
-                for account_key in ACCOUNT_KEYS:
-                    if meta.get(account_key) is not None:
-                        meta[account_key] = SENTINEL_REDACTED
+            elif (
+                k in ACCOUNT_PARENTS and (meta := scrub_account_parent(v, _scrub_node)) is not None
+            ):
                 out[k] = meta
             else:
                 out[k] = _scrub_node(v, k)

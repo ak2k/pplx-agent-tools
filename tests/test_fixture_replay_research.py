@@ -48,8 +48,11 @@ import pytest
 from pplx_agent_tools.verbs._ask_common import event_marks_completed
 from pplx_agent_tools.verbs.research import decode_research_text, research
 from tests._account_metadata import (
+    ACCOUNT_KEYS,
     ACCOUNT_PARENTS,
+    ACCOUNT_PLACEHOLDER,
     PLANTED_ACCOUNT,
+    PLANTED_CONTAINER,
     PLANTED_DOC,
     PLANTED_VALUES,
     account_values,
@@ -531,12 +534,11 @@ def test_sanitizer_redacts_account_metadata() -> None:
 def test_committed_fixtures_carry_no_account_metadata(
     weather_fixture: Path, ocio_fixture: Path
 ) -> None:
-    san = _sanitizer()
     seen = 0
     for path in (weather_fixture, ocio_fixture):
         for payload in _payloads(path):
-            for parent, key, value in account_values(payload, san.ACCOUNT_KEYS):
-                assert value in (None, san.SENTINEL_ACCOUNT_VALUE), (path.name, parent, key)
+            for parent, key, value in account_values(payload, ACCOUNT_KEYS):
+                assert value in (None, ACCOUNT_PLACEHOLDER), (path.name, parent, key)
                 seen += 1
     assert seen, "the walk found no account metadata at all; it is not looking"
 
@@ -556,16 +558,27 @@ def test_committed_fixtures_carry_no_identifiers(weather_fixture: Path, ocio_fix
 
 
 def test_leak_walk_shares_the_sanitizer_key_sets() -> None:
-    """A parent or identity key added to the sanitizer but not to the walk would
-    let the committed-fixture checks pass without looking at it."""
+    """An identity key or account parent the sanitizer knows but the walk does
+    not would let the committed-fixture checks pass without looking at it."""
     san = _sanitizer()
-    assert set(san._ACCOUNT_METADATA_PARENTS) == set(ACCOUNT_PARENTS)
+    assert san.ACCOUNT_PARENTS is ACCOUNT_PARENTS
     assert all(is_identity_key(k) for k in san.SENTINELS)
 
 
 def test_leak_walk_decodes_json_with_leading_whitespace() -> None:
     assert len(list(account_values("\n  " + PLANTED_DOC, PLANTED_ACCOUNT))) == 3
     assert len(list(identity_values("\n  " + PLANTED_DOC))) == 2
+
+
+def test_stray_uuid_check_skips_thumbnails_in_either_case() -> None:
+    u = "55A78E13-8290-5268-BCBD-8DA219877A1C"
+    assert not stray_uuids(f"https://x.cloudfront.net/thumbnails/{u}/{u}.jpg", ())
+    assert stray_uuids(f"id {u}", ()) == {u}
+
+
+def test_leak_walk_decodes_an_account_container_serialized_as_json() -> None:
+    event = {"_extras": " " + PLANTED_CONTAINER}
+    assert len(list(account_values(json.dumps(event), ACCOUNT_KEYS))) == 3
 
 
 def _planted_payload(position: str) -> dict[str, Any]:
@@ -576,12 +589,17 @@ def _planted_payload(position: str) -> dict[str, Any]:
         blocks = [{"step_type": "FINAL", "content": {"answer": "", "chunks": sliced(doc)}}]
     elif position == "non-final-content":
         blocks = [{"step_type": "SEARCH_RESULTS", "content": {"payload": doc}}]
+    elif position == "json-string-container":
+        return {"_extras": "  " + PLANTED_CONTAINER, "text": "[]"}
     else:
         return {"payload": doc}
     return {"text": json.dumps(blocks)}
 
 
-@pytest.mark.parametrize("position", ["final-answer", "chunks", "non-final-content", "any-key"])
+@pytest.mark.parametrize(
+    "position",
+    ["final-answer", "chunks", "non-final-content", "json-string-container", "any-key"],
+)
 def test_sanitizer_scrubs_every_embedded_json_carrier(position: str) -> None:
     """Identity and account rules are key-based, so they only reach a JSON
     document serialized into a string if the walk decodes it, whatever its key."""
@@ -605,13 +623,13 @@ def test_sanitizer_redacts_account_metadata_inside_embedded_json() -> None:
         {"step_type": "FINAL", "content": {"answer": json.dumps(inner)}},
     ]
     payload = {"_extras": real, "text": json.dumps(blocks)}
-    assert len(list(account_values(payload, san.ACCOUNT_KEYS))) == 7
+    assert len(list(account_values(payload, ACCOUNT_KEYS))) == 7
 
     out = san._scrub_payload(payload)
 
-    found = list(account_values(out, san.ACCOUNT_KEYS))
+    found = list(account_values(out, ACCOUNT_KEYS))
     assert len(found) == 7
-    assert {value for _, _, value in found} == {san.SENTINEL_ACCOUNT_VALUE}
+    assert {value for _, _, value in found} == {ACCOUNT_PLACEHOLDER}
 
 
 # The weather capture predates the citation-aligned cap and its raw stream is

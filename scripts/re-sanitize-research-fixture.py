@@ -38,9 +38,8 @@ list, or any other value, whatever its key:
   - the RESEARCH_ANSWER report URL: a *signed* CloudFront/S3 link (custom- or
     canned-policy query params), i.e. a time-limited credential
   - any email-shaped string anywhere
-  - account metadata (ACCOUNT_KEYS under `_extras` / `telemetry_data`) becomes a
-    fixed placeholder: no test depends on the real value, and it describes the
-    capturing account, not the wire shape.
+  - account metadata, per the policy in `_fixture_account.py`, including a
+    container that is itself a JSON string
 
 Preserved verbatim: `status`, `text_completed`, `step_type`s, the report body
 (`assets[].research_report.source_content`), FINAL `answer`/`chunks` — the
@@ -61,6 +60,8 @@ import sys
 from collections import Counter
 from pathlib import Path
 from typing import Any
+
+from _fixture_account import ACCOUNT_PARENTS, scrub_account_parent
 
 # Fixed sentinel values — tests asserting on these hard-code them; drift between
 # this dict and the test constants is caught by a test in
@@ -106,9 +107,6 @@ MAX_WEB_RESULTS = 10
 MAX_STEP_BLOCKS = 4
 # Step types whose blocks become the verb's answer text; never capped.
 ANSWER_STEPS = {"FINAL", "RESEARCH_ANSWER"}
-ACCOUNT_KEYS = ("subscription_tier", "payment_tier", "country")
-SENTINEL_ACCOUNT_VALUE = "REDACTED"
-_ACCOUNT_METADATA_PARENTS = {"_extras", "telemetry_data"}
 # `[3]`, `[^3]`, `[web:3]`, grouped `[3, 5]`, ranged `[3-5]` (hyphen or en dash), and
 # `【3】` / `【3†source】`, whose tail after the index is not a citation.
 _CITATION_RE = re.compile(
@@ -215,12 +213,10 @@ def _scrub(node: Any) -> Any:
                 out[key] = _scrub_chunks(value)
             elif key == "web_results" and isinstance(value, list):
                 out[key] = [_scrub(v) for v in value[:MAX_WEB_RESULTS]]
-            elif key in _ACCOUNT_METADATA_PARENTS and isinstance(value, dict):
-                extras = _scrub(value)
-                for account_key in ACCOUNT_KEYS:
-                    if extras.get(account_key) is not None:
-                        extras[account_key] = SENTINEL_ACCOUNT_VALUE
-                out[key] = extras
+            elif (
+                key in ACCOUNT_PARENTS and (meta := scrub_account_parent(value, _scrub)) is not None
+            ):
+                out[key] = meta
             elif key == "research_report" and isinstance(value, dict):
                 rr = _scrub(value)
                 if isinstance(rr, dict) and rr.get("url") is not None:

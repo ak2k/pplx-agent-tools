@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 import os
+import sys
+from pathlib import Path
 
 import pytest
 from hypothesis import HealthCheck, settings
 
 LIVE_ENV = "PPLX_LIVE_TESTS"
+
+# The fixture sanitizers (loaded by path) import their shared sibling module as
+# top-level `_fixture_account`, as they do when run directly from scripts/.
+sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
 # The property tests assert that nothing crashes, not that it runs fast: Hypothesis'
 # 200 ms per-example deadline and its too_slow health check trip on a loaded CI

@@ -50,7 +50,9 @@ from pplx_agent_tools.errors import (
 )
 from pplx_agent_tools.verbs.fetch import _fetch_with_prompt
 from tests._account_metadata import (
+    ACCOUNT_KEYS,
     ACCOUNT_PARENTS,
+    PLANTED_CONTAINER,
     PLANTED_DOC,
     PLANTED_VALUES,
     account_values,
@@ -335,7 +337,7 @@ def test_scrub_redacts_account_metadata(sanitizer: ModuleType) -> None:
         }
     )
 
-    assert out["_extras"] == {k: SENTINEL_REDACTED for k in sanitizer.ACCOUNT_KEYS}
+    assert out["_extras"] == {k: SENTINEL_REDACTED for k in ACCOUNT_KEYS}
     assert out["telemetry_data"] == {"country": SENTINEL_REDACTED, "region": "us-east-1"}
 
 
@@ -345,7 +347,7 @@ def test_committed_fixtures_carry_no_account_metadata(sanitizer: ModuleType) -> 
         for line in path.read_text().splitlines():
             if not line.strip():
                 continue
-            for parent, key, value in account_values(json.loads(line), sanitizer.ACCOUNT_KEYS):
+            for parent, key, value in account_values(json.loads(line), ACCOUNT_KEYS):
                 assert value in (None, SENTINEL_REDACTED), (path.name, parent, key)
                 seen += 1
     assert seen, "the walk found no account metadata at all; it is not looking"
@@ -356,11 +358,11 @@ def test_scrub_redacts_account_metadata_inside_embedded_json(sanitizer: ModuleTy
     metadata there is invisible to a top-level check."""
     real = {"subscription_tier": "max", "payment_tier": "paid", "country": "US"}
     event = {"text": json.dumps({"_extras": real, "telemetry_data": {"country": "US"}})}
-    assert len(list(account_values(event, sanitizer.ACCOUNT_KEYS))) == 4
+    assert len(list(account_values(event, ACCOUNT_KEYS))) == 4
 
     out = sanitizer._scrub_node(event)
 
-    found = list(account_values(out, sanitizer.ACCOUNT_KEYS))
+    found = list(account_values(out, ACCOUNT_KEYS))
     assert len(found) == 4
     assert {value for _, _, value in found} == {SENTINEL_REDACTED}
 
@@ -373,10 +375,12 @@ def _planted_event(position: str) -> dict[str, Any]:
         return {
             "blocks": [{"intended_usage": "ask_text", "markdown_block": {"chunks": sliced(doc)}}]
         }
+    if position == "json-string-container":
+        return {"telemetry_data": "  " + PLANTED_CONTAINER}
     return {"payload": doc}
 
 
-@pytest.mark.parametrize("position", ["final-answer", "chunks", "any-key"])
+@pytest.mark.parametrize("position", ["final-answer", "chunks", "json-string-container", "any-key"])
 def test_scrub_covers_every_embedded_json_carrier(sanitizer: ModuleType, position: str) -> None:
     """Identity and account rules are key-based, so they only reach a JSON
     document serialized into a string if the walk decodes it, whatever its key."""
@@ -408,9 +412,9 @@ def test_committed_fixtures_carry_no_identifiers(sanitizer: ModuleType) -> None:
 
 
 def test_leak_walk_shares_the_sanitizer_key_sets(sanitizer: ModuleType) -> None:
-    """A parent or identity key added to the sanitizer but not to the walk would
-    let the committed-fixture checks pass without looking at it."""
-    assert set(sanitizer._ACCOUNT_METADATA_PARENTS) == set(ACCOUNT_PARENTS)
+    """An identity key or account parent the sanitizer knows but the walk does
+    not would let the committed-fixture checks pass without looking at it."""
+    assert sanitizer.ACCOUNT_PARENTS is ACCOUNT_PARENTS
     assert all(is_identity_key(k) for k in sanitizer.SENTINELS)
 
 

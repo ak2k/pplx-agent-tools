@@ -5,12 +5,18 @@ sees; plus the planted values the sanitizer tests feed in."""
 
 from __future__ import annotations
 
+import importlib
 import json
 import re
 from collections.abc import Iterable, Iterator
 from typing import Any
 
-ACCOUNT_PARENTS = ("_extras", "telemetry_data")
+# scripts/ is not a package; conftest puts it on sys.path, and the sanitizers
+# import this same module, so the walk and the scrub share one policy.
+_policy = importlib.import_module("_fixture_account")
+ACCOUNT_KEYS: tuple[str, ...] = _policy.ACCOUNT_KEYS
+ACCOUNT_PARENTS: frozenset[str] = _policy.ACCOUNT_PARENTS
+ACCOUNT_PLACEHOLDER: str = _policy.ACCOUNT_PLACEHOLDER
 IDENTITY_KEYS = frozenset(
     {
         "backend_uuid",
@@ -54,7 +60,8 @@ def account_values(
     elif isinstance(node, str):
         decoded = _decoded(node)
         if decoded is not None:
-            yield from account_values(decoded, keys)
+            # Carried across: `{"_extras": "<json>"}` holds account keys too.
+            yield from account_values(decoded, keys, parent)
 
 
 def is_identity_key(key: str) -> bool:
@@ -80,7 +87,9 @@ def identity_values(node: Any) -> Iterator[tuple[str, Any]]:
 
 _UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.I)
 # Search-result thumbnails are content-addressed public CDN paths, not account ids.
-_THUMBNAIL_RE = re.compile(rf"cloudfront\.net/thumbnails/{_UUID_RE.pattern}/{_UUID_RE.pattern}")
+_THUMBNAIL_RE = re.compile(
+    rf"cloudfront\.net/thumbnails/{_UUID_RE.pattern}/{_UUID_RE.pattern}", re.I
+)
 
 
 def stray_uuids(text: str, allowed: Iterable[str]) -> set[str]:
@@ -95,18 +104,14 @@ PLANTED_ACCOUNT = {
     "payment_tier": "planted-payment",
     "country": "planted-country",
 }
-PLANTED_DOC = json.dumps(
-    {
-        "_extras": PLANTED_ACCOUNT,
-        "backend_uuid": "11111111-2222-4333-8444-555555555555",
-        "user_id": "planted-user-42",
-    }
-)
-PLANTED_VALUES = (
-    *PLANTED_ACCOUNT.values(),
-    "11111111-2222-4333-8444-555555555555",
-    "planted-user-42",
-)
+_PLANTED_IDS = {
+    "backend_uuid": "11111111-2222-4333-8444-555555555555",
+    "user_id": "planted-user-42",
+}
+PLANTED_DOC = json.dumps({"_extras": PLANTED_ACCOUNT, **_PLANTED_IDS})
+# The account container itself serialized as JSON: `{"_extras": PLANTED_CONTAINER}`.
+PLANTED_CONTAINER = json.dumps({**PLANTED_ACCOUNT, **_PLANTED_IDS})
+PLANTED_VALUES = (*PLANTED_ACCOUNT.values(), *_PLANTED_IDS.values())
 
 
 def sliced(text: str) -> list[str]:
