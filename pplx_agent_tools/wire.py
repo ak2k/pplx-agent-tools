@@ -218,6 +218,7 @@ class Client:
         max_total_seconds: float | None = None,
         stall_seconds: float | None = None,
         is_progress: Callable[[dict[str, Any]], bool] | None = None,
+        stall_window: Callable[[], float | None] | None = None,
     ) -> Iterator[dict[str, Any]]:
         """POST a JSON body, stream the SSE response, yield parsed events.
 
@@ -240,6 +241,11 @@ class Client:
         `max_total_seconds`) so total silence trips it too, and is reported as a
         stall unless the overall deadline ran out first. None keeps only the
         default low-speed backstop.
+
+        `stall_window()`, when given, is read at every stall check and replaces
+        `stall_seconds` there, so a consumer can tighten the window mid-stream.
+        The transport's low-speed abort keeps the `stall_seconds` sizing, so the
+        tightened window is enforced when the next frame or heartbeat arrives.
 
         Raises the same typed errors as the GET path (auth/rate-limit/etc.) on
         connection or status-code failure.
@@ -272,10 +278,12 @@ class Client:
                 raise StreamDeadlineError(
                     f"SSE stream on {path} exceeded {max_total_seconds:.1f}s deadline"
                 )
-            if stall_seconds and now - last_progress > stall_seconds:
+            if (
+                window := stall_window() if stall_window else stall_seconds
+            ) and now - last_progress > window:
                 raise StreamStallError(
-                    f"SSE stream on {path} stalled: no new content for {stall_seconds:.1f}s",
-                    stall_seconds,
+                    f"SSE stream on {path} stalled: no new content for {window:.1f}s",
+                    window,
                 )
 
         framer = _SSEFramer()

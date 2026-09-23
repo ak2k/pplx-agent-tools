@@ -44,6 +44,11 @@ DEFAULT_STALL_SECONDS = 240.0
 # go minutes without changing `blocks` before its answer arrives all at once,
 # and a cut before that returns nothing.
 COPILOT_STALL_SECONDS = 480.0
+# How long ask waits for the COMPLETED frame once `text_completed` says the
+# answer is whole. That frame arrived 0.2-0.34 s after `text_completed` in live
+# captures; 15 s is ~50x that, and heartbeats (~15 s apart) are what trigger
+# the check, so the worst-case wait is about 30 s instead of the stall window.
+COPILOT_SETTLE_SECONDS = 15.0
 
 
 @dataclass
@@ -289,6 +294,7 @@ def run_ask_stream(
     label: str,
     is_complete: Callable[[dict[str, Any]], bool] = event_marks_completed,
     is_progress: Callable[[dict[str, Any]], bool] | None = None,
+    settle_seconds: float | None = None,
 ) -> None:
     """Drive the SSE call with retry/deadline/stall guard, filling in `state`.
 
@@ -308,6 +314,11 @@ def run_ask_stream(
 
     `is_progress` decides which events reset the stall clock (see
     `Client.sse_post`); None counts any event carrying data.
+
+    `settle_seconds`, for a caller that reads past `text_completed`, shrinks
+    the stall window to that many seconds once `text_completed` arrives: the
+    answer is whole by then and only the terminal frame is outstanding. The
+    resulting stall cutoff lands in `state.cutoff` like any other.
     """
     overall_deadline = (time.monotonic() + timeout) if timeout else None
 
@@ -341,6 +352,7 @@ def run_ask_stream(
                 on_event=on_event,
                 is_complete=is_complete,
                 is_progress=is_progress,
+                settle_seconds=settle_seconds,
             )
             break
         except StreamStallError as e:
@@ -410,8 +422,14 @@ def _drive_one(
     on_event: Callable[[dict[str, Any]], None],
     is_complete: Callable[[dict[str, Any]], bool],
     is_progress: Callable[[dict[str, Any]], bool] | None,
+    settle_seconds: float | None,
 ) -> None:
     event_count = 0
+    window = stall_seconds
+    # Passed only when used, so `sse_post` overrides without the parameter keep working.
+    extra: dict[str, Any] = {}
+    if settle_seconds is not None:
+        extra["stall_window"] = lambda: window
     try:
         for event in client.sse_post(
             endpoint,
@@ -419,6 +437,7 @@ def _drive_one(
             max_total_seconds=remaining_seconds,
             stall_seconds=stall_seconds,
             is_progress=is_progress,
+            **extra,
         ):
             event_count += 1
             if progress and event_count % _PROGRESS_EVENT_STRIDE == 0:
@@ -430,6 +449,8 @@ def _drive_one(
                 if state.read_write_token is None and isinstance(data.get("read_write_token"), str):
                     state.read_write_token = data["read_write_token"]
             on_event(event)
+            if settle_seconds is not None and event_marks_completed(event):
+                window = settle_seconds if window is None else min(window, settle_seconds)
             # FAILED frames still carry text/blocks, so check before treating the
             # event as normal progress.
             if _event_marks_failed(event):

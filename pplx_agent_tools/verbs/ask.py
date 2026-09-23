@@ -24,6 +24,7 @@ from ..errors import SchemaError
 from ..grounding import Grounding, check_grounding
 from ..wire import Client
 from ._ask_common import (
+    COPILOT_SETTLE_SECONDS,
     AskStreamState,
     Source,
     base_ask_params,
@@ -124,6 +125,7 @@ def ask(
             label="ask",
             is_complete=status_completed,
             is_progress=blocks_changed(),
+            settle_seconds=COPILOT_SETTLE_SECONDS,
         )
     finally:
         release_thread(client, state, keep_thread=keep_thread)

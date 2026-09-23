@@ -36,6 +36,7 @@ from pplx_agent_tools.render import (
     render_research_text,
 )
 from pplx_agent_tools.verbs._ask_common import (
+    COPILOT_SETTLE_SECONDS,
     COPILOT_STALL_SECONDS,
     DEFAULT_STALL_SECONDS,
     AskStreamState,
@@ -44,7 +45,7 @@ from pplx_agent_tools.verbs._ask_common import (
     no_content_error,
     run_ask_stream,
 )
-from pplx_agent_tools.verbs.ask import AskResult, ask
+from pplx_agent_tools.verbs.ask import SOURCES_FRAME_MISSING, AskResult, ask
 from pplx_agent_tools.verbs.fetch import FetchResult, fetch
 from pplx_agent_tools.verbs.research import ResearchResult, _text_changed, research
 
@@ -477,6 +478,58 @@ def test_thinking_ask_that_answers_at_the_end_completes_under_defaults(
     assert rc == 0
     assert "the answer" in cap.out
     assert clock.now - 1000.0 > 290
+
+
+def test_stall_window_hook_tightens_the_window_mid_stream(clock: _Clock) -> None:
+    window: list[float] = [120.0]
+    client = _StreamClient([(0, _chunk("a")), *_heartbeats(200)], clock)
+    with pytest.raises(StreamStallError) as exc:
+        for _ in client.sse_post("/x", {}, stall_seconds=120, stall_window=lambda: window[0]):
+            window[0] = 20.0
+    assert exc.value.seconds == 20.0
+    assert 20 < clock.now - 1000.0 <= 35
+
+
+def _text_completed(text: str) -> bytes:
+    return _frame(
+        {
+            "backend_uuid": "BU",
+            "read_write_token": "RW",
+            "status": "PENDING",
+            "text_completed": True,
+            "blocks": [{"intended_usage": "ask_text", "markdown_block": {"chunks": [text]}}],
+        }
+    )
+
+
+@pytest.mark.parametrize("stall_seconds", [COPILOT_STALL_SECONDS, None])
+def test_ask_silent_after_text_completed_returns_within_the_settle_window(
+    clock: _Clock, stall_seconds: float | None
+) -> None:
+    client = _StreamClient(
+        [(0, _chunk("the ")), (0, _text_completed("answer")), *_heartbeats(600)], clock
+    )
+    result = ask(client, "q", timeout=None, stall_seconds=stall_seconds)
+    assert result.answer == "the answer"
+    assert result.stream_complete is True
+    assert result.cut_by is None
+    assert result.warnings == [SOURCES_FRAME_MISSING]
+    # Heartbeats drive the check, so the cut lands within one of the window.
+    assert COPILOT_SETTLE_SECONDS < clock.now - 1000.0 <= COPILOT_SETTLE_SECONDS + 15
+    assert client.deleted == [("BU", "RW")]
+
+
+def test_ask_cli_silent_after_text_completed_exits_zero(
+    clock: _Clock, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    client = _StreamClient([(0, _text_completed("the answer")), *_heartbeats(600)], clock)
+    rc = _run_cli(monkeypatch, cli_ask.main, ["q"], client)
+    cap = capsys.readouterr()
+    assert rc == 0
+    assert "the answer" in cap.out
+    assert "stream: incomplete" not in cap.out
+    assert SOURCES_FRAME_MISSING in cap.err
+    assert clock.now - 1000.0 <= COPILOT_SETTLE_SECONDS + 15
 
 
 def test_research_whose_text_keeps_changing_runs_past_the_window(
