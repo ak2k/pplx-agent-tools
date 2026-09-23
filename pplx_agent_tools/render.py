@@ -336,7 +336,12 @@ def render_ask_text(result: AskResult) -> str:
 
 def _grounding_json(g: Grounding | None) -> dict[str, Any]:
     if g is None:
-        return {"grounded": None, "grounding_reasons": ["check disabled"]}
+        return {
+            "grounded": None,
+            "grounding_reasons": ["check disabled"],
+            "ungrounded_terms": [],
+            "checked_terms": 0,
+        }
     return {
         "grounded": g.grounded,
         "grounding_reasons": g.reasons,

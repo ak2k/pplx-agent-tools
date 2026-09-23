@@ -5,6 +5,8 @@ from __future__ import annotations
 from decimal import Decimal
 
 import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
 from pplx_agent_tools.grounding import (
     REASON_NO_SOURCES,
@@ -46,6 +48,12 @@ def test_lowercase_m_is_not_a_scale() -> None:
         ("$55", "55 USD"),
         ("5k", "5,000 reviews"),
         ("$3.5 billion", "3.5bn"),
+        ("$254.5 billion", "Costco Reports $254.5 Billion Revenue"),
+        ("1.2 million", "1.2 Million"),
+        # A more precise answer matches a source rounded to its own precision.
+        ("$269.91 billion", "$269.9B"),
+        ("11,115,000", "11.1 million"),
+        ("1,234,567", "1.2 million"),
     ],
 )
 def test_format_variants_match(answer: str, evidence: str) -> None:
@@ -56,10 +64,11 @@ def test_format_variants_match(answer: str, evidence: str) -> None:
 @pytest.mark.parametrize(
     ("answer", "evidence"),
     [
-        # A more precise answer figure is not supported by a rounded source.
-        ("1,234,567", "1.2 million"),
+        # A bare integer in a source keeps the answer's precision.
         ("4.3", "4"),
+        ("14.3", "14"),
         ("$55", "$65"),
+        ("$269.91 billion", "$268.9B"),
     ],
 )
 def test_distinct_figures_do_not_match(answer: str, evidence: str) -> None:
@@ -72,7 +81,9 @@ def test_non_figures_are_not_parsed() -> None:
 
 
 def test_citation_markers_and_list_numbers_are_not_figures() -> None:
-    text = _clean_markdown("1. First point [1][2]\n2. Second point [3, 4] [^5]")
+    text = _clean_markdown(
+        "1. First point [1][2]\n2. Second point [3, 4] [^5] [web:6] \u30107\u3011 \u30108\u2020L1-L4\u3011"
+    )
     assert _parse_figures(text) == []
 
 
@@ -187,6 +198,60 @@ def test_query_terms_and_small_counts_are_not_checked() -> None:
 def test_low_support_fraction_threshold() -> None:
     answer = "Figures: 101, 202, 303, 404 and 505."
     one_of_five = [Source("https://x.test/a", "t", "only 101 here")]
-    assert check_grounding(answer, "q", one_of_five).grounded is True
-    answer_six = answer + " Also 606."
-    assert check_grounding(answer_six, "q", one_of_five).grounded is False
+    g = check_grounding(answer, "q", one_of_five)
+    assert g.grounded is False
+    assert g.reasons == ["1 of 5 figures/names appear in a cited source's title or snippet"]
+    two_of_five = [Source("https://x.test/a", "t", "only 101 and 202 here")]
+    assert check_grounding(answer, "q", two_of_five).grounded is True
+
+
+def test_one_incidental_small_number_does_not_ground_a_fabricated_row() -> None:
+    sources = [Source("https://www.vivino.com/toplists/x", "Top 4 wines", "Buy wine online")]
+    g = check_grounding(_CAPARZO_ANSWER, _CAPARZO_QUERY, sources)
+    assert g.grounded is False
+    assert "4.0" in g.unsupported
+
+
+@pytest.mark.parametrize("url", ["http://[::1", "https://[bad/", "::::", "http://[::1]:99999/x"])
+def test_malformed_source_urls_do_not_raise(url: str) -> None:
+    g = check_grounding("It costs $45 [1].", "price", [Source(url, "t", "$45")])
+    assert g.grounded is True
+
+
+# Fragments that exercise the parsers' edge cases more often than random text.
+_PIECES = [
+    *"0123456789.,$%kKMB€£ \n|#*_-[]()^:;\"'`",
+    "\u2019",
+    "\u3010",
+    "\u3011",
+    "\u0661",
+    "\U0001d7cf",
+    "Wine ",
+    "Of ",
+    "million ",
+    "Billion ",
+    "**Label:** ",
+    "|---|",
+    "[1]",
+]
+_text = st.lists(st.sampled_from(_PIECES), max_size=120).map("".join)
+
+
+@settings(max_examples=300, deadline=None)
+@given(
+    answer=st.one_of(st.text(max_size=300), _text),
+    query=st.text(max_size=80),
+    sources=st.lists(
+        st.builds(
+            Source,
+            url=st.one_of(st.text(max_size=40), st.just("http://[::1")),
+            title=st.one_of(st.none(), st.text(max_size=80), _text),
+            snippet=st.one_of(st.none(), st.text(max_size=200), _text),
+        ),
+        max_size=4,
+    ),
+)
+def test_check_grounding_is_total(answer: str, query: str, sources: list[Source]) -> None:
+    g = check_grounding(answer, query, sources)
+    assert g.grounded in (True, False, None)
+    assert len(g.unsupported) <= g.checked

@@ -9,8 +9,8 @@ Checkable terms:
 
 - Figures: numerals normalized to a value, so "$1.2M", "1.2 million",
   "1,200,000" and "1200000" are one figure, and "4.0" matches "4". An answer
-  figure matches evidence that rounds to it at the answer's precision
-  ("1.2 million" is supported by "1,234,567", not the reverse).
+  figure matches evidence that equals it at the coarser of the two
+  precisions ("1.2 million" and "1,234,567" support each other).
 - Names: runs of two or more capitalized words ("Wine Spectator"). Single
   capitalized words are skipped, as are sentence-initial words, headings,
   bold labels, table headers and names made only of the query's own words.
@@ -30,11 +30,11 @@ from urllib.parse import urlsplit
 
 from .verbs._ask_common import Source
 
-# Below one in five terms supported, the answer counts as ungrounded. Snippets
-# are ~200-character excerpts, so a genuine answer routinely carries terms
-# absent from them and a stricter bar would flag most real answers; but a
-# single incidental overlap (a year, the product's own name) must not clear
-# an otherwise unsupported row of figures.
+# At or below one in five terms supported, the answer counts as ungrounded.
+# Snippets are ~200-character excerpts, so a genuine answer routinely carries
+# terms absent from them (live answers measured 31-52% supported) and a
+# stricter bar would flag real answers; but a single incidental overlap must
+# not clear an otherwise unsupported five-term row of figures.
 MIN_SUPPORTED_FRACTION = Decimal("0.2")
 
 REASON_NO_TERMS = "no checkable figures or names"
@@ -57,11 +57,13 @@ _SCALES = {
 _NUMBER_RE = re.compile(
     r"(?:(?P<cur>[$€£¥])\s?|(?<![\w.$€£¥]))"
     r"(?P<num>\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)"
-    r"(?:\s?(?P<word>thousand|million|billion|trillion)\b|(?P<abbr>bn|mn|[kKMB])(?![\w]))?"
+    r"(?:\s?(?P<word>(?i:thousand|million|billion|trillion))\b|(?P<abbr>bn|mn|[kKMB])(?![\w]))?"
     r"(?P<pct>\s?%|\s?per\s?cent\b)?"
     r"(?![\w])"
 )
-_CITATION_RE = re.compile(r"\[\^?\d+(?:\s*[,\u2013-]\s*\d+)*\]")
+_CITATION_RE = re.compile(
+    r"\[(?:\^|web:)?\d+(?:\s*[,\u2013-]\s*\d+)*\]|\u3010\d+(?:[^\u3011\n]{0,40})?\u3011"
+)
 _LINK_RE = re.compile(r"\[([^\]]*)\]\([^)]*\)")
 _URL_RE = re.compile(r"https?://\S+")
 _CODE_RE = re.compile(r"```.*?```|`[^`]*`", re.DOTALL)
@@ -204,12 +206,21 @@ def _extract_names(text: str) -> list[str]:
 
 
 def _is_site_root(url: str) -> bool:
-    parts = urlsplit(url)
+    try:
+        parts = urlsplit(url)
+    except ValueError:  # e.g. an unclosed IPv6 bracket
+        return False
     return parts.path in ("", "/") and not parts.query
 
 
 def _figure_supported(fig: _Figure, evidence: list[_Figure]) -> bool:
-    return any(abs(fig.value - e.value) <= fig.tolerance for e in evidence)
+    """Compare at the coarser of the two precisions, so "$269.91 billion"
+    matches a source's "$269.9B". A bare integer in the evidence keeps the
+    answer's precision: "14" in a snippet must not support "14.3"."""
+    return any(
+        abs(fig.value - e.value) <= (fig.tolerance if e.bare else max(fig.tolerance, e.tolerance))
+        for e in evidence
+    )
 
 
 def _name_supported(name: str, evidence_text: str, evidence_words: set[str]) -> bool:
@@ -244,7 +255,9 @@ def check_grounding(answer: str, query: str, sources: Sequence[Source]) -> Groun
         return Grounding(False, [REASON_NO_SOURCES], all_terms, checked)
 
     evidence = " \n ".join(f"{s.title or ''} \n {s.snippet or ''}" for s in sources)
-    evidence_figures = _parse_figures(evidence)
+    # Small counts ("Top 4 wines") are everywhere in titles and would
+    # support figures like "4.0" by accident.
+    evidence_figures = [f for f in _parse_figures(evidence) if _is_checkable_figure(f)]
     evidence_text = _fold(evidence)
     evidence_words = _words(evidence)
     unsupported = [f.text for f in figures.values() if not _figure_supported(f, evidence_figures)]
@@ -256,7 +269,7 @@ def check_grounding(answer: str, query: str, sources: Sequence[Source]) -> Groun
     if all(_is_site_root(s.url) for s in sources):
         reasons.append(REASON_SITE_ROOTS)
     supported = checked - len(unsupported)
-    if Decimal(supported) < MIN_SUPPORTED_FRACTION * checked:
+    if Decimal(supported) <= MIN_SUPPORTED_FRACTION * checked:
         reasons.append(
             f"{supported} of {checked} figures/names appear in a cited source's title or snippet"
         )

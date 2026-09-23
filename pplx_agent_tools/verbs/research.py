@@ -43,6 +43,7 @@ from ._ask_common import (
     no_content_error,
     release_thread,
     run_ask_stream,
+    status_completed,
     to_source,
 )
 
@@ -102,17 +103,6 @@ class ResearchResult:
     warnings: list[str] = field(default_factory=list)
     # "stall" | "deadline" when that bound cut the stream; None otherwise.
     cut_by: str | None = None
-
-
-def _status_completed(event: dict[str, Any]) -> bool:
-    """Completion predicate for research: `status == "COMPLETED"` only.
-
-    The shared default also accepts `text_completed`, which Perplexity sets a
-    few frames BEFORE the terminal repaint. That is right for delta callers, but
-    research keeps whole snapshots: stopping early keeps a snapshot whose FINAL
-    block is still being written."""
-    data = event.get("data")
-    return isinstance(data, dict) and data.get("status") == "COMPLETED"
 
 
 def _text_changed() -> Callable[[dict[str, Any]], bool]:
@@ -221,7 +211,7 @@ def research(
             stall_seconds=stall_seconds,
             progress=progress,
             label="research",
-            is_complete=_status_completed,
+            is_complete=status_completed,
             is_progress=_text_changed(),
         )
     finally:

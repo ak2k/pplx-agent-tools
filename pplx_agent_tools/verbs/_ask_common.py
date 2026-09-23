@@ -204,6 +204,46 @@ def extract_chunks_from_event(event: dict[str, Any]) -> list[str]:
     return out
 
 
+def extract_chunk_patches(event: dict[str, Any]) -> list[tuple[int | None, list[str]]]:
+    """Pure: the `ask_text` chunks one copilot event carries, each run paired
+    with its `chunk_starting_offset` (a chunk index, None when absent).
+
+    The terminal COMPLETED frame repaints every chunk from offset 0, so a
+    caller that reads past `text_completed` must place chunks by offset rather
+    than append them. Never raises."""
+    data = event.get("data")
+    if not isinstance(data, dict):
+        return []
+    blocks = data.get("blocks")
+    if not isinstance(blocks, list):
+        return []
+    out: list[tuple[int | None, list[str]]] = []
+    for block in blocks:
+        if not isinstance(block, dict) or block.get("intended_usage") != "ask_text":
+            continue
+        mb = block.get("markdown_block")
+        if not isinstance(mb, dict):
+            continue
+        chunks = mb.get("chunks")
+        if not isinstance(chunks, list):
+            continue
+        offset = mb.get("chunk_starting_offset")
+        valid = isinstance(offset, int) and not isinstance(offset, bool) and offset >= 0
+        out.append((offset if valid else None, [str(c) for c in chunks]))
+    return out
+
+
+def status_completed(event: dict[str, Any]) -> bool:
+    """Completion predicate for callers that need the terminal COMPLETED frame.
+
+    The shared default also accepts `text_completed`, which Perplexity sets a
+    few frames BEFORE that frame. Research needs it because it keeps whole
+    snapshots; ask needs it because only that frame carries the web_results
+    list in the order the answer's [n] citations index."""
+    data = event.get("data")
+    return isinstance(data, dict) and data.get("status") == "COMPLETED"
+
+
 def event_marks_completed(event: dict[str, Any]) -> bool:
     """True iff an SSE event signals the stream finished."""
     data = event.get("data")

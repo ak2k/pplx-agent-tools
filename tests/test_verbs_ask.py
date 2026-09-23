@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Iterator
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -22,7 +24,7 @@ from pplx_agent_tools.verbs._ask_common import (
     extract_chunks_from_event,
     extract_web_results,
 )
-from pplx_agent_tools.verbs.ask import AskResult, _build_ask_body, ask
+from pplx_agent_tools.verbs.ask import SOURCES_FRAME_MISSING, AskResult, _build_ask_body, ask
 
 from ._doubles import _TestClientBase
 
@@ -122,6 +124,38 @@ def test_ask_extracts_sources_from_web_results_block() -> None:
     assert [s.url for s in result.sources] == ["https://a", "https://b"]  # deduped, ordered
     assert result.sources[0].title == "A"
     assert result.sources[0].snippet == "sa"
+
+
+_MULTI_STEP = Path(__file__).parent / "fixtures" / "ask" / "multi-step-sources.events.jsonl"
+
+
+def _multi_step_events() -> list[dict[str, Any]]:
+    return [json.loads(line) for line in _MULTI_STEP.read_text().splitlines()]
+
+
+def test_ask_sources_come_from_the_completed_frame_in_citation_order() -> None:
+    """Each search step emits its own web_results block; the COMPLETED frame
+    re-sends them reordered so that [n] is sources[n-1]. The early
+    `text_completed` frame must not end the read before it."""
+    result = ask(_FakeClient(_multi_step_events()), "q")
+    assert [s.url for s in result.sources] == [
+        f"https://{n}.example/p" for n in ("echo", "bravo", "alpha", "charlie", "delta")
+    ]
+    # The COMPLETED frame repaints every chunk from offset 0: placed, not appended.
+    assert result.answer == "Price is $45 at shop A [1]; score 93 per B [2]."
+    assert result.stream_complete is True
+    assert result.warnings == []
+
+
+def test_ask_stream_ending_at_text_completed_is_whole_but_warns() -> None:
+    events = [e for e in _multi_step_events() if e["data"]["status"] != "COMPLETED"]
+    result = ask(_FakeClient(events), "q")
+    assert result.answer == "Price is $45 at shop A [1]; score 93 per B [2]."
+    assert result.stream_complete is True
+    assert result.cut_by is None
+    assert result.warnings == [SOURCES_FRAME_MISSING]
+    # The last search step's block is all that arrived.
+    assert [s.url for s in result.sources] == ["https://delta.example/p", "https://echo.example/p"]
 
 
 def test_ask_attaches_grounding_verdict() -> None:
@@ -275,11 +309,12 @@ def test_render_ask_grounded_or_unchecked_has_no_marker(grounding: Grounding) ->
     assert j["grounding_reasons"] == grounding.reasons
 
 
-def test_render_ask_json_check_disabled() -> None:
+def test_render_ask_json_check_disabled_keeps_the_shape() -> None:
     j = render_ask_json(AskResult("q", "Answer.", "turbo"))
     assert j["grounded"] is None
     assert j["grounding_reasons"] == ["check disabled"]
-    assert "ungrounded_terms" not in j
+    assert j["ungrounded_terms"] == []
+    assert j["checked_terms"] == 0
 
 
 def test_grounding_summary_caps_listed_terms() -> None:

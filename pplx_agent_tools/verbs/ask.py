@@ -4,7 +4,8 @@ The front-door Perplexity experience: ask a question, Perplexity's LLM searches
 the web and writes one cited answer (vs `search`, which returns raw ranked hits,
 and `research`, which is the heavy multi-round path). Copilot mode on
 /rest/sse/perplexity_ask — the same `markdown_block` stream `fetch --prompt`
-consumes, so we reuse its chunk extractor.
+consumes. Unlike fetch, ask reads on to the terminal COMPLETED frame, the only
+one whose web_results list is in the order the answer's [n] citations index.
 
 Model-selectable (`--model`): the answer-producing verb is where picking a
 specific model (e.g. `claude48opusthinking`, a Max thinking variant) makes sense.
@@ -29,16 +30,22 @@ from ._ask_common import (
     blocks_changed,
     cutoff_cause,
     cutoff_warnings,
-    extract_chunks_from_event,
+    event_marks_completed,
+    extract_chunk_patches,
     extract_web_results,
     no_content_error,
     release_thread,
     run_ask_stream,
+    status_completed,
     to_source,
 )
 
 ENDPOINT = "/rest/sse/perplexity_ask"
 DEFAULT_MODEL = "turbo"  # "Best — adapts to each query"
+SOURCES_FRAME_MISSING = (
+    "stream ended after the answer but before its final sources frame; "
+    "[n] citations may not match the sources list"
+)
 
 
 @dataclass
@@ -79,11 +86,18 @@ def ask(
     body = _build_ask_body(query, model)
     chunks: list[str] = []
     sources: list[Source] = []
+    text_done = False
 
     def on_event(event: dict[str, Any]) -> None:
-        chunks.extend(extract_chunks_from_event(event))
-        # The copilot stream emits a `web_results` block carrying the cited
-        # sources; the latest non-empty one wins (deduped by URL).
+        nonlocal text_done
+        for offset, run in extract_chunk_patches(event):
+            if offset is None:
+                chunks.extend(run)
+            else:
+                chunks[offset : offset + len(run)] = run
+        # Each search step emits its own web_results block; the COMPLETED
+        # frame's block is the one the answer's [n] citations index, so the
+        # latest non-empty block wins (deduped by URL).
         raw_results = extract_web_results(event)
         if raw_results:
             seen: set[str] = set()
@@ -94,6 +108,7 @@ def ask(
                     seen.add(src.url)
                     collected.append(src)
             sources[:] = collected
+        text_done = text_done or event_marks_completed(event)
 
     state = AskStreamState()
     try:
@@ -107,6 +122,7 @@ def ask(
             stall_seconds=stall_seconds,
             progress=progress,
             label="ask",
+            is_complete=status_completed,
             is_progress=blocks_changed(),
         )
     finally:
@@ -122,14 +138,17 @@ def ask(
     if not content and not state.saw_completed:
         raise no_content_error(label="ask", endpoint=ENDPOINT, timeout=timeout, cutoff=state.cutoff)
 
+    # The answer is whole at `text_completed`; only the sources frame after it
+    # was lost, so this is not a partial answer.
+    sources_lost = text_done and not state.saw_completed
     return AskResult(
         query=query,
         answer=content,
         model=model,
-        stream_complete=state.saw_completed,
-        cut_by=cutoff_cause(state),
+        stream_complete=state.saw_completed or text_done,
+        cut_by=None if sources_lost else cutoff_cause(state),
         sources=sources,
-        warnings=cutoff_warnings(state),
+        warnings=[SOURCES_FRAME_MISSING] if sources_lost else cutoff_warnings(state),
         grounding=check_grounding(content, query, sources) if grounded_check else None,
     )
 
