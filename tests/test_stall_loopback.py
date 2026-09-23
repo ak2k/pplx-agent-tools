@@ -55,6 +55,7 @@ def _serve(heartbeat_every: float | None) -> Iterator[str]:
         srv = ThreadingHTTPServer(("127.0.0.1", 0), handler)
     except OSError as e:
         pytest.skip(f"loopback unavailable: {e}")
+        return
     srv.daemon_threads = True
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     try:

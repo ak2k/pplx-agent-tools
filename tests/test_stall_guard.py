@@ -134,7 +134,9 @@ class _StreamClient(_TestClientBase):
     def __init__(self, steps: list[Step], clock: _Clock) -> None:
         super().__init__()
         self.session = _Session(_ScriptedResp(steps, clock))
-        self._session = self.session  # type: ignore[assignment]
+        # Swap the transport Client.__init__ built without redefining the
+        # attribute, so the real `sse_post` streams from the script.
+        vars(self)["_session"] = self.session
         self.deleted: list[tuple[str, str]] = []
 
     def delete_thread(self, entry_uuid: str, read_write_token: str) -> bool:  # type: ignore[override]
