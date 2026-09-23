@@ -91,3 +91,18 @@ def test_total_silence_is_cut_by_curls_low_speed_abort(silent_server: str) -> No
 def test_heartbeats_alone_are_cut_by_the_stall_check(heartbeat_server: str) -> None:
     elapsed = _drain(heartbeat_server)
     assert _STALL <= elapsed < _STALL + 2.0
+
+
+def test_total_silence_is_cut_by_the_watchdog_at_a_tightened_window(
+    silent_server: str,
+) -> None:
+    """curl's abort is sized to the 30 s `stall_seconds`; the watchdog must end
+    the transfer once the tighter `stall_window()` passes."""
+    client = Client({"x": "y"}, base_url=silent_server)
+    start = time.monotonic()
+    with pytest.raises(StreamStallError) as exc:
+        for _ in client.sse_post("/x", {}, stall_seconds=30, stall_window=lambda: 1.0):
+            pass
+    assert exc.value.seconds == 1.0
+    # Up to one watchdog poll past the window, plus scheduling slack.
+    assert time.monotonic() - start < 5.0

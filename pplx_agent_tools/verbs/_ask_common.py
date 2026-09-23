@@ -238,6 +238,25 @@ def extract_chunk_patches(event: dict[str, Any]) -> list[tuple[int | None, list[
     return out
 
 
+def apply_chunk_patch(
+    chunks: dict[int, str], offset: int | None, run: list[str], *, terminal: bool
+) -> None:
+    """Place one run from `extract_chunk_patches` into `chunks` (chunk index -> text).
+
+    Keyed by index so a run that lands past a gap keeps its place. The terminal
+    COMPLETED frame resends the answer from its offset to the end, so on that
+    frame any chunk past the run is stale; mid-stream runs never truncate, since
+    nothing says they carry the tail. A run with no offset appends, except on the
+    terminal frame, which repaints from 0 in every captured stream."""
+    if offset is None:
+        offset = 0 if terminal else max(chunks, default=-1) + 1
+    for i, text in enumerate(run):
+        chunks[offset + i] = text
+    if terminal and run:
+        for stale in [i for i in chunks if i >= offset + len(run)]:
+            del chunks[stale]
+
+
 def status_completed(event: dict[str, Any]) -> bool:
     """Completion predicate for callers that need the terminal COMPLETED frame.
 

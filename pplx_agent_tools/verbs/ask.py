@@ -20,13 +20,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from ..errors import SchemaError
+from ..errors import NetworkError, SchemaError
 from ..grounding import Grounding, check_grounding
 from ..wire import Client
 from ._ask_common import (
     COPILOT_SETTLE_SECONDS,
     AskStreamState,
     Source,
+    apply_chunk_patch,
     base_ask_params,
     blocks_changed,
     cutoff_cause,
@@ -85,17 +86,15 @@ def ask(
     answer's figures and names appear in its sources.
     """
     body = _build_ask_body(query, model)
-    chunks: list[str] = []
+    chunks: dict[int, str] = {}
     sources: list[Source] = []
     text_done = False
 
     def on_event(event: dict[str, Any]) -> None:
         nonlocal text_done
+        terminal = status_completed(event)
         for offset, run in extract_chunk_patches(event):
-            if offset is None:
-                chunks.extend(run)
-            else:
-                chunks[offset : offset + len(run)] = run
+            apply_chunk_patch(chunks, offset, run, terminal=terminal)
         # Each search step emits its own web_results block; the COMPLETED
         # frame's block is the one the answer's [n] citations index, so the
         # latest non-empty block wins (deduped by URL).
@@ -127,6 +126,11 @@ def ask(
             is_progress=blocks_changed(),
             settle_seconds=COPILOT_SETTLE_SECONDS,
         )
+    except NetworkError:
+        # After `text_completed` the answer is whole; losing the connection then
+        # only costs the sources frame, handled below like a settle expiry.
+        if not text_done:
+            raise
     finally:
         release_thread(client, state, keep_thread=keep_thread)
 
@@ -136,7 +140,7 @@ def ask(
             f"invalid or not available on your plan — check `pplx models`"
         )
 
-    content = "".join(chunks).strip()
+    content = "".join(chunks[i] for i in sorted(chunks)).strip()
     if not content and not state.saw_completed:
         raise no_content_error(label="ask", endpoint=ENDPOINT, timeout=timeout, cutoff=state.cutoff)
 

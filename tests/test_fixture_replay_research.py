@@ -19,7 +19,7 @@ answer (exit 0, ~1.2k chars) instead of the 9.7k-char report:
   1. the report body lives in the RESEARCH_ANSWER block's report asset, not in
      FINAL's `content.answer` (which holds only the cover note);
   2. the shared completion predicate accepts `text_completed`, which fires
-     before the terminal repaint — research overrides it (`_status_completed`).
+     before the terminal repaint — research overrides it (`status_completed`).
 
 Regenerate with scripts/re-capture-research.py + scripts/re-sanitize-research-fixture.py.
 """

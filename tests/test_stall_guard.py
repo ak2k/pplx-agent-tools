@@ -10,12 +10,14 @@ ask-family verbs must not count as progress either.
 from __future__ import annotations
 
 import json
+import socket
+import time
 from collections.abc import Callable, Iterator
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from curl_cffi import CurlECode
+from curl_cffi import CurlECode, CurlInfo
 from curl_cffi.requests.exceptions import RequestException
 
 from pplx_agent_tools import cli_ask, cli_fetch, cli_research, cli_runner, wire
@@ -530,6 +532,87 @@ def test_ask_cli_silent_after_text_completed_exits_zero(
     assert "stream: incomplete" not in cap.out
     assert SOURCES_FRAME_MISSING in cap.err
     assert clock.now - 1000.0 <= COPILOT_SETTLE_SECONDS + 15
+
+
+class _LoopbackCurl:
+    """The address pair curl reports for the transfer's socket."""
+
+    def __init__(self, sock: socket.socket) -> None:
+        self._info = {
+            CurlInfo.LOCAL_PORT: sock.getsockname()[1],
+            CurlInfo.PRIMARY_IP: sock.getpeername()[0].encode(),
+            CurlInfo.PRIMARY_PORT: sock.getpeername()[1],
+        }
+
+    def getinfo(self, option: CurlInfo) -> object:
+        return self._info[option]
+
+
+class _SilentAfterResp(_ScriptedResp):
+    """Delivers the script, then sends nothing over a real loopback socket until
+    that socket is shut down (curl's read then fails with PARTIAL_FILE) or the
+    fake clock reaches curl's low-speed abort. The fake clock runs at one second
+    per real millisecond meanwhile."""
+
+    def __init__(self, steps: list[Step], clock: _Clock, sock: socket.socket, abort_at: float):
+        super().__init__(steps, clock)
+        self.curl = _LoopbackCurl(sock)
+        self._sock = sock
+        self._abort_at = abort_at
+
+    def iter_content(self, chunk_size: int) -> Iterator[bytes]:
+        yield from super().iter_content(chunk_size)
+        self._sock.setblocking(False)
+        while self._clock.now < self._abort_at:
+            try:
+                if self._sock.recv(1) == b"":
+                    raise _curl_error(CurlECode.PARTIAL_FILE)
+            except BlockingIOError:
+                pass
+            time.sleep(0.001)
+            self._clock.now += 1
+        raise _curl_error(CurlECode.OPERATION_TIMEDOUT)
+
+
+@pytest.fixture
+def loopback() -> Iterator[socket.socket]:
+    try:
+        srv = socket.create_server(("127.0.0.1", 0))
+    except OSError as e:
+        pytest.skip(f"loopback unavailable: {e}")
+    with srv, socket.create_connection(srv.getsockname()) as sock:
+        peer, _ = srv.accept()
+        with peer:
+            yield sock
+
+
+def test_ask_fully_silent_after_text_completed_returns_within_the_settle_window(
+    clock: _Clock, loopback: socket.socket, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No COMPLETED frame and no heartbeats: nothing reaches the in-loop stall
+    check, so the watchdog has to cut the transfer."""
+    monkeypatch.setattr(wire, "_WATCHDOG_POLL_SECONDS", 0.001)
+    steps: list[Step] = [(0, _chunk("the ")), (0, _text_completed("answer"))]
+    client = _StreamClient([], clock)
+    client.session._resp = _SilentAfterResp(
+        steps, clock, loopback, abort_at=clock.now + COPILOT_STALL_SECONDS
+    )
+    result = ask(client, "q", timeout=None, stall_seconds=COPILOT_STALL_SECONDS)
+    assert result.answer == "the answer"
+    assert result.stream_complete is True
+    assert result.warnings == [SOURCES_FRAME_MISSING]
+    # Slack for scheduling jitter: one fake second passes per real millisecond.
+    assert COPILOT_SETTLE_SECONDS < clock.now - 1000.0 <= COPILOT_SETTLE_SECONDS + 30
+
+
+def test_watchdog_leaves_a_stream_without_a_socket_to_the_in_loop_check(
+    clock: _Clock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(wire, "_WATCHDOG_POLL_SECONDS", 0.001)
+    client = _StreamClient([(0, _chunk("a")), *_heartbeats(100)], clock)
+    with pytest.raises(StreamStallError) as exc:
+        list(client.sse_post("/x", {}, stall_seconds=480, stall_window=lambda: 20.0))
+    assert exc.value.seconds == 20.0
 
 
 def test_research_whose_text_keeps_changing_runs_past_the_window(

@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from hypothesis import given
+from hypothesis import strategies as st
 
 from pplx_agent_tools.errors import (
     EXIT_GENERIC,
@@ -21,6 +23,7 @@ from pplx_agent_tools.errors import (
 from pplx_agent_tools.grounding import Grounding
 from pplx_agent_tools.render import grounding_summary, render_ask_json, render_ask_text
 from pplx_agent_tools.verbs._ask_common import (
+    apply_chunk_patch,
     extract_chunks_from_event,
     extract_web_results,
 )
@@ -36,6 +39,21 @@ def _chunk_event(text: str) -> dict[str, Any]:
             "backend_uuid": "BU",
             "read_write_token": "RW",
             "blocks": [{"intended_usage": "ask_text", "markdown_block": {"chunks": [text]}}],
+        }
+    }
+
+
+def _patch_event(offset: int | None, chunks: list[str], **data: Any) -> dict[str, Any]:
+    """A copilot SSE event carrying `chunks` placed at chunk index `offset`."""
+    block: dict[str, Any] = {"chunks": chunks}
+    if offset is not None:
+        block["chunk_starting_offset"] = offset
+    return {
+        "data": {
+            "backend_uuid": "BU",
+            "read_write_token": "RW",
+            "blocks": [{"intended_usage": "ask_text", "markdown_block": block}],
+            **data,
         }
     }
 
@@ -157,6 +175,79 @@ def test_ask_stream_ending_at_text_completed_is_whole_but_warns() -> None:
     assert result.warnings == [SOURCES_FRAME_MISSING]
     # The last search step's block is all that arrived.
     assert [s.url for s in result.sources] == ["https://delta.example/p", "https://echo.example/p"]
+
+
+def test_terminal_repaint_drops_a_stale_tail() -> None:
+    events = [
+        _patch_event(0, ["A "]),
+        _patch_event(1, ["B "]),
+        _patch_event(2, ["C"], text_completed=True),
+        _patch_event(0, ["A ", "B"], status="COMPLETED"),
+    ]
+    assert ask(_FakeClient(events), "q").answer == "A B"
+
+
+def test_chunk_past_the_end_keeps_its_place() -> None:
+    events = [
+        _patch_event(3, ["D"]),
+        _patch_event(0, ["A "]),
+        _patch_event(1, ["B "]),
+        _patch_event(2, ["C "]),
+        {"data": {"status": "COMPLETED"}},
+    ]
+    assert ask(_FakeClient(events), "q").answer == "A B C D"
+
+
+def test_midstream_patch_does_not_truncate() -> None:
+    events = [
+        _patch_event(0, ["A"]),
+        _patch_event(1, ["B"]),
+        _patch_event(2, ["C"]),
+        _patch_event(0, ["a"]),
+        {"data": {"status": "COMPLETED"}},
+    ]
+    assert ask(_FakeClient(events), "q").answer == "aBC"
+
+
+def test_terminal_repaint_without_offset_is_not_appended() -> None:
+    events = [
+        _patch_event(None, ["A "]),
+        _patch_event(None, ["B"]),
+        _patch_event(None, ["A ", "B"], status="COMPLETED"),
+    ]
+    assert ask(_FakeClient(events), "q").answer == "A B"
+
+
+def test_empty_terminal_repaint_keeps_the_answer() -> None:
+    events = [_patch_event(0, ["A"]), _patch_event(0, [], status="COMPLETED")]
+    assert ask(_FakeClient(events), "q").answer == "A"
+
+
+@given(st.lists(st.text(min_size=1, max_size=3), min_size=1, max_size=12), st.randoms())
+def test_offset_runs_in_any_order_rebuild_the_answer(parts: list[str], rnd: Any) -> None:
+    """Mid-stream runs may arrive in any order; the terminal repaint then
+    matches whatever they built, never duplicating or dropping a chunk."""
+    runs = [(i, parts[i : i + 2]) for i in range(0, len(parts), 2)]
+    rnd.shuffle(runs)
+    chunks: dict[int, str] = {}
+    for offset, run in runs:
+        apply_chunk_patch(chunks, offset, run, terminal=False)
+    assert [chunks[i] for i in sorted(chunks)] == parts
+    apply_chunk_patch(chunks, 0, parts[: len(parts) // 2 or 1], terminal=True)
+    assert [chunks[i] for i in sorted(chunks)] == parts[: len(parts) // 2 or 1]
+
+
+def test_network_error_after_text_completed_keeps_the_whole_answer() -> None:
+    """Only the sources frame was outstanding, so the answer is returned as
+    complete with the citation-order warning, as when the settle window runs out."""
+    events = [e for e in _multi_step_events() if e["data"]["status"] != "COMPLETED"]
+    client = _FakeClient(events, raise_network=True)
+    result = ask(client, "q")
+    assert result.answer == "Price is $45 at shop A [1]; score 93 per B [2]."
+    assert result.stream_complete is True
+    assert result.cut_by is None
+    assert result.warnings == [SOURCES_FRAME_MISSING]
+    assert client.deleted == [("BU", "RW")]
 
 
 def test_ask_attaches_grounding_verdict() -> None:
@@ -316,6 +407,11 @@ def test_render_ask_json_check_disabled_keeps_the_shape() -> None:
     assert j["grounding_reasons"] == ["check disabled"]
     assert j["ungrounded_terms"] == []
     assert j["checked_terms"] == 0
+
+
+def test_grounding_summary_without_terms_is_the_reasons_alone() -> None:
+    g = Grounding(False, ["every cited URL is a site root", "no sources"], [], 0)
+    assert grounding_summary(g) == "every cited URL is a site root; no sources"
 
 
 def test_grounding_summary_caps_listed_terms() -> None:

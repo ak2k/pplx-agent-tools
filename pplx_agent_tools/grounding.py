@@ -11,9 +11,13 @@ Checkable terms:
   "1,200,000" and "1200000" are one figure, and "4.0" matches "4". An answer
   figure matches evidence that equals it at the coarser of the two
   precisions ("1.2 million" and "1,234,567" support each other).
-- Names: runs of two or more capitalized words ("Wine Spectator"). Single
-  capitalized words are skipped, as are sentence-initial words, headings,
+  A leading minus sign is part of the value, so "-5.0" needs "-5.0".
+- Names: runs of two or more capitalized words ("Wine Spectator"), matched
+  as adjacent words. Single capitalized words are skipped, as are headings,
   bold labels, table headers and names made only of the query's own words.
+  A sentence-initial run may carry an ordinary word capitalized only by its
+  position, so it is also supported by its remainder ("Critic James Suckling"
+  by "James Suckling").
 
 Terms that also occur in the query are not checked: echoing the question is
 not a claim.
@@ -53,8 +57,14 @@ _SCALES = {
     "trillion": Decimal(1_000_000_000_000),
 }
 
+# Longer numerals are not figures anyone cites, and scaling one can overflow Decimal.
+_MAX_NUMERAL_CHARS = 30
+
 # Single-letter scales only when attached ("5k", "$1.2M"): "100 m" is meters.
+# A sign counts only when nothing word-like precedes it, so "2019-2020" and
+# "5-10" are not negative.
 _NUMBER_RE = re.compile(
+    r"(?:(?<![\w.])(?P<sign>[-\u2212]))?"
     r"(?:(?P<cur>[$€£¥])\s?|(?<![\w.$€£¥]))"
     r"(?P<num>\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)"
     r"(?:\s?(?P<word>(?i:thousand|million|billion|trillion))\b|(?P<abbr>bn|mn|[kKMB])(?![\w]))?"
@@ -113,6 +123,8 @@ def _parse_figures(text: str) -> list[_Figure]:
     out: list[_Figure] = []
     for m in _NUMBER_RE.finditer(text):
         raw = m.group("num").replace(",", "")
+        if len(raw) > _MAX_NUMERAL_CHARS:
+            continue
         try:
             value = Decimal(raw)
         except InvalidOperation:
@@ -122,6 +134,8 @@ def _parse_figures(text: str) -> list[_Figure]:
         scale = _SCALES[scale_word.lower()] if scale_word else Decimal(1)
         unit = Decimal(1).scaleb(-decimals) * scale
         bare = not (m.group("cur") or scale_word or m.group("pct") or decimals)
+        if m.group("sign"):
+            value = -value
         out.append(_Figure(m.group(0).strip(), value * scale, unit / 2, bare))
     return out
 
@@ -137,8 +151,18 @@ def _fold(text: str) -> str:
     return re.sub(r"\s+", " ", stripped.casefold())
 
 
+def _word_list(text: str) -> list[str]:
+    return re.findall(r"[a-z0-9]+", _fold(text))
+
+
 def _words(text: str) -> set[str]:
-    return set(re.findall(r"[a-z0-9]+", _fold(text)))
+    return set(_word_list(text))
+
+
+def _phrase(text: str) -> str:
+    """`text` as space-delimited words, so punctuation and line breaks between
+    words do not break an adjacency match."""
+    return f" {' '.join(_word_list(text))} "
 
 
 def _clean_markdown(answer: str) -> str:
@@ -163,18 +187,27 @@ def _name_lines(text: str) -> list[str]:
     return keep
 
 
-def _names_in_clause(tokens: list[str], sentence_start: bool) -> list[str]:
-    names: list[str] = []
+def _is_name(words: list[str]) -> bool:
+    return sum(1 for w in words if w.lower() not in _NAME_CONNECTORS) >= 2
+
+
+def _names_in_clause(tokens: list[str], sentence_start: bool) -> list[tuple[str, str | None]]:
+    """(name, fallback) pairs; `fallback` is the name without its first word
+    when that word may be capitalized only because it opens the sentence."""
+    names: list[tuple[str, str | None]] = []
     run: list[str] = []
     run_start = 0
 
     def flush() -> None:
         while run and run[-1].lower() in _NAME_CONNECTORS:
             run.pop()
-        if run_start == 0 and sentence_start and run:
-            run.pop(0)
-        if sum(1 for t in run if t.lower() not in _NAME_CONNECTORS) >= 2:
-            names.append(" ".join(run))
+        if not _is_name(run):
+            return
+        rest = run[1:]
+        while rest and rest[0].lower() in _NAME_CONNECTORS:
+            rest.pop(0)
+        leading = run_start == 0 and sentence_start
+        names.append((" ".join(run), " ".join(rest) if leading and _is_name(rest) else None))
 
     for i, tok in enumerate(tokens):
         word = re.sub(r"['\u2019]s$", "", tok)
@@ -190,8 +223,8 @@ def _names_in_clause(tokens: list[str], sentence_start: bool) -> list[str]:
     return names
 
 
-def _extract_names(text: str) -> list[str]:
-    names: list[str] = []
+def _extract_names(text: str) -> list[tuple[str, str | None]]:
+    names: list[tuple[str, str | None]] = []
     for line in _name_lines(text):
         sentence_start = True
         for part in _CLAUSE_SPLIT_RE.split(line):
@@ -223,13 +256,10 @@ def _figure_supported(fig: _Figure, evidence: list[_Figure]) -> bool:
     )
 
 
-def _name_supported(name: str, evidence_text: str, evidence_words: set[str]) -> bool:
-    """A name is supported when it appears verbatim, or when all its words do
-    (sources often write "Spectator, Wine" or split a name across a title)."""
-    folded = _fold(name)
-    if folded in evidence_text:
-        return True
-    return _words(name) <= evidence_words
+def _name_supported(name: str, fallback: str | None, evidence: str) -> bool:
+    """Scattered words are not a name: "Red Bull" needs "red bull", not
+    "red wine" and "bull market"."""
+    return any(n is not None and _phrase(n) in evidence for n in (name, fallback))
 
 
 def check_grounding(answer: str, query: str, sources: Sequence[Source]) -> Grounding:
@@ -242,15 +272,15 @@ def check_grounding(answer: str, query: str, sources: Sequence[Source]) -> Groun
     for fig in _parse_figures(text):
         if fig.value not in query_values and _is_checkable_figure(fig):
             figures.setdefault(fig.value, fig)
-    names: dict[str, str] = {}
-    for name in _extract_names(text):
+    names: dict[str, tuple[str, str | None]] = {}
+    for name, fallback in _extract_names(text):
         if not _words(name) <= query_words:
-            names.setdefault(_fold(name), name)
+            names.setdefault(_fold(name), (name, fallback))
 
     checked = len(figures) + len(names)
     if checked == 0:
         return Grounding(grounded=None, reasons=[REASON_NO_TERMS])
-    all_terms = [f.text for f in figures.values()] + list(names.values())
+    all_terms = [f.text for f in figures.values()] + [n for n, _ in names.values()]
     if not sources:
         return Grounding(False, [REASON_NO_SOURCES], all_terms, checked)
 
@@ -258,12 +288,12 @@ def check_grounding(answer: str, query: str, sources: Sequence[Source]) -> Groun
     # Small counts ("Top 4 wines") are everywhere in titles and would
     # support figures like "4.0" by accident.
     evidence_figures = [f for f in _parse_figures(evidence) if _is_checkable_figure(f)]
-    evidence_text = _fold(evidence)
-    evidence_words = _words(evidence)
+    # One line per field, so a name cannot match across two fields.
+    evidence_phrases = "\n".join(
+        _phrase(field) for s in sources for field in (s.title or "", s.snippet or "")
+    )
     unsupported = [f.text for f in figures.values() if not _figure_supported(f, evidence_figures)]
-    unsupported += [
-        n for n in names.values() if not _name_supported(n, evidence_text, evidence_words)
-    ]
+    unsupported += [n for n, fb in names.values() if not _name_supported(n, fb, evidence_phrases)]
 
     reasons: list[str] = []
     if all(_is_site_root(s.url) for s in sources):

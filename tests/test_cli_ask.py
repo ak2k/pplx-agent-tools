@@ -90,6 +90,17 @@ def test_grounded_is_silent(monkeypatch: pytest.MonkeyPatch, capsys: pytest.Capt
     assert "not grounded" not in capsys.readouterr().err
 
 
+def test_nothing_to_check_is_silent(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    unchecked = Grounding(None, ["no checkable figures or names"])
+    _stub(monkeypatch, AskResult("q", "Yes.", "turbo", True, grounding=unchecked))
+    assert cli_ask.main(["q"]) == EXIT_OK
+    cap = capsys.readouterr()
+    assert "not grounded" not in cap.err
+    assert "grounded: no" not in cap.out
+
+
 def test_no_grounded_check_flag_reaches_the_verb(monkeypatch: pytest.MonkeyPatch) -> None:
     seen: dict[str, Any] = {}
 

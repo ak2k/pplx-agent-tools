@@ -87,13 +87,45 @@ def test_citation_markers_and_list_numbers_are_not_figures() -> None:
     assert _parse_figures(text) == []
 
 
+def test_sign_is_part_of_the_value() -> None:
+    [neg] = _parse_figures("a change of -5.0%")
+    assert neg.value == Decimal(-5)
+    assert not _figure_supported(neg, _parse_figures("up 5.0%"))
+    assert _figure_supported(neg, _parse_figures("down \u22125.0% on the year"))
+    [pos] = _parse_figures("up 5.0%")
+    assert not _figure_supported(pos, _parse_figures("a change of -5.0%"))
+    assert [f.value for f in _parse_figures("from 2019-2020, 95-100 points")] == [
+        Decimal(2019),
+        Decimal(2020),
+        Decimal(95),
+        Decimal(100),
+    ]
+
+
+def test_absurdly_long_numerals_are_ignored() -> None:
+    assert _parse_figures("Revenue was " + "9" * 1_000_001 + " units.") == []
+    g = check_grounding("Revenue was " + "9" * 1_000_001 + " units.", "q", [Source("u", "t", "s")])
+    assert g.grounded is None
+
+
 # ---------- name extraction ----------
 
 
-def test_names_skip_sentence_initial_and_function_words() -> None:
+def _names(text: str) -> list[str]:
+    return [name for name, _ in _extract_names(text)]
+
+
+def test_names_skip_function_words() -> None:
     text = "The critics agree. Wine Spectator gave it 100 points, and the Wine Advocate agreed."
-    # "Wine Spectator" opens a sentence, so only "Spectator" would remain: not a name.
-    assert _extract_names(text) == ["Wine Advocate"]
+    assert _names(text) == ["Wine Spectator", "Wine Advocate"]
+
+
+def test_sentence_initial_name_is_checked_with_a_fallback() -> None:
+    assert _extract_names("Acme Labs sold 100 units.") == [("Acme Labs", None)]
+    assert _extract_names("Critic James Suckling gave it 97.") == [
+        ("Critic James Suckling", "James Suckling")
+    ]
+    assert _extract_names("It went to Critic James Suckling.") == [("Critic James Suckling", None)]
 
 
 def test_names_skip_headings_bold_labels_and_table_headers() -> None:
@@ -104,11 +136,40 @@ def test_names_skip_headings_bold_labels_and_table_headers() -> None:
         "|---|---|\n"
         "| x | reviewed by James Suckling |\n"
     )
-    assert _extract_names(text) == ["James Suckling"]
+    assert _names(text) == ["James Suckling"]
 
 
 def test_names_keep_connectors_inside_only() -> None:
-    assert _extract_names("It is sold by the Bank of America in Italy.") == ["Bank of America"]
+    assert _names("It is sold by the Bank of America in Italy.") == ["Bank of America"]
+
+
+# ---------- name support ----------
+
+
+def _name_verdict(answer: str, snippet: str) -> list[str]:
+    return check_grounding(answer, "q", [Source("https://x.test/a", "t", snippet)]).unsupported
+
+
+def test_name_words_must_be_adjacent() -> None:
+    assert _name_verdict("It is sponsored by Red Bull here.", "red wine and a bull market") == [
+        "Red Bull"
+    ]
+    for snippet in ("per Wine-Spectator", "WINE\nSPECTATOR", "the Wine  Spectator's list"):
+        assert _name_verdict("It is rated by Wine Spectator here.", snippet) == []
+
+
+def test_name_does_not_match_across_sources() -> None:
+    sources = [
+        Source("https://x.test/a", "red", "ends with Red"),
+        Source("https://x.test/b", "Bull", "s"),
+    ]
+    g = check_grounding("It is sponsored by Red Bull here.", "q", sources)
+    assert g.unsupported == ["Red Bull"]
+
+
+def test_sentence_initial_name_supported_by_its_fallback() -> None:
+    assert _name_verdict("Critic James Suckling gave it 97.", "James Suckling: 97 points") == []
+    assert _name_verdict("Acme Labs sold 100 units.", "Labs sold 100 units") == ["Acme Labs"]
 
 
 # ---------- verdicts ----------
@@ -234,19 +295,22 @@ _PIECES = [
     "|---|",
     "[1]",
 ]
-_text = st.lists(st.sampled_from(_PIECES), max_size=120).map("".join)
+_digit_run = st.integers(25, 400).map(lambda n: "9" * n)
+_text = st.lists(st.one_of(st.sampled_from(_PIECES), _digit_run), max_size=120).map("".join)
+# Past ~1e6 digits a scaled Decimal overflows rather than rounds.
+_huge = _text.map(lambda t: f"{t}{'9' * 1_000_001} {t}")
 
 
 @settings(max_examples=300, deadline=None)
 @given(
-    answer=st.one_of(st.text(max_size=300), _text),
+    answer=st.one_of(st.text(max_size=300), _text, _huge),
     query=st.text(max_size=80),
     sources=st.lists(
         st.builds(
             Source,
             url=st.one_of(st.text(max_size=40), st.just("http://[::1")),
             title=st.one_of(st.none(), st.text(max_size=80), _text),
-            snippet=st.one_of(st.none(), st.text(max_size=200), _text),
+            snippet=st.one_of(st.none(), st.text(max_size=200), _text, _huge),
         ),
         max_size=4,
     ),
