@@ -102,7 +102,9 @@ class BlockedUrlError(PplxError):
 
 
 class TargetHttpError(PplxError):
-    """The fetched page answered 4xx (other than 408 and 429). Don't retry. Exit 1."""
+    """The fetched page answered 4xx (other than 408 and 429) or redirected more
+    than the hop limit. Don't retry. Exit 1.
+    """
 
 
 def exit_code(err: BaseException) -> int:

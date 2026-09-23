@@ -79,7 +79,7 @@ def _get_guarded(
             current = urljoin(current, location)
             continue
         return resp
-    raise NetworkError(f"fetch {url}: exceeded {_MAX_REDIRECTS} redirects")
+    raise TargetHttpError(f"fetch {url}: exceeded {_MAX_REDIRECTS} redirects")
 
 
 @dataclass

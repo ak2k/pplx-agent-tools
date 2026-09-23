@@ -271,6 +271,16 @@ def test_target_status_maps_to_retry_semantic(
     assert exit_code(ei.value) == code
 
 
+def test_redirect_limit_is_a_refusal(monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_dns(monkeypatch, {HOST: ["8.8.8.8"]})
+    sess = _Session(*[_Resp(302, location=f"http://{HOST}/") for _ in range(6)])
+    with pytest.raises(PplxError) as ei:
+        fetch_page(f"http://{HOST}/", HOST, max_chars=None, session=sess)  # type: ignore[arg-type]
+    assert type(ei.value).__name__ == "TargetHttpError"
+    assert exit_code(ei.value) == EXIT_GENERIC
+    assert len(sess.requested) == 6
+
+
 # ---------- (3) every PplxError subclass has a documented exit code ----------
 
 EXPECTED_EXIT = {

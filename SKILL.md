@@ -86,7 +86,7 @@ pplx auth check
 | Code | Meaning | Retry semantic |
 |---|---|---|
 | 0 | Success | n/a |
-| 1 | Generic failure / bug, or a usage error (unknown flag, missing argument, out-of-range value such as `--limit 0` or `--timeout nan`). Under `--json`, a usage error prints an error envelope with `error.type: "UsageError"` and an unexpected exception one with `"InternalError"`. Also a refused `fetch` URL (`BlockedUrlError`: not http/https, no or malformed host, or a host that resolves to a private, loopback, link-local, CGNAT or other non-public address; redirects are checked the same way) and a fetched page that answers 4xx (`TargetHttpError`) | don't retry; fix the command line or pick another URL |
+| 1 | Generic failure / bug, or a usage error (unknown flag, missing argument, out-of-range value such as `--limit 0` or `--timeout nan`). Under `--json`, a usage error prints an error envelope with `error.type: "UsageError"` and an unexpected exception one with `"InternalError"`. Also a refused `fetch` URL (`BlockedUrlError`: not http/https, no or malformed host, or a host that resolves to a private, loopback, link-local, CGNAT or other non-public address; redirects are checked the same way) and a fetched page that answers 4xx or redirects more than 5 times (`TargetHttpError`) | don't retry; fix the command line or pick another URL |
 | 2 | Auth: cookies missing/expired/rejected | refresh cookies (`pplx auth import --browser <name>`) and retry |
 | 3 | Rate limit (429 from Perplexity or from the page `fetch` requests) | exponential backoff |
 | 4 | Network (DNS / timeout / TLS, or a fetched page answering 5xx or 408), or a deadline or stall before any content arrived | linear backoff |
