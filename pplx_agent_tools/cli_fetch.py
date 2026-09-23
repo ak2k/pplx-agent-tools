@@ -15,10 +15,11 @@ from collections.abc import Sequence
 from .cli_runner import resolve_model, resolve_timeout, run_verb
 from .errors import EXIT_OK, EXIT_PARTIAL
 from .render import render_fetch_json, render_fetch_text
-from .verbs._ask_common import DEFAULT_STALL_SECONDS
+from .verbs._ask_common import COPILOT_STALL_SECONDS
 from .verbs.fetch import FetchResult, fetch
 
-_DEFAULT_PROMPT_TIMEOUT_SECONDS = 180.0
+# Same hard cap as `ask`, which runs on the same stream.
+_DEFAULT_PROMPT_TIMEOUT_SECONDS = 540.0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -69,7 +70,8 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "for --prompt mode: overall wall-clock deadline (seconds). On "
             "deadline trip, any accumulated content is returned with a "
-            "'stream: incomplete' marker. Default: 180s (override via "
+            "'stream: incomplete' marker. Default: "
+            f"{_DEFAULT_PROMPT_TIMEOUT_SECONDS:.0f}s (override via "
             "$PPLX_FETCH_TIMEOUT or 0 to disable). Ignored in plain-fetch mode."
         ),
     )
@@ -81,9 +83,8 @@ def build_parser() -> argparse.ArgumentParser:
             "for --prompt mode: cut the stream after this many seconds without new "
             "content (server heartbeats and repeated frames don't count); partial "
             "content is "
-            f"returned (exit 6), none exits 4. Default: {DEFAULT_STALL_SECONDS:.0f}s "
-            "($PPLX_STALL_TIMEOUT, or 0 to disable). Only acts when --timeout exceeds it: the default 180s deadline ends a stream first. Ignored in plain-fetch "
-            "mode."
+            f"returned (exit 6), none exits 4. Default: {COPILOT_STALL_SECONDS:.0f}s "
+            "($PPLX_STALL_TIMEOUT, or 0 to disable). Ignored in plain-fetch mode."
         ),
     )
     parser.add_argument(
@@ -131,7 +132,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         else None
     )
     stall_seconds = (
-        resolve_timeout(args.stall_timeout, "PPLX_STALL_TIMEOUT", DEFAULT_STALL_SECONDS, "fetch")
+        resolve_timeout(args.stall_timeout, "PPLX_STALL_TIMEOUT", COPILOT_STALL_SECONDS, "fetch")
         if args.prompt
         else None
     )

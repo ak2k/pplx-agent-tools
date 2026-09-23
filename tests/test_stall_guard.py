@@ -36,6 +36,7 @@ from pplx_agent_tools.render import (
     render_research_text,
 )
 from pplx_agent_tools.verbs._ask_common import (
+    COPILOT_STALL_SECONDS,
     DEFAULT_STALL_SECONDS,
     AskStreamState,
     blocks_changed,
@@ -357,13 +358,13 @@ def _run_cli(
 def test_stall_after_partial_content_returns_the_partial(
     clock: _Clock, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    client = _StreamClient([(0, _chunk("partial answer")), *_heartbeats(300)], clock)
+    client = _StreamClient([(0, _chunk("partial answer")), *_heartbeats(600)], clock)
     rc = _run_cli(monkeypatch, cli_ask.main, ["q", *LONG_DEADLINE], client)
     cap = capsys.readouterr()
     assert rc == EXIT_PARTIAL
     assert "partial answer" in cap.out
     assert "stream: incomplete (stall: no new content)" in cap.out
-    assert "stalled: no new content for 240.0s" in cap.err
+    assert "stalled: no new content for 480.0s" in cap.err
     assert client.deleted == [("BU", "RW")]
 
 
@@ -383,11 +384,11 @@ def test_stall_warning_reaches_the_json_envelope(
 def test_stall_before_any_content_exits_network(
     clock: _Clock, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    client = _StreamClient(_heartbeats(300), clock)
+    client = _StreamClient(_heartbeats(600), clock)
     rc = _run_cli(monkeypatch, cli_ask.main, ["q", *LONG_DEADLINE], client)
     cap = capsys.readouterr()
     assert rc == EXIT_NETWORK
-    assert "no new content for 240.0s before the first content arrived" in cap.err
+    assert "no new content for 480.0s before the first content arrived" in cap.err
 
 
 def test_research_repeating_its_snapshot_stalls_with_the_partial(
@@ -425,23 +426,23 @@ def test_non_progress_frames_after_content_stall_with_the_partial(
     argv: list[str],
     filler: bytes,
 ) -> None:
-    client = _StreamClient([(0, PARTIAL_CHUNK), *_repeat(filler, 600)], clock)
+    client = _StreamClient([(0, PARTIAL_CHUNK), *_repeat(filler, 900)], clock)
     rc = _run_cli(monkeypatch, main, [*argv, *LONG_DEADLINE], client)
     cap = capsys.readouterr()
     assert rc == EXIT_PARTIAL
     assert "partial answer" in cap.out
-    assert "stalled: no new content for 240.0s" in cap.err
-    assert 240 < clock.now - 1000.0 <= 254
+    assert "stalled: no new content for 480.0s" in cap.err
+    assert 480 < clock.now - 1000.0 <= 494
 
 
 def test_envelope_frames_before_content_exit_network(
     clock: _Clock, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    client = _StreamClient(_repeat(ENVELOPE, 600), clock)
+    client = _StreamClient(_repeat(ENVELOPE, 900), clock)
     rc = _run_cli(monkeypatch, cli_ask.main, ["q", *LONG_DEADLINE], client)
     cap = capsys.readouterr()
     assert rc == EXIT_NETWORK
-    assert "no new content for 240.0s before the first content arrived" in cap.err
+    assert "no new content for 480.0s before the first content arrived" in cap.err
 
 
 def test_ask_whose_blocks_keep_changing_runs_past_the_window(
@@ -456,6 +457,26 @@ def test_ask_whose_blocks_keep_changing_runs_past_the_window(
     assert rc == 0
     assert "part4" in cap.out
     assert clock.now - 1000.0 > 900
+
+
+def test_thinking_ask_that_answers_at_the_end_completes_under_defaults(
+    clock: _Clock, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A thinking model on a long prompt: one plan block, ~300 s of envelope-only
+    # frames, then the whole answer at once.
+    plan = _frame({"backend_uuid": "BU", "read_write_token": "RW", "blocks": [{"plan": 1}]})
+    steps: list[Step] = [
+        (0, plan),
+        *_repeat(ENVELOPE, 300),
+        (0, _chunk("the answer")),
+        (0, COMPLETED),
+    ]
+    client = _StreamClient(steps, clock)
+    rc = _run_cli(monkeypatch, cli_ask.main, ["q"], client)
+    cap = capsys.readouterr()
+    assert rc == 0
+    assert "the answer" in cap.out
+    assert clock.now - 1000.0 > 290
 
 
 def test_research_whose_text_keeps_changing_runs_past_the_window(
@@ -667,14 +688,14 @@ def _captured_stall(
 @pytest.mark.parametrize(
     ("argv_extra", "env", "expected"),
     [
-        ([], None, DEFAULT_STALL_SECONDS),
+        ([], None, "default"),
         (["--stall-timeout", "45"], None, 45.0),
         (["--stall-timeout", "0"], None, None),
         (["--stall-timeout", "-1"], None, None),
         ([], "30", 30.0),
         ([], "0", None),
         (["--stall-timeout", "45"], "30", 45.0),
-        ([], "soon", DEFAULT_STALL_SECONDS),
+        ([], "soon", "default"),
     ],
 )
 @pytest.mark.parametrize(
@@ -694,8 +715,10 @@ def test_stall_timeout_resolution(
     argv: list[str],
     argv_extra: list[str],
     env: str | None,
-    expected: float | None,
+    expected: float | str | None,
 ) -> None:
+    if expected == "default":
+        expected = DEFAULT_STALL_SECONDS if verb == "research" else COPILOT_STALL_SECONDS
     if env is None:
         monkeypatch.delenv("PPLX_STALL_TIMEOUT", raising=False)
     else:
