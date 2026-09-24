@@ -24,6 +24,10 @@ settings.register_profile(
 settings.load_profile("no-deadline")
 
 
+def pytest_configure(config: pytest.Config) -> None:
+    config.addinivalue_line("markers", "slow: a benchmark row; deselect with -m 'not slow'")
+
+
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     """Auto-skip tests in tests/test_live_*.py unless PPLX_LIVE_TESTS=1."""
     if os.environ.get(LIVE_ENV) == "1":
