@@ -6,7 +6,7 @@ parsing stderr. See the design plan's "Exit codes" table.
 
 from __future__ import annotations
 
-from typing import Final
+from typing import ClassVar, Final
 
 EXIT_OK: Final = 0
 EXIT_GENERIC: Final = 1
@@ -27,6 +27,9 @@ class PplxError(Exception):
     Unexpected exceptions (bugs) bubble up as generic and exit 1.
     """
 
+    # Subclasses inherit their parent's code unless they set their own.
+    exit_code: ClassVar[int] = EXIT_GENERIC
+
 
 class AuthError(PplxError):
     """Cookies missing, unreadable, expired, or rejected by /api/auth/session.
@@ -34,9 +37,13 @@ class AuthError(PplxError):
     Agent retry semantic: refresh cookies, then retry. Exit 2.
     """
 
+    exit_code = EXIT_AUTH
+
 
 class RateLimitError(PplxError):
     """Server returned 429. Agent retry semantic: exponential backoff. Exit 3."""
+
+    exit_code = EXIT_RATE_LIMIT
 
     def __init__(self, message: str, retry_after: float | None = None) -> None:
         super().__init__(message)
@@ -45,6 +52,8 @@ class RateLimitError(PplxError):
 
 class NetworkError(PplxError):
     """DNS / timeout / connection refused / TLS error. Agent retry: linear backoff. Exit 4."""
+
+    exit_code = EXIT_NETWORK
 
 
 class StreamDeadlineError(NetworkError):
@@ -73,6 +82,8 @@ class StreamStallError(StreamDeadlineError):
 class AntiBotError(PplxError):
     """Cloudflare challenge or similar bot block. Agent retry: investigate, don't auto-retry. Exit 5."""
 
+    exit_code = EXIT_ANTI_BOT
+
 
 class SchemaError(PplxError):
     """Required field missing or unparseable response.
@@ -83,14 +94,19 @@ class SchemaError(PplxError):
     """
 
 
+class BlockedUrlError(PplxError):
+    """A fetch URL refused before any request: not http(s), no or malformed
+    host, or a host that resolves to a non-public address. Retrying cannot
+    change the answer. Exit 1.
+    """
+
+
+class TargetHttpError(PplxError):
+    """The fetched page answered 4xx (other than 408 and 429) or redirected more
+    than the hop limit. Don't retry. Exit 1.
+    """
+
+
 def exit_code(err: BaseException) -> int:
     """Map an exception to the documented exit-code contract."""
-    if isinstance(err, AuthError):
-        return EXIT_AUTH
-    if isinstance(err, RateLimitError):
-        return EXIT_RATE_LIMIT
-    if isinstance(err, NetworkError):
-        return EXIT_NETWORK
-    if isinstance(err, AntiBotError):
-        return EXIT_ANTI_BOT
-    return EXIT_GENERIC
+    return err.exit_code if isinstance(err, PplxError) else EXIT_GENERIC

@@ -18,15 +18,28 @@ signals but keeps the agent-shape single-command primitive.
 
 from __future__ import annotations
 
-import ipaddress
-import socket
+import sys
 from dataclasses import dataclass, field
 from typing import Any
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urlparse
 
 from curl_cffi import requests as cf_requests
 
-from ..errors import NetworkError, SchemaError
+from ..errors import (
+    NetworkError,
+    PplxError,
+    RateLimitError,
+    SchemaError,
+    TargetHttpError,
+)
+from ..netguard import (
+    PublicUrl,
+    check_authority,
+    check_url,
+    join_location,
+    redact,
+    strip_userinfo,
+)
 from ..wire import Client
 from ._ask_common import (
     AskStreamState,
@@ -42,66 +55,21 @@ from ._ask_common import (
 
 _PROMPT_ENDPOINT = "/rest/sse/perplexity_ask"
 
-# Schemes accepted for outbound fetch. Anything else (file://, ftp://,
-# gopher://, custom) is rejected up front — we never want curl_cffi to
-# touch the local filesystem or non-HTTP backends from a user-supplied URL.
-_ALLOWED_FETCH_SCHEMES = frozenset({"http", "https"})
-
 # Manual redirect handling: curl_cffi's allow_redirects would follow a 3xx into
-# an internal host without re-running the SSRF guard below, so we cap the hops
-# and re-validate each Location ourselves (see _get_guarded).
+# an internal host without re-running the SSRF guard, so we cap the hops and
+# check each Location ourselves (see _get_guarded).
 _MAX_REDIRECTS = 5
 _REDIRECT_CODES = frozenset({301, 302, 303, 307, 308})
 
 
-def _require_http_url(url: str) -> None:
-    """Reject non-HTTP(S) URLs and URLs missing a host. Raises NetworkError.
-
-    Prevents SSRF via file:// and custom schemes, and rejects obviously
-    malformed inputs (e.g. `localhost:8080` parsed without a scheme).
-    """
-    parsed = urlparse(url)
-    if parsed.scheme not in _ALLOWED_FETCH_SCHEMES:
-        raise NetworkError(
-            f"fetch {url}: unsupported URL scheme {parsed.scheme!r} (only http/https allowed)"
-        )
-    if not parsed.netloc:
-        raise NetworkError(f"fetch {url}: URL has no host")
-
-
-def _assert_public_host(url: str) -> None:
-    """Reject URLs whose host resolves to a non-public address (SSRF guard).
-
-    Blocks private (10/8, 172.16/12, 192.168/16), loopback (127/8, ::1),
-    link-local (169.254/16 — incl. the cloud metadata IP 169.254.169.254),
-    and other reserved/multicast ranges. Every address the host resolves to is
-    checked, so a hostname that maps to an internal IP is caught as well as a
-    bare-IP URL.
-
-    Residual risk: the name is resolved here, but curl_cffi resolves it again at
-    connect time, so a DNS-rebinding attacker could return a public IP now and
-    an internal one then. Closing that fully needs IP-pinned connections; this
-    guard covers the common direct-internal-IP and redirect-to-internal vectors.
-    """
-    host = urlparse(url).hostname
-    if not host:
-        raise NetworkError(f"fetch {url}: URL has no host")
-    try:
-        infos = socket.getaddrinfo(host, None)
-    except OSError as e:
-        raise NetworkError(f"fetch {url}: cannot resolve host {host!r}: {e}") from e
-    for info in infos:
-        addr = str(info[4][0])
-        ip = ipaddress.ip_address(addr)
-        if (
-            ip.is_private
-            or ip.is_loopback
-            or ip.is_link_local
-            or ip.is_reserved
-            or ip.is_multicast
-            or ip.is_unspecified
-        ):
-            raise NetworkError(f"fetch {url}: host {host!r} resolves to non-public address {addr}")
+def _fetch_hop(
+    session: cf_requests.Session[cf_requests.Response],
+    target: PublicUrl,
+    *,
+    timeout: float,
+) -> cf_requests.Response:
+    """The one place plain fetch sends a request; only a checked URL gets here."""
+    return session.get(target.url, timeout=timeout, allow_redirects=False, auth=target.auth)
 
 
 def _get_guarded(
@@ -110,23 +78,16 @@ def _get_guarded(
     *,
     timeout: float = 30.0,
 ) -> cf_requests.Response:
-    """GET `url`, following redirects manually so every hop is SSRF-checked.
-
-    curl_cffi's `allow_redirects=True` would follow a 3xx into a private host
-    without re-running the guard, so we disable it and re-validate the scheme
-    and resolved IP of each Location before fetching it.
-    """
+    """GET `url`, following redirects manually so every hop passes `check_url`."""
     current = url
     for _ in range(_MAX_REDIRECTS + 1):
-        _require_http_url(current)
-        _assert_public_host(current)
-        resp = session.get(current, timeout=timeout, allow_redirects=False)
+        resp = _fetch_hop(session, check_url(current), timeout=timeout)
         location = resp.headers.get("location")
         if resp.status_code in _REDIRECT_CODES and location:
-            current = urljoin(current, location)
+            current = join_location(current, location)
             continue
         return resp
-    raise NetworkError(f"fetch {url}: exceeded {_MAX_REDIRECTS} redirects")
+    raise TargetHttpError(f"fetch {redact(url)}: exceeded {_MAX_REDIRECTS} redirects")
 
 
 @dataclass
@@ -181,11 +142,15 @@ def fetch(
     """
     if prompt is None:
         return fetch_plain(url, max_chars=max_chars)
+    check_authority(url)
+    shown = strip_userinfo(url)
+    if shown != url:
+        print("pplx fetch: removed credentials from the URL sent to Perplexity", file=sys.stderr)
     return _fetch_with_prompt(
         client,
-        url,
+        shown,
         prompt,
-        _domain(url),
+        _domain(shown),
         max_chars=max_chars,
         keep_thread=keep_thread,
         timeout=timeout,
@@ -196,7 +161,18 @@ def fetch(
 
 
 def _domain(url: str) -> str:
-    return urlparse(url).netloc or "(unknown)"
+    """`host[:port]` of `url`; never the userinfo part of the netloc."""
+    try:
+        parsed = urlparse(url)
+        host = parsed.hostname
+        port = parsed.port
+    except ValueError:
+        return "(unknown)"
+    if not host:
+        return "(unknown)"
+    if ":" in host:
+        host = f"[{host}]"
+    return host if port is None else f"{host}:{port}"
 
 
 def fetch_plain(url: str, *, max_chars: int | None = None) -> FetchResult:
@@ -224,6 +200,7 @@ def fetch_page(
     host is markedly less Cloudflare-antagonizing than rapid TCP setups.
     When None (default), a fresh session is created and torn down per call.
     """
+    shown = redact(url)
     try:
         if session is None:
             # Standalone path: fresh session, torn down on exit. curl_cffi
@@ -234,13 +211,18 @@ def fetch_page(
         else:
             # Caller owns the session lifecycle (typically one per host group).
             resp = _get_guarded(session, url)
-    except NetworkError:
+    except PplxError:
         raise
     except Exception as e:
-        raise NetworkError(f"fetch {url}: {e!s}") from e
+        raise NetworkError(f"fetch {shown}: {e!s}") from e
 
-    if resp.status_code >= 400:
-        raise NetworkError(f"fetch {url}: HTTP {resp.status_code}")
+    status = resp.status_code
+    if status == 429:
+        raise RateLimitError(f"fetch {shown}: HTTP 429")
+    if status == 408 or status >= 500:
+        raise NetworkError(f"fetch {shown}: HTTP {status}")
+    if status >= 400:
+        raise TargetHttpError(f"fetch {shown}: HTTP {status}")
 
     html = resp.text or ""
     try:
@@ -271,7 +253,7 @@ def fetch_page(
         truncated = True
 
     return FetchResult(
-        url=url,
+        url=strip_userinfo(url),
         title=title,
         domain=domain,
         content=content,

@@ -1346,6 +1346,7 @@ source = { editable = "." }
 dependencies = [
     { name = "curl-cffi" },
     { name = "fastembed" },
+    { name = "idna" },
     { name = "rookiepy" },
     { name = "sqlite-vec" },
     { name = "trafilatura" },
@@ -1367,6 +1368,7 @@ requires-dist = [
     { name = "curl-cffi", specifier = ">=0.7" },
     { name = "fastembed", specifier = ">=0.4" },
     { name = "hypothesis", marker = "extra == 'dev'", specifier = ">=6.100" },
+    { name = "idna", specifier = ">=3.7" },
     { name = "pytest", marker = "extra == 'dev'" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=5" },
     { name = "rookiepy", specifier = ">=0.5" },

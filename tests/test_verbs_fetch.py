@@ -7,21 +7,27 @@ double-counts).
 
 from __future__ import annotations
 
+import contextlib
+import io
+import json
 from collections.abc import Callable, Iterator
 from typing import Any
 
 import pytest
+from hypothesis import given
+from hypothesis import strategies as st
 
 from pplx_agent_tools.errors import (
-    NetworkError,
+    BlockedUrlError,
     RateLimitError,
     SchemaError,
     StreamDeadlineError,
 )
+from pplx_agent_tools.netguard import check_url
 from pplx_agent_tools.verbs.fetch import (
     _build_chat_body,
     _fetch_with_prompt,
-    _require_http_url,
+    fetch,
     fetch_page,
 )
 from tests._doubles import _TestClientBase
@@ -334,29 +340,29 @@ def test_thread_cleanup_failure_does_not_propagate(
         "localhost:8080",  # no scheme — parsed as scheme=localhost, netloc=""
     ],
 )
-def test_require_http_url_rejects_non_http(url: str) -> None:
-    with pytest.raises(NetworkError):
-        _require_http_url(url)
+def test_check_url_rejects_non_http(url: str) -> None:
+    with pytest.raises(BlockedUrlError):
+        check_url(url)
 
 
 @pytest.mark.parametrize(
     "url",
-    ["http://example.com/", "https://example.com/path?q=1", "HTTPS://Example.com/"],
+    ["http://8.8.8.8/", "https://8.8.8.8/path?q=1", "HTTPS://8.8.8.8/"],
 )
-def test_require_http_url_accepts_http_https(url: str) -> None:
-    # Must NOT raise. urlparse lowercases the scheme, so HTTPS works.
-    _require_http_url(url.lower() if url.upper() == url else url)
+def test_check_url_accepts_http_https(url: str) -> None:
+    # IP literals keep this offline; the checked URL is rebuilt in canonical form.
+    assert check_url(url).url == url.replace("HTTPS", "https")
 
 
-def test_require_http_url_rejects_missing_host() -> None:
-    with pytest.raises(NetworkError) as ei:
-        _require_http_url("http:///")
+def test_check_url_rejects_missing_host() -> None:
+    with pytest.raises(BlockedUrlError) as ei:
+        check_url("http:///")
     assert "no host" in str(ei.value)
 
 
 def test_fetch_page_rejects_file_scheme_before_network() -> None:
     # File-scheme URLs must be rejected up front — never reach curl_cffi.
-    with pytest.raises(NetworkError) as ei:
+    with pytest.raises(BlockedUrlError) as ei:
         fetch_page("file:///etc/passwd", domain="local", max_chars=None)
     assert "scheme" in str(ei.value)
 
@@ -587,3 +593,110 @@ def test_progress_silent_when_disabled(
     err = capsys.readouterr().err
     # No heartbeat output. The fake's delete_thread path doesn't emit either.
     assert err == ""
+
+
+class _BodyRecordingClient(FakeClient):
+    def __init__(self, events: list[dict[str, Any]]) -> None:
+        super().__init__(events)
+        self.bodies: list[dict[str, Any]] = []
+
+    def sse_post(  # type: ignore[override]
+        self, path: str, body: dict[str, Any], **kwargs: Any
+    ) -> Iterator[dict[str, Any]]:
+        self.bodies.append(body)
+        return super().sse_post(path, body, **kwargs)
+
+
+@pytest.mark.parametrize(
+    ("url", "sent"),
+    [
+        ("https://user:s3cret@example.com/page", "https://example.com/page"),
+        ("user:s3cret@example.com/page", "example.com/page"),
+    ],
+)
+def test_prompt_mode_never_sends_userinfo(
+    capsys: pytest.CaptureFixture[str], url: str, sent: str
+) -> None:
+    client = _BodyRecordingClient([_ev([_block("ask_text", ["ok"])], status="COMPLETED")])
+    result = fetch(client, url, prompt="summarize")
+    body = json.dumps(client.bodies)
+    assert "s3cret" not in body and "user:" not in body
+    assert f"For URL: {sent}" in client.bodies[0]["query_str"]
+    assert result.url == sent
+    assert "credentials" in capsys.readouterr().err
+
+
+def test_prompt_mode_without_userinfo_prints_no_note(capsys: pytest.CaptureFixture[str]) -> None:
+    client = _BodyRecordingClient([_ev([_block("ask_text", ["ok"])], status="COMPLETED")])
+    fetch(client, "https://example.com/a@b", prompt="summarize")
+    assert "For URL: https://example.com/a@b" in client.bodies[0]["query_str"]
+    assert capsys.readouterr().err == ""
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://user:S3cr/et@example.com/",
+        "http://user:S3cr?et@example.com/",
+        "http://user:S3cr#et@example.com/",
+        "user:S3cr/et@example.com/",
+    ],
+)
+def test_prompt_mode_refuses_a_password_with_a_delimiter(
+    capsys: pytest.CaptureFixture[str], url: str
+) -> None:
+    client = _BodyRecordingClient([_ev([_block("ask_text", ["ok"])], status="COMPLETED")])
+    with pytest.raises(BlockedUrlError) as ei:
+        fetch(client, url, prompt="summarize")
+    assert client.bodies == []
+    assert "S3cr" not in str(ei.value)
+    captured = capsys.readouterr()
+    assert "S3cr" not in captured.out + captured.err
+
+
+_TEXT = st.text(st.characters(blacklist_categories=("Cs",)))
+
+
+@given(
+    user=st.text(st.characters(blacklist_characters="/?#", blacklist_categories=("Cs",))),
+    head=_TEXT,
+    delim=st.sampled_from("/?#"),
+    tail=_TEXT,
+)
+def test_prompt_mode_never_shows_or_sends_a_delimiter_password(
+    user: str, head: str, delim: str, tail: str
+) -> None:
+    # An '@' in the password's head ends RFC 3986 userinfo early and may leave a
+    # valid host:port, which is accepted; without one the port is malformed.
+    client = _BodyRecordingClient([_ev([_block("ask_text", ["ok"])], status="COMPLETED")])
+    url = f"https://{user}:S3cr{head}{delim}{tail}@example.com/"
+    err = io.StringIO()
+    shown = ""
+    with contextlib.redirect_stderr(err):
+        try:
+            shown = fetch(client, url, prompt="summarize").url
+        except BlockedUrlError as e:
+            shown = str(e)
+            assert client.bodies == []
+        else:
+            assert "@" in head
+    assert "S3cr" not in shown + err.getvalue() + json.dumps(client.bodies)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://h.example:8443/?q=a@b",
+        "https://h.example/a@b",
+        "https://h.example:8443/a@b#c@d",
+        "https://medium.com/@user",
+    ],
+)
+def test_prompt_mode_sends_an_at_sign_after_the_authority_unchanged(
+    capsys: pytest.CaptureFixture[str], url: str
+) -> None:
+    client = _BodyRecordingClient([_ev([_block("ask_text", ["ok"])], status="COMPLETED")])
+    result = fetch(client, url, prompt="summarize")
+    assert f"For URL: {url}" in client.bodies[0]["query_str"]
+    assert result.url == url
+    assert capsys.readouterr().err == ""
