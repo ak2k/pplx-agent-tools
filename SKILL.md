@@ -8,7 +8,7 @@ description: Query Perplexity via your Pro subscription's web session. Use `pplx
 - **`pplx search <query>...`** — ranked web hits (sources, no answer). Each hit carries `title`, `url`, `domain`, `snippet` (~200 chars), and `summary` (~1500 chars, agent-friendly extract). Multi-query is native — pass several queries, server merges/dedupes. Stateless (creates no thread).
 - **`pplx ask <query>`** — the front door: ask a question, get one **synthesized, cited answer** + its sources (Pro Search). `search` returns sources; `ask` returns the answer (with `-j` also a `sources` list). `--model <id>` picks the model (default `turbo` = "Best"; pass a thinking variant like `claude55opusthinking` for max reasoning — see `pplx models`, ids rotate). ~5–15 s on `turbo`; a thinking variant measured 30–90 s. Session-creating but incognito + auto-cleanup. Check its figures against the cited sources before using them; see "Using `ask` answers" below.
 - **`pplx research <query>`** — deep, multi-step, cited research (Perplexity's "Research" mode). Returns a long markdown report + a sources list — `answer` is the full report (cover note then body), not a summary of one. Takes ~90–120 s for a focused question, but runtime grows with the number of subjects: a 14-subject comparison measured 18 min and 560 sources. Far more thorough than `search`; see "Running `research`" below. This is the differentiated capability — reach for it when one search won't cut it. Session-creating but runs **incognito** (no history pollution) + auto-cleans the thread.
-- **`pplx fetch <url>`** — local fetch + cleaned content extraction. With `--prompt`, routes to Perplexity's LLM which fetches the URL itself and answers your prompt in one round-trip (model-selectable via `--model`, default `turbo`; runs incognito + auto-cleanup like `ask`).
+- **`pplx fetch <url>`** — local fetch + cleaned content extraction; needs no Perplexity cookies. With `--prompt`, routes to Perplexity's LLM which fetches the URL itself and answers your prompt in one round-trip (model-selectable via `--model`, default `turbo`; runs incognito + auto-cleanup like `ask`).
 - **`pplx snippets <query> <url>...`** — concurrent-fetch N URLs locally, return query-relevant paragraphs from each using hybrid retrieval (BM25 keyword + semantic vectors). Useful after `pplx search` narrows candidates.
 - **`pplx quota`** — subscription rate-limit / availability per mode (`research`, `pro_search`, …) + per-source. Stateless GET; check before firing an expensive `research` call in a loop. Validates the session first: an expired cookie exits 2 (same message as `pplx auth check`) instead of rendering the anonymous view, in which every mode reads `EXHAUSTED (0 remaining)`.
 - **`pplx models`** — model catalog + mode catalog + default model per mode. Stateless GET; feeds `pplx research --mode`.
@@ -86,7 +86,7 @@ pplx auth check
 | Code | Meaning | Retry semantic |
 |---|---|---|
 | 0 | Success | n/a |
-| 1 | Generic failure / bug | don't retry |
+| 1 | Generic failure / bug, or a usage error (unknown flag, missing argument, out-of-range value such as `--limit 0` or `--timeout nan`). Under `--json`, a usage error prints an error envelope with `error.type: "UsageError"` and an unexpected exception one with `"InternalError"` | don't retry; fix the command line |
 | 2 | Auth: cookies missing/expired/rejected | refresh cookies (`pplx auth import --browser <name>`) and retry |
 | 3 | Rate limit (429) | exponential backoff |
 | 4 | Network (DNS / timeout / TLS), or a deadline or stall before any content arrived | linear backoff |
@@ -94,6 +94,8 @@ pplx auth check
 | 6 | Partial: stream incomplete (deadline or stall tripped, or server cut; `cut_by` in JSON and the stdout marker name which), or the answer decoded shorter than an earlier frame (`content_shortfall: true` with `stream_complete: true`). Stdout still carries usable content. | deadline (`cut_by: "deadline"`, marker `stream: incomplete (deadline)`) → accept the partial or raise `--timeout` (blind retry usually hits the same backend slowness); stall (`cut_by: "stall"`, marker `stream: incomplete (stall: no new content)`) → accept the partial or raise `--stall-timeout` (a larger `--timeout` does not help); `content_shortfall` with `stream_complete: true` → the stream finished, so a longer timeout cannot help: re-run once or accept the shorter answer |
 
 Stdout is results only; stderr carries diagnostics. `2>/dev/null` gives clean parseable stdout.
+
+Counts (`-n/--limit`, `--max-chars`, `--max-tokens`, `--max-tokens-per-page`) must be at least 1; `--max-chars 0` is an error, so omit the flag for no cap. A timeout (`--timeout`, `--stall-timeout` and their env vars) of 0, a negative value, or `inf` disables it; `nan` is rejected. `pplx skill-path` takes no arguments.
 
 # First-run notes
 

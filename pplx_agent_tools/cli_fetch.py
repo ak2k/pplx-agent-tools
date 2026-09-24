@@ -7,23 +7,23 @@ one round-trip. See docs/wire/fetch-url.md for the rationale.
 
 from __future__ import annotations
 
-import argparse
 import os
 import sys
 from collections.abc import Sequence
 
 from .cli_runner import resolve_model, resolve_timeout, run_verb
+from .cli_types import PplxArgumentParser, duration, positive_int
 from .errors import EXIT_OK, EXIT_PARTIAL
 from .render import render_fetch_json, render_fetch_text
 from .verbs._ask_common import COPILOT_STALL_SECONDS
-from .verbs.fetch import FetchResult, fetch
+from .verbs.fetch import FetchResult, fetch, fetch_plain
 
 # Same hard cap as `ask`, which runs on the same stream.
 _DEFAULT_PROMPT_TIMEOUT_SECONDS = 540.0
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+def build_parser() -> PplxArgumentParser:
+    parser = PplxArgumentParser(
         prog="pplx fetch",
         description=(
             "Fetch a URL and return cleaned content. With --prompt, route "
@@ -37,7 +37,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--max-chars",
-        type=int,
+        type=positive_int,
         default=None,
         help="cap content length (chars); truncation reported in output",
     )
@@ -65,7 +65,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--timeout",
-        type=float,
+        type=duration,
         default=None,
         help=(
             "for --prompt mode: overall wall-clock deadline (seconds). On "
@@ -77,7 +77,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--stall-timeout",
-        type=float,
+        type=duration,
         default=None,
         help=(
             "for --prompt mode: cut the stream after this many seconds without new "
@@ -122,19 +122,30 @@ def _finalize(result: FetchResult, max_chars: int | None) -> int:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+
+    def finalize(result: FetchResult) -> int:
+        return _finalize(result, args.max_chars)
+
+    if args.prompt is None:
+        # Plain mode fetches locally and never sends cookies, so it must not
+        # fail on missing ones.
+        return run_verb(
+            "fetch",
+            args,
+            requires_auth=False,
+            run=lambda _client: fetch_plain(args.url, max_chars=args.max_chars),
+            render_text=render_fetch_text,
+            render_json=render_fetch_json,
+            finalize=finalize,
+        )
+
     keep_thread = args.keep_thread or os.environ.get("PPLX_KEEP_THREADS") == "1"
     progress = args.progress or os.environ.get("PPLX_PROGRESS") == "1"
-    timeout = (
-        resolve_timeout(
-            args.timeout, "PPLX_FETCH_TIMEOUT", _DEFAULT_PROMPT_TIMEOUT_SECONDS, "fetch"
-        )
-        if args.prompt
-        else None
+    timeout = resolve_timeout(
+        args.timeout, "PPLX_FETCH_TIMEOUT", _DEFAULT_PROMPT_TIMEOUT_SECONDS, "fetch"
     )
-    stall_seconds = (
-        resolve_timeout(args.stall_timeout, "PPLX_STALL_TIMEOUT", COPILOT_STALL_SECONDS, "fetch")
-        if args.prompt
-        else None
+    stall_seconds = resolve_timeout(
+        args.stall_timeout, "PPLX_STALL_TIMEOUT", COPILOT_STALL_SECONDS, "fetch"
     )
     model = resolve_model(args.model, ("PPLX_FETCH_MODEL", "PPLX_MODEL"), "turbo")
 
@@ -155,7 +166,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
         render_text=render_fetch_text,
         render_json=render_fetch_json,
-        finalize=lambda result: _finalize(result, args.max_chars),
+        finalize=finalize,
     )
 
 

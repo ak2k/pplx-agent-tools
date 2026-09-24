@@ -14,7 +14,7 @@ each verb's render path was independent.
   4. an optional `finalize(result)` for verb-specific tail behavior
      (e.g. fetch's truncated/partial warnings + EXIT_PARTIAL)
 
-Verbs that don't need auth (snippets) pass `requires_auth=False` and
+Verbs that don't need auth (snippets, plain fetch) pass `requires_auth=False` and
 their `run` callable receives `client=None` (typically ignored). The
 overloads narrow `client` to `Client` (non-None) when `requires_auth=True`
 so verb callees that demand a non-None client don't need cast/assert
@@ -26,11 +26,13 @@ from __future__ import annotations
 import json
 import os
 import sys
-from argparse import Namespace
+import traceback
+from argparse import ArgumentTypeError, Namespace
 from collections.abc import Callable, Sequence
 from typing import Any, Literal, TypeVar, overload
 
-from .errors import EXIT_OK, PplxError, exit_code
+from .cli_types import DISABLED, Duration, duration
+from .errors import EXIT_GENERIC, EXIT_OK, PplxError, exit_code
 from .render import envelope
 from .wire import Client
 
@@ -50,21 +52,20 @@ def resolve_model(arg: str | None, env_vars: Sequence[str], default: str) -> str
     return default
 
 
-def resolve_timeout(arg: float | None, env_var: str, default: float, verb: str) -> float | None:
-    """Resolve a wall-clock deadline: --timeout flag → env var → default. A value
-    of 0 (or negative) means 'disable the deadline' and returns None. A non-numeric
-    env var is warned about and ignored. Shared by the ask-family CLIs."""
-    if arg is not None:
-        return None if arg <= 0 else arg
-    env = os.environ.get(env_var)
-    if env is not None:
-        try:
-            v = float(env)
-        except ValueError:
-            print(f"pplx {verb}: ignoring non-numeric ${env_var}={env!r}", file=sys.stderr)
+def resolve_timeout(arg: Duration | None, env_var: str, default: float, verb: str) -> float | None:
+    """Resolve a wall-clock deadline: --timeout flag → env var → default. Returns
+    None when disabled (0 or negative). An env value `duration` rejects is warned
+    about and ignored. Shared by the ask-family CLIs."""
+    if arg is None:
+        env = os.environ.get(env_var)
+        if env is None:
             return default
-        return None if v <= 0 else v
-    return default
+        try:
+            arg = duration(env)
+        except ArgumentTypeError as e:
+            print(f"pplx {verb}: ignoring ${env_var}={env!r}: {e}", file=sys.stderr)
+            return default
+    return None if arg is DISABLED else arg
 
 
 def _emit_error(name: str, err: PplxError, args: Namespace) -> int:
@@ -77,14 +78,16 @@ def _emit_error(name: str, err: PplxError, args: Namespace) -> int:
     `_verb`) so a consumer can branch on the presence of an `error` key.
     """
     print(f"pplx {name}: {err}", file=sys.stderr)
+    return _emit_error_envelope(name, type(err).__name__, str(err), exit_code(err), args)
+
+
+def _emit_error_envelope(
+    name: str, type_name: str, message: str, code: int, args: Namespace
+) -> int:
     if getattr(args, "json", False):
-        error_obj = {
-            "type": type(err).__name__,
-            "message": str(err),
-            "exit_code": exit_code(err),
-        }
+        error_obj = {"type": type_name, "message": message, "exit_code": code}
         print(json.dumps(envelope(name, {"error": error_obj}), indent=2))
-    return exit_code(err)
+    return code
 
 
 @overload
@@ -126,7 +129,8 @@ def run_verb(
     """Execute a verb end-to-end with the standard agent contract.
 
     Contract maintained here (not by individual verbs):
-    - Errors of type `PplxError` map to documented exit codes
+    - Errors of type `PplxError` map to documented exit codes; any other
+      exception is a bug: traceback to stderr, `InternalError` envelope, exit 1
     - JSON output goes through `render_json` (which uses `envelope()`)
     - Text output is the default; `--json` swaps to JSON
     - Result `.warnings` (if present) emit as `warning: <msg>` to stderr
@@ -138,26 +142,41 @@ def run_verb(
     stream didn't reach COMPLETED). If `finalize` is None, the runner
     returns `EXIT_OK` after a successful render.
     """
-    client: Client | None = None
-    if requires_auth:
-        try:
-            client = Client.from_default_cookies(profile=getattr(args, "profile", None))
-        except PplxError as e:
-            return _emit_error(name, e, args)
-
+    # Set once stdout carries the success document, so a later failure does
+    # not append a second JSON document to it.
+    wrote_stdout = False
     try:
+        client: Client | None = None
+        if requires_auth:
+            client = Client.from_default_cookies(profile=getattr(args, "profile", None))
         result = run(client)
+
+        if getattr(args, "json", False):
+            print(json.dumps(render_json(result), indent=2))
+        else:
+            print(render_text(result))
+        wrote_stdout = True
+
+        for w in getattr(result, "warnings", []):
+            print(f"warning: {w}", file=sys.stderr)
+
+        if finalize is not None:
+            return finalize(result)
+        return EXIT_OK
     except PplxError as e:
+        # After the success document is out (a finalize failure), report on
+        # stderr only.
+        if wrote_stdout:
+            print(f"pplx {name}: {e}", file=sys.stderr)
+            return exit_code(e)
         return _emit_error(name, e, args)
-
-    if getattr(args, "json", False):
-        print(json.dumps(render_json(result), indent=2))
-    else:
-        print(render_text(result))
-
-    for w in getattr(result, "warnings", []):
-        print(f"warning: {w}", file=sys.stderr)
-
-    if finalize is not None:
-        return finalize(result)
-    return EXIT_OK
+    except Exception as e:
+        # A bug, not an expected failure: keep the traceback for the report,
+        # but still honor the --json contract of one parseable document.
+        traceback.print_exc()
+        print(f"pplx {name}: internal error: {type(e).__name__}: {e}", file=sys.stderr)
+        if wrote_stdout:
+            return EXIT_GENERIC
+        return _emit_error_envelope(
+            name, "InternalError", f"{type(e).__name__}: {e}", EXIT_GENERIC, args
+        )

@@ -19,12 +19,13 @@ from .auth import (
     resolve_profile,
     save_cookies,
 )
+from .cli_types import PplxArgumentParser
 from .errors import PplxError, exit_code
 from .wire import Client
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+def build_parser() -> PplxArgumentParser:
+    parser = PplxArgumentParser(
         prog="pplx auth",
         description="Manage Perplexity web-session cookies.",
     )

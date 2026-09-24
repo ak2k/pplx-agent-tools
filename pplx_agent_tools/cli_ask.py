@@ -7,12 +7,12 @@ incognito; supports the --timeout -> partial (exit 6) contract.
 
 from __future__ import annotations
 
-import argparse
 import os
 import sys
 from collections.abc import Sequence
 
 from .cli_runner import resolve_model, resolve_timeout, run_verb
+from .cli_types import PplxArgumentParser, duration
 from .errors import EXIT_OK, EXIT_PARTIAL
 from .render import render_ask_json, render_ask_text
 from .verbs._ask_common import COPILOT_STALL_SECONDS
@@ -25,8 +25,8 @@ from .verbs.ask import DEFAULT_MODEL, AskResult, ask
 _DEFAULT_TIMEOUT_SECONDS = 540.0
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+def build_parser() -> PplxArgumentParser:
+    parser = PplxArgumentParser(
         prog="pplx ask",
         description="Ask Perplexity a question and get a synthesized, cited answer.",
     )
@@ -52,7 +52,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--timeout",
-        type=float,
+        type=duration,
         default=None,
         help=(
             "overall wall-clock deadline (seconds). On deadline trip, any partial "
@@ -62,7 +62,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--stall-timeout",
-        type=float,
+        type=duration,
         default=None,
         help=(
             "cut the stream after this many seconds without new content (server "

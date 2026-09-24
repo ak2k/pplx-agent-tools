@@ -8,12 +8,12 @@ same --timeout / --stall-timeout → partial-result (exit 6) contract as
 
 from __future__ import annotations
 
-import argparse
 import os
 import sys
 from collections.abc import Sequence
 
 from .cli_runner import resolve_timeout, run_verb
+from .cli_types import PplxArgumentParser, duration
 from .errors import EXIT_OK, EXIT_PARTIAL
 from .render import render_research_json, render_research_text
 from .verbs._ask_common import DEFAULT_STALL_SECONDS
@@ -25,8 +25,8 @@ from .verbs.research import DEFAULT_MODE, ResearchResult, research
 _DEFAULT_TIMEOUT_SECONDS = 3600.0
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+def build_parser() -> PplxArgumentParser:
+    parser = PplxArgumentParser(
         prog="pplx research",
         description="Run Perplexity deep research (multi-step, cited) on a query.",
     )
@@ -75,7 +75,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--timeout",
-        type=float,
+        type=duration,
         default=None,
         help=(
             "overall wall-clock deadline (seconds). On deadline trip, any "
@@ -86,7 +86,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--stall-timeout",
-        type=float,
+        type=duration,
         default=None,
         help=(
             "cut the stream after this many seconds without new content (server "

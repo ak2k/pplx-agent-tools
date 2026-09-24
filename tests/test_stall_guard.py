@@ -728,11 +728,21 @@ def test_stall_timeout_resolution(
 
 
 def test_stall_timeout_ignored_in_plain_fetch(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Plain mode goes through fetch_plain, which has no stream bounds to pass.
     monkeypatch.setenv("PPLX_STALL_TIMEOUT", "30")
-    stall = _captured_stall(
-        monkeypatch, cli_fetch, "fetch", ["https://example.com", "--stall-timeout", "45"]
-    )
-    assert stall is None
+    seen: list[str] = []
+
+    def _plain(url: str, **_kw: Any) -> FetchResult:
+        seen.append(url)
+        return FetchResult(url=url, title=None, domain="d", content="c", is_extracted=False)
+
+    def _prompt(*_a: Any, **_kw: Any) -> Any:
+        raise AssertionError("plain fetch must not take the --prompt path")
+
+    monkeypatch.setattr(cli_fetch, "fetch_plain", _plain)
+    monkeypatch.setattr(cli_fetch, "fetch", _prompt)
+    assert cli_fetch.main(["https://example.com", "--stall-timeout", "45"]) == 0
+    assert seen == ["https://example.com"]
 
 
 def test_fetch_json_carries_warnings() -> None:

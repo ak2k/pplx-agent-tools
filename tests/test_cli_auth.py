@@ -17,6 +17,7 @@ import pytest
 from pplx_agent_tools import cli_auth
 from pplx_agent_tools.errors import (
     EXIT_AUTH,
+    EXIT_GENERIC,
     EXIT_NETWORK,
     AuthError,
     NetworkError,
@@ -102,10 +103,10 @@ def test_main_dispatches_to_import(
 
 
 def test_main_requires_subcommand(capsys: pytest.CaptureFixture) -> None:
-    # argparse exits with code 2 (SystemExit) when a required subcommand is missing
+    # A usage error exits EXIT_GENERIC, not argparse's 2 (which is EXIT_AUTH)
     with pytest.raises(SystemExit) as ei:
         cli_auth.main([])
-    assert ei.value.code == 2
+    assert ei.value.code == EXIT_GENERIC
 
 
 # ---------- check ----------
@@ -275,7 +276,7 @@ def test_import_requires_browser_flag() -> None:
     # argparse enforces required=True on --browser
     with pytest.raises(SystemExit) as ei:
         cli_auth.main(["import"])
-    assert ei.value.code == 2
+    assert ei.value.code == EXIT_GENERIC
 
 
 def test_import_rejects_unsupported_browser() -> None:
