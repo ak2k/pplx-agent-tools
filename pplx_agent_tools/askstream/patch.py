@@ -6,13 +6,22 @@ mutated; a charge that would pass a cap ends the call as `CapExceeded` with
 the op not applied. Work units:
 
 - one per pointer segment of each pointer the op uses;
-- one per node visited while measuring a subtree (the old value of a
+- for each node read while measuring a subtree (the old value of a
   non-root `replace` or `remove`, an overwritten object member, a `copy`
   source, a `move` value when the target is the root or an ancestor object
-  member), deep-copying (`copy`), or comparing (`test`, and the
-  changed/noop check on `replace`, which stops at the first difference);
+  member) or comparing (`test`, and the changed/noop check on `replace`,
+  which stops at the first difference): one, plus `len // 64` for its
+  member key and for a string value, `(digits // 64) ** 2` for an int (the
+  decimal conversion is quadratic; digits is an upper bound from the bit
+  length), and 3 for a float. A compared pair is charged by the document
+  side's node. Each node's units are checked against the caps before it is
+  read, so a long string costs nothing until it is paid for;
+- one per node deep-copied (`copy`; strings and keys are shared, not copied);
 - one per array element shifted: an insert at i on length n shifts n - i,
   a removal at i shifts n - i - 1.
+
+A unit is calibrated to at most about 0.43 us of CPU; 64 characters of the
+costliest string to encode (non-BMP, 12 output bytes each) take about 0.2 us.
 
 A root `remove` is rejected, as in RFC 6902 there is nothing left to hold.
 A root `move` or `copy` target replaces the document without a removal.
@@ -56,6 +65,30 @@ _Container: TypeAlias = "dict[str, JsonValue] | list[JsonValue]"
 
 KIB = 1024
 MIB = 1024 * KIB
+
+TEXT_CHUNK = 64
+FLOAT_UNITS = 3
+
+
+def _text_units(s: str) -> int:
+    return len(s) // TEXT_CHUNK
+
+
+def _scalar_units(v: JsonValue) -> int:
+    """Units, beyond the node's one, to read a scalar's JSON text."""
+    if isinstance(v, str):
+        return len(v) // TEXT_CHUNK
+    if isinstance(v, bool) or v is None:
+        return 0
+    if isinstance(v, int):
+        digits = v.bit_length() * 30103 // 100000 + 1
+        return (digits // TEXT_CHUNK) ** 2
+    return FLOAT_UNITS if isinstance(v, float) else 0
+
+
+def node_units(key: str | None, v: JsonValue) -> int:
+    """Work units to read one node (and its member key) in a walk."""
+    return 1 + (0 if key is None else _text_units(key)) + _scalar_units(v)
 
 
 def parse_pointer(raw: object) -> Pointer | None:
@@ -195,10 +228,11 @@ class Budget:
 
 
 class Probe(Protocol):
-    """Test instrumentation: every node visit, every array shift, and the
-    state after every applied op."""
+    """Test instrumentation: every node visit, every key or scalar whose
+    text is read, every array shift, and the state after every applied op."""
 
     def visit(self) -> None: ...
+    def read(self, text: JsonValue) -> None: ...
     def shift(self, n: int) -> None: ...
     def op_done(self, index: int, charge: int, doc: JsonValue, weight: int) -> None: ...
 
@@ -302,84 +336,89 @@ class _Run:
         b.frame_work += n
         b.run_work += n
 
-    def _overrun(self, done: int) -> _Halt:
-        """A bounded walk used all `done` units of room and needs one more."""
+    def _overrun(self, done: int, need: int) -> _Halt:
+        """A bounded walk spent `done` units and its next node, costing
+        `need`, does not fit the room left."""
         self._spend(done)
         b = self.budget
-        if b.frame_work >= b.limits.work_per_frame:
-            return self._cap("work_per_frame", b.limits.work_per_frame, b.frame_work + 1)
-        return self._cap("work_per_run", b.run_work_limit, b.run_work + 1)
+        if b.frame_work + need > b.limits.work_per_frame:
+            return self._cap("work_per_frame", b.limits.work_per_frame, b.frame_work + need)
+        return self._cap("work_per_run", b.run_work_limit, b.run_work + need)
 
     # --- walks (each bounded by the remaining work, each visit recorded) ----
 
-    def _measure(self, v: JsonValue) -> tuple[int, int]:
-        """(nodes, weight) of a subtree, charged one unit per node."""
-        room = self._room()
+    def _read(self, key: str | None, v: JsonValue) -> None:
         probe = self.probe
-        if room < 1:
-            raise self._overrun(0)
         if probe is not None:
             probe.visit()
-        if not _is_container(v):
-            self._spend(1)
-            return 1, scalar_weight(v)
-        nodes, total = 1, 2
-        stack: list[Iterator[tuple[int, JsonValue]]] = [_members(cast("_Container", v))]
+            if key is not None:
+                probe.read(key)
+            if not _is_container(v):
+                probe.read(v)
+
+    def _measure(self, v: JsonValue) -> tuple[int, int]:
+        """(nodes, weight) of a subtree, charged `node_units` per node."""
+        room = self._room()
+        units = nodes = total = 0
+        stack: list[Iterator[tuple[str | None, JsonValue]]] = [iter(((None, v),))]
         while stack:
-            pair = next(stack[-1], None)
-            if pair is None:
+            item = next(stack[-1], None)
+            if item is None:
                 stack.pop()
                 continue
-            if nodes >= room:
-                raise self._overrun(nodes)
+            key, child = item
+            cost = node_units(key, child)
+            if units + cost > room:
+                raise self._overrun(units, cost)
+            units += cost
             nodes += 1
-            if probe is not None:
-                probe.visit()
-            overhead, child = pair
-            total += overhead
+            self._read(key, child)
+            if len(stack) > 1:
+                total += LIST_OVERHEAD if key is None else key_overhead(key)
             if isinstance(child, (dict, list)):
                 total += 2
-                stack.append(_members(child))
+                stack.append(_keyed(child))
             else:
                 total += scalar_weight(child)
-        self._spend(nodes)
+        self._spend(units)
         return nodes, total
 
     def _equal(self, a: JsonValue, b: JsonValue) -> bool:
-        """JSON equality, charged one unit per node pair compared, pre-order,
-        stopping at the first difference."""
+        """JSON equality, pre-order, stopping at the first difference. Each
+        pair is charged `node_units` of its `a` side; a string compare or key
+        lookup costs at most the length of that side's text."""
         room = self._room()
-        probe = self.probe
-        steps = 0
-        stack: list[Iterator[tuple[JsonValue, JsonValue | _Missing]]] = [iter(((a, b),))]
+        units = 0
+        stack: list[Iterator[_Pair]] = [iter(((None, a, b),))]
         while stack:
-            pair = next(stack[-1], None)
-            if pair is None:
+            item = next(stack[-1], None)
+            if item is None:
                 stack.pop()
                 continue
-            if steps >= room:
-                raise self._overrun(steps)
-            steps += 1
-            if probe is not None:
-                probe.visit()
-            x, y = pair
+            key, x, y = item
+            cost = node_units(key, x)
+            if units + cost > room:
+                raise self._overrun(units, cost)
+            units += cost
+            self._read(key, x)
+            if key is not None:
+                y = cast("dict[str, JsonValue]", y).get(key, _MISSING)
             if isinstance(y, _Missing):
-                self._spend(steps)
-                return False
-            if isinstance(x, dict):
-                if not isinstance(y, dict) or len(x) != len(y):
-                    self._spend(steps)
-                    return False
-                stack.append(_dict_pairs(x, y))
+                same = False
+            elif isinstance(x, dict):
+                same = isinstance(y, dict) and len(x) == len(y)
+                if same:
+                    stack.append(_dict_pairs(x, cast("dict[str, JsonValue]", y)))
             elif isinstance(x, list):
-                if not isinstance(y, list) or len(x) != len(y):
-                    self._spend(steps)
-                    return False
-                stack.append(zip(x, y, strict=False))
-            elif _is_container(y) or not _json_scalar_eq(x, y):
-                self._spend(steps)
+                same = isinstance(y, list) and len(x) == len(y)
+                if same:
+                    stack.append(_list_pairs(x, cast("list[JsonValue]", y)))
+            else:
+                same = not _is_container(y) and _json_scalar_eq(x, y)
+            if not same:
+                self._spend(units)
                 return False
-        self._spend(steps)
+        self._spend(units)
         return True
 
     def _deep_copy(self, v: JsonValue) -> JsonValue:
@@ -640,23 +679,24 @@ class _Missing:
 _MISSING = _Missing()
 
 
-def _members(c: _Container) -> Iterator[tuple[int, JsonValue]]:
-    if isinstance(c, dict):
-        return ((key_overhead(k), v) for k, v in c.items())
-    return ((LIST_OVERHEAD, v) for v in c)
-
-
 def _keyed(c: _Container) -> Iterator[tuple[str | None, JsonValue]]:
     if isinstance(c, dict):
         return iter(c.items())
     return ((None, v) for v in c)
 
 
-def _dict_pairs(
-    x: dict[str, JsonValue], y: dict[str, JsonValue]
-) -> Iterator[tuple[JsonValue, JsonValue | _Missing]]:
+# (key of x's member or None, x's node, y's node). For a member, the third
+# item is y's object: the key is looked up only after the pair is charged.
+_Pair: TypeAlias = "tuple[str | None, JsonValue, JsonValue | _Missing]"
+
+
+def _dict_pairs(x: dict[str, JsonValue], y: dict[str, JsonValue]) -> Iterator[_Pair]:
     # Equal sizes were checked; a key of x absent from y is a difference.
-    return ((v, y.get(k, _MISSING)) for k, v in x.items())
+    return ((k, v, y) for k, v in x.items())
+
+
+def _list_pairs(x: list[JsonValue], y: list[JsonValue]) -> Iterator[_Pair]:
+    return ((None, u, w) for u, w in zip(x, y, strict=True))
 
 
 def apply_ops(

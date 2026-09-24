@@ -58,6 +58,28 @@ def ref_weight(v: Any) -> int:
     return len(json.dumps(v))
 
 
+def ref_extra(v: Any) -> int:
+    """Units beyond one to read a key's or scalar's text (§2.4.1)."""
+    if isinstance(v, str):
+        return len(v) // 64
+    if isinstance(v, bool) or v is None:
+        return 0
+    if isinstance(v, int):
+        return ((v.bit_length() * 30103 // 100000 + 1) // 64) ** 2
+    return 3 if isinstance(v, float) else 0
+
+
+def ref_units(v: Any, key: str | None = None) -> int:
+    """Units to measure a subtree: per node one, plus its key's and its
+    scalar text's extra."""
+    own = 1 + (0 if key is None else ref_extra(key))
+    if isinstance(v, dict):
+        return own + sum(ref_units(c, k) for k, c in cast("dict[str, Any]", v).items())
+    if isinstance(v, list):
+        return own + sum(ref_units(c) for c in cast("list[Any]", v))
+    return own + ref_extra(v)
+
+
 def ref_nodes(v: Any) -> int:
     if isinstance(v, dict):
         return 1 + sum(ref_nodes(c) for c in cast("dict[str, Any]", v).values())
@@ -74,18 +96,20 @@ def _scalar_eq(a: Any, b: Any) -> bool:
     return bool(a == b)
 
 
-def ref_compare(a: Any, b: Any) -> tuple[int, bool]:  # noqa: PLR0911
-    """(pairs visited in pre-order up to the first difference, equal)."""
+def ref_compare(a: Any, b: Any, key: str | None = None) -> tuple[int, bool]:  # noqa: PLR0911
+    """(units of the pairs visited in pre-order up to the first difference,
+    equal). A pair costs its `a` node's units, key included."""
+    own = 1 + (0 if key is None else ref_extra(key))
     if isinstance(a, dict):
         a_d = cast("dict[str, Any]", a)
         if not isinstance(b, dict) or len(a_d) != len(cast("dict[str, Any]", b)):
-            return 1, False
+            return own, False
         b_d = cast("dict[str, Any]", b)
-        steps = 1
+        steps = own
         for k, v in a_d.items():
             if k not in b_d:
-                return steps + 1, False
-            s, eq = ref_compare(v, b_d[k])
+                return steps + 1 + ref_extra(k) + ref_extra(v), False
+            s, eq = ref_compare(v, b_d[k], k)
             steps += s
             if not eq:
                 return steps, False
@@ -93,17 +117,18 @@ def ref_compare(a: Any, b: Any) -> tuple[int, bool]:  # noqa: PLR0911
     if isinstance(a, list):
         a_l = cast("list[Any]", a)
         if not isinstance(b, list) or len(a_l) != len(cast("list[Any]", b)):
-            return 1, False
-        steps = 1
+            return own, False
+        steps = own
         for x, y in zip(a_l, cast("list[Any]", b), strict=True):
             s, eq = ref_compare(x, y)
             steps += s
             if not eq:
                 return steps, False
         return steps, True
+    own += ref_extra(a)
     if isinstance(b, (dict, list)):
-        return 1, False
-    return 1, _scalar_eq(a, b)
+        return own, False
+    return own, _scalar_eq(a, b)
 
 
 def _slot(doc: Any, path: tuple[str, ...]) -> tuple[Any, str]:
@@ -120,7 +145,7 @@ def _put_cost(doc: Any, path: tuple[str, ...]) -> int:
     parent, seg = _slot(doc, path)
     if isinstance(parent, dict):
         p = cast("dict[str, Any]", parent)
-        return ref_nodes(p[seg]) if seg in p else 0
+        return ref_units(p[seg]) if seg in p else 0
     p_l = cast("list[Any]", parent)
     return len(p_l) - _index(p_l, seg)
 
@@ -132,25 +157,26 @@ def ref_charge(doc: Any, op: PatchOp) -> int:  # noqa: PLR0911
     if isinstance(op, Remove):
         parent, seg = _slot(doc, op.path)
         if isinstance(parent, dict):
-            return len(op.path) + ref_nodes(parent[seg])
+            return len(op.path) + ref_units(parent[seg])
         p_l = cast("list[Any]", parent)
         i = int(seg)
-        return len(op.path) + ref_nodes(p_l[i]) + len(p_l) - i - 1
+        return len(op.path) + ref_units(p_l[i]) + len(p_l) - i - 1
     if isinstance(op, Replace):
         old = get(doc, op.path)
-        measured = ref_nodes(old) if op.path else 0
+        measured = ref_units(old) if op.path else 0
         return len(op.path) + measured + ref_compare(old, op.value)[0]
     if isinstance(op, _TestOp):
         return len(op.path) + ref_compare(get(doc, op.path), op.value)[0]
     if isinstance(op, Copy):
         base = len(op.from_) + len(op.path)
-        return base + 2 * ref_nodes(get(doc, op.from_)) + _put_cost(doc, op.path)
+        src = get(doc, op.from_)
+        return base + ref_units(src) + ref_nodes(src) + _put_cost(doc, op.path)
     base = len(op.from_) + len(op.path)
     if not op.from_ or op.path == op.from_:
         return base
     value = get(doc, op.from_)
     if not op.path:
-        return base + ref_nodes(value)
+        return base + ref_units(value)
     post = copy.deepcopy(doc)
     fparent, fseg = _slot(post, op.from_)
     shift = 0
@@ -165,12 +191,11 @@ def ref_charge(doc: Any, op: PatchOp) -> int:  # noqa: PLR0911
         t_d = cast("dict[str, Any]", tparent)
         if tseg not in t_d:
             return base + shift
-        target = ref_nodes(t_d[tseg])
         if op.from_[: len(op.path)] == op.path:
             # Measured before the removal (so it still holds the value), then
             # the value itself.
-            target += 2 * ref_nodes(value)
-        return base + shift + target
+            return base + shift + ref_units(get(doc, op.path)) + ref_units(value)
+        return base + shift + ref_units(t_d[tseg])
     t_l = cast("list[Any]", tparent)
     return base + shift + len(t_l) - _index(t_l, tseg)
 
@@ -193,6 +218,9 @@ class Recorder:
 
     def visit(self) -> None:
         self.steps += 1
+
+    def read(self, text: JsonValue) -> None:
+        self.steps += ref_extra(text)
 
     def shift(self, n: int) -> None:
         self.steps += n
@@ -230,9 +258,15 @@ def _parse_all(raws: list[Any]) -> list[PatchOp]:
 
 # --- the property -----------------------------------------------------------------------------------------
 
+# Long keys, long strings, many-digit ints and floats: text whose reading is
+# charged by its length.
+_LONG_KEYS = KEYS | st.text("ab", min_size=64, max_size=150)
 _BIG = st.recursive(
-    SCALARS | st.text(max_size=3000),
-    lambda inner: st.lists(inner, max_size=6) | st.dictionaries(KEYS, inner, max_size=6),
+    SCALARS
+    | st.text(max_size=3000)
+    | st.integers(10**60, 10**200)
+    | st.floats(allow_nan=False, allow_infinity=False),
+    lambda inner: st.lists(inner, max_size=6) | st.dictionaries(_LONG_KEYS, inner, max_size=6),
     max_leaves=40,
 )
 
@@ -312,6 +346,8 @@ def test_weight_and_work_bounds(data: st.DataObject) -> None:
         rec.stopped()
         if isinstance(result, CapExceeded):
             return
+        # The weight after the ops that applied before the rejected one.
+        assert result.weight == ref_weight(rec.root)
         # A rejected field is dropped; a later snapshot resyncs it.
         budget.total_weight -= result.weight
         fields[k], weights[k] = {}, 2
@@ -401,6 +437,35 @@ def test_small_copy_frames_stop_at_work_per_run() -> None:
         assert result.weight == w  # weight stays flat; only work accrues
         assert budget.frame_work < SMALL.work_per_frame
     pytest.fail("work_per_run never reached")
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param("\u00e9" * 1_300_000, id="1.3M-char-string"),
+        pytest.param("\U0001f600" * 650_000, id="650k-non-bmp-string"),
+        pytest.param([int("9" * 4300)] * 1900, id="1900-ints-of-4300-digits"),
+        pytest.param({f"{i:06d}" + "k" * 4000: 0 for i in range(1000)}, id="1000-4k-char-keys"),
+    ],
+)
+def test_copies_of_long_text_stop_at_work_cap_in_bounded_time(value: JsonValue) -> None:
+    """Measuring a copy source reads all its text; that is charged by length,
+    so a frame of copies stops at the work cap within the CPU the cap buys."""
+    doc: JsonValue = {"s": value}
+    budget = Budget(Limits())
+    budget.total_weight = w = weight(doc)
+    ops = _parse_all([{"op": "copy", "from": "/s", "path": "/t"}] * 4096)
+    first = ref_charge(doc, ops[0])
+    later = first + ref_units(value)  # every later copy also measures the old /t
+    expected = 0 if first > MIB else 1 + (MIB - first) // later
+    with untraced():
+        start = time.process_time()
+        result = apply_ops(doc, w, ops, budget)
+        elapsed = time.process_time() - start
+    assert isinstance(result, CapExceeded)
+    assert (result.cap, result.index) == ("work_per_frame", expected)
+    assert budget.frame_work <= MIB
+    assert elapsed <= 1.0, elapsed
 
 
 def test_end_appends_cost_zero_shifts() -> None:
