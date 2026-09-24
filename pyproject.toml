@@ -40,6 +40,7 @@ dev = [
     "ruff>=0.6",
     "vulture>=2.10",
     "basedpyright>=1.39",
+    "jsonpatch>=1.33",
 ]
 
 [project.scripts]
@@ -119,6 +120,11 @@ ignore_names = [
     # Dataclass fields and verb-public APIs
     "warnings",
     "media_items",
+    # Parameters fixed by the protocol or dunder they implement
+    "format_spec",
+    "memo",
+    "protocol",
+    "charge",
 ]
 
 [tool.coverage.run]
@@ -162,6 +168,7 @@ strict = [
     "pplx_agent_tools/verbs/search.py",
     "pplx_agent_tools/verbs/quota.py",
     "pplx_agent_tools/verbs/models.py",
+    "pplx_agent_tools/askstream",
 ]
 # Third-party deps without stubs: curl_cffi (Rust bindings), rookiepy (Rust),
 # trafilatura (older lib, no inline annotations). Silence stub-missing noise
