@@ -19,7 +19,7 @@ import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from ..errors import (
@@ -44,6 +44,11 @@ DEFAULT_STALL_SECONDS = 240.0
 # go minutes without changing `blocks` before its answer arrives all at once,
 # and a cut before that returns nothing.
 COPILOT_STALL_SECONDS = 480.0
+# How long ask waits for the COMPLETED frame once `text_completed` says the
+# answer is whole. That frame arrived 0.2-0.34 s after `text_completed` in live
+# captures; 15 s is ~50x that, and heartbeats (~15 s apart) are what trigger
+# the check, so the worst-case wait is about 30 s instead of the stall window.
+COPILOT_SETTLE_SECONDS = 15.0
 
 
 @dataclass
@@ -76,7 +81,7 @@ def cutoff_warnings(state: AskStreamState) -> list[str]:
     return [f"stream cut before COMPLETED, returning partial content: {state.cutoff}"]
 
 
-def cutoff_cause(state: AskStreamState) -> str | None:
+def cutoff_cause(state: AskStreamState) -> Literal["stall", "deadline"] | None:
     """Which bound cut the stream: "stall", "deadline", or None when neither did
     (a completed stream, or one the server closed early).
 
@@ -176,32 +181,70 @@ def extract_web_results(event: dict[str, Any]) -> list[Any]:
 
 
 def extract_chunks_from_event(event: dict[str, Any]) -> list[str]:
-    """Pure: pull the streamed markdown chunks added by one copilot SSE event.
+    """Pure: the streamed markdown chunks added by one copilot SSE event, in
+    order, for a caller that stops at `text_completed` and appends. Never raises."""
+    return [c for _, run in extract_chunk_patches(event) for c in run]
 
-    Total function: never raises, returns `[]` for any event without the expected
-    `ask_text` markdown_block structure. We only consume `intended_usage ==
-    "ask_text"` blocks, not the parallel `ask_text_0_markdown` blocks the server
-    also emits — they carry the same chunks and reading both double-counts.
-    """
+
+def extract_chunk_patches(event: dict[str, Any]) -> list[tuple[int | None, list[str]]]:
+    """Pure: the `ask_text` chunks one copilot event carries, each run paired
+    with its `chunk_starting_offset` (a chunk index, None when absent).
+
+    The terminal COMPLETED frame repaints every chunk from offset 0, so a
+    caller that reads past `text_completed` must place chunks by offset rather
+    than append them. Only `intended_usage == "ask_text"` blocks are read, not
+    the parallel `ask_text_0_markdown` blocks: they carry the same chunks and
+    reading both double-counts. Never raises."""
     data = event.get("data")
     if not isinstance(data, dict):
         return []
     blocks = data.get("blocks")
     if not isinstance(blocks, list):
         return []
-    out: list[str] = []
+    out: list[tuple[int | None, list[str]]] = []
     for block in blocks:
-        if not isinstance(block, dict):
-            continue
-        if block.get("intended_usage") != "ask_text":
+        if not isinstance(block, dict) or block.get("intended_usage") != "ask_text":
             continue
         mb = block.get("markdown_block")
         if not isinstance(mb, dict):
             continue
-        chunks = mb.get("chunks") or []
-        if isinstance(chunks, list):
-            out.extend(str(c) for c in chunks)
+        chunks = mb.get("chunks")
+        if not isinstance(chunks, list):
+            continue
+        offset = mb.get("chunk_starting_offset")
+        valid = isinstance(offset, int) and not isinstance(offset, bool) and offset >= 0
+        out.append((offset if valid else None, [str(c) for c in chunks]))
     return out
+
+
+def apply_chunk_patch(
+    chunks: dict[int, str], offset: int | None, run: list[str], *, terminal: bool
+) -> None:
+    """Place one run from `extract_chunk_patches` into `chunks` (chunk index -> text).
+
+    Keyed by index so a run that lands past a gap keeps its place. The terminal
+    COMPLETED frame resends the answer from its offset to the end, so on that
+    frame any chunk past the run is stale; mid-stream runs never truncate, since
+    nothing says they carry the tail. A run with no offset appends, except on the
+    terminal frame, which repaints from 0 in every captured stream."""
+    if offset is None:
+        offset = 0 if terminal else max(chunks, default=-1) + 1
+    for i, text in enumerate(run):
+        chunks[offset + i] = text
+    if terminal and run:
+        for stale in [i for i in chunks if i >= offset + len(run)]:
+            del chunks[stale]
+
+
+def status_completed(event: dict[str, Any]) -> bool:
+    """Completion predicate for callers that need the terminal COMPLETED frame.
+
+    The shared default also accepts `text_completed`, which Perplexity sets a
+    few frames BEFORE that frame. Research needs it because it keeps whole
+    snapshots; ask needs it because only that frame carries the web_results
+    list in the order the answer's [n] citations index."""
+    data = event.get("data")
+    return isinstance(data, dict) and data.get("status") == "COMPLETED"
 
 
 def event_marks_completed(event: dict[str, Any]) -> bool:
@@ -249,6 +292,7 @@ def run_ask_stream(
     label: str,
     is_complete: Callable[[dict[str, Any]], bool] = event_marks_completed,
     is_progress: Callable[[dict[str, Any]], bool] | None = None,
+    settle_seconds: float | None = None,
 ) -> None:
     """Drive the SSE call with retry/deadline/stall guard, filling in `state`.
 
@@ -268,6 +312,12 @@ def run_ask_stream(
 
     `is_progress` decides which events reset the stall clock (see
     `Client.sse_post`); None counts any event carrying data.
+
+    `settle_seconds`, for a caller that reads past `text_completed`, shrinks
+    the stall window to that many seconds, counted from the first
+    `text_completed` frame: the answer is whole by then and only the terminal
+    frame is outstanding. The
+    resulting stall cutoff lands in `state.cutoff` like any other.
     """
     overall_deadline = (time.monotonic() + timeout) if timeout else None
 
@@ -301,6 +351,7 @@ def run_ask_stream(
                 on_event=on_event,
                 is_complete=is_complete,
                 is_progress=is_progress,
+                settle_seconds=settle_seconds,
             )
             break
         except StreamStallError as e:
@@ -370,8 +421,30 @@ def _drive_one(
     on_event: Callable[[dict[str, Any]], None],
     is_complete: Callable[[dict[str, Any]], bool],
     is_progress: Callable[[dict[str, Any]], bool] | None,
+    settle_seconds: float | None,
 ) -> None:
     event_count = 0
+    window = stall_seconds
+    settling = False
+    # Passed only when used, so `sse_post` overrides without the parameter keep working.
+    extra: dict[str, Any] = {}
+    if settle_seconds is not None:
+        extra["stall_window"] = lambda: window
+        new_content = is_progress
+
+        # The first `text_completed` frame counts as progress even when its
+        # blocks repeat earlier ones, so the settle window runs from that frame
+        # rather than from the last new block.
+        def settle_or_progress(event: dict[str, Any]) -> bool:
+            nonlocal window, settling
+            progressed = new_content is None or new_content(event)
+            if settling or not event_marks_completed(event):
+                return progressed
+            settling = True
+            window = settle_seconds if window is None else min(window, settle_seconds)
+            return True
+
+        is_progress = settle_or_progress
     try:
         for event in client.sse_post(
             endpoint,
@@ -379,6 +452,7 @@ def _drive_one(
             max_total_seconds=remaining_seconds,
             stall_seconds=stall_seconds,
             is_progress=is_progress,
+            **extra,
         ):
             event_count += 1
             if progress and event_count % _PROGRESS_EVENT_STRIDE == 0:

@@ -1350,6 +1350,7 @@ dependencies = [
     { name = "rookiepy" },
     { name = "sqlite-vec" },
     { name = "trafilatura" },
+    { name = "typing-extensions" },
 ]
 
 [package.optional-dependencies]
@@ -1375,6 +1376,7 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6" },
     { name = "sqlite-vec", specifier = ">=0.1.6" },
     { name = "trafilatura", specifier = ">=1.12" },
+    { name = "typing-extensions", specifier = ">=4.1" },
     { name = "vulture", marker = "extra == 'dev'", specifier = ">=2.10" },
 ]
 provides-extras = ["dev"]

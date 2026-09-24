@@ -20,8 +20,18 @@ from __future__ import annotations
 
 from typing import Any
 
+from typing_extensions import assert_never
+
 from . import __version__
-from .verbs.ask import AskResult
+from .grounding import (
+    Grounded,
+    Grounding,
+    Unchecked,
+    UncheckedReason,
+    Ungrounded,
+    UngroundedReason,
+)
+from .verbs.ask import AskCompletion, AskResult, Cut, Finished, FinishedWithoutSources
 from .verbs.fetch import FetchResult
 from .verbs.models import ModelsResult
 from .verbs.quota import QuotaItem, QuotaResult
@@ -298,10 +308,50 @@ def render_models_json(result: ModelsResult) -> dict[str, Any]:
     )
 
 
+_MAX_LISTED_TERMS = 8
+
+
+def _ungrounded_reason_text(g: Ungrounded, reason: UngroundedReason) -> str:
+    match reason:
+        case "no_sources":
+            return "no sources"
+        case "site_roots":
+            return "every cited URL is a site root"
+        case "low_support":
+            checked = len(g.checked_terms)
+            supported = checked - len(g.ungrounded_terms)
+            return (
+                f"{supported} of {checked} figures/names appear in a cited source's "
+                "title or snippet"
+            )
+        case _:
+            assert_never(reason)
+
+
+def _unchecked_reason_text(reason: UncheckedReason) -> str:
+    match reason:
+        case "disabled":
+            return "check disabled"
+        case "no_checkable_terms":
+            return "no checkable figures or names"
+        case _:
+            assert_never(reason)
+
+
+def grounding_summary(g: Ungrounded) -> str:
+    """Why an answer is ungrounded, shared by the stdout marker and the
+    stderr warning so the two cannot drift."""
+    terms = g.ungrounded_terms[:_MAX_LISTED_TERMS]
+    more = len(g.ungrounded_terms) - len(terms)
+    listed = ", ".join(terms) + (f" (+{more} more)" if more > 0 else "")
+    reasons = "; ".join(_ungrounded_reason_text(g, r) for r in g.reasons)
+    return f"{reasons}; unsupported: {listed}" if listed else reasons
+
+
 def render_ask_text(result: AskResult) -> str:
     """The synthesized answer (with inline [n] citations) then the numbered
     sources. The incomplete marker is appended (and `cli_ask` also warns on
-    stderr + exits 6)."""
+    stderr + exits 6), as is a `grounded: no` marker for an ungrounded answer."""
     parts: list[str] = [result.answer if result.answer else "(no answer)"]
     if result.sources:
         parts.append("")
@@ -310,10 +360,70 @@ def render_ask_text(result: AskResult) -> str:
             parts.append(f"[{i}] {s.title or s.url}")
             if s.title:
                 parts.append(f"    {s.url}")
-    if not result.stream_complete:
-        parts.append("")
-        parts.append(_incomplete_marker(result.cut_by))
+    g = result.grounding
+    match g:
+        case Ungrounded():
+            parts.append("")
+            parts.append(f"grounded: no ({grounding_summary(g)})")
+        case Grounded() | Unchecked():
+            pass
+        case _:
+            assert_never(g)
+    c = result.completion
+    match c:
+        case Cut():
+            parts.append("")
+            parts.append(_incomplete_marker(_cut_by(c)))
+        case Finished() | FinishedWithoutSources():
+            pass
+        case _:
+            assert_never(c)
     return "\n".join(parts)
+
+
+def _cut_by(c: Cut) -> str | None:
+    """The bound that cut the stream; None for a server cut, as `fetch` and
+    `research` report it."""
+    return None if c.by == "server" else c.by
+
+
+def _completion_json(c: AskCompletion) -> dict[str, Any]:
+    match c:
+        case Finished():
+            return {"stream_complete": True, "cut_by": None, "sources_complete": True}
+        case FinishedWithoutSources():
+            return {"stream_complete": True, "cut_by": None, "sources_complete": False}
+        case Cut():
+            return {"stream_complete": False, "cut_by": _cut_by(c), "sources_complete": False}
+        case _:
+            assert_never(c)
+
+
+def _grounding_json(g: Grounding) -> dict[str, Any]:
+    match g:
+        case Grounded():
+            return {
+                "grounded": True,
+                "grounding_reasons": [],
+                "ungrounded_terms": list(g.ungrounded_terms),
+                "checked_terms": len(g.checked_terms),
+            }
+        case Ungrounded():
+            return {
+                "grounded": False,
+                "grounding_reasons": [_ungrounded_reason_text(g, r) for r in g.reasons],
+                "ungrounded_terms": list(g.ungrounded_terms),
+                "checked_terms": len(g.checked_terms),
+            }
+        case Unchecked():
+            return {
+                "grounded": None,
+                "grounding_reasons": [_unchecked_reason_text(g.reason)],
+                "ungrounded_terms": [],
+                "checked_terms": 0,
+            }
+        case _:
+            assert_never(g)
 
 
 def render_ask_json(result: AskResult) -> dict[str, Any]:
@@ -331,8 +441,8 @@ def render_ask_json(result: AskResult) -> dict[str, Any]:
                 }
                 for s in result.sources
             ],
-            "stream_complete": result.stream_complete,
-            "cut_by": result.cut_by,
+            **_completion_json(result.completion),
+            **_grounding_json(result.grounding),
         },
         warnings=result.warnings,
     )

@@ -29,6 +29,7 @@ dependencies = [
     "trafilatura>=1.12",
     "fastembed>=0.4",
     "sqlite-vec>=0.1.6",
+    "typing_extensions>=4.1",
 ]
 
 [project.optional-dependencies]

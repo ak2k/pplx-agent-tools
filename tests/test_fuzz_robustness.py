@@ -40,6 +40,7 @@ from pplx_agent_tools.render import (
 )
 from pplx_agent_tools.verbs._ask_common import (
     event_marks_completed,
+    extract_chunk_patches,
     extract_chunks_from_event,
 )
 from pplx_agent_tools.verbs.fetch import _fetch_with_prompt
@@ -185,6 +186,43 @@ def test_extract_chunks_from_event_never_raises(event: dict[str, Any]) -> None:
     assert isinstance(chunks, list)
     for c in chunks:
         assert isinstance(c, str)
+
+
+_offset = st.one_of(st.none(), st.integers(-5, 50), st.booleans(), st.floats(), st.text(max_size=3))
+_patch_event = st.fixed_dictionaries(
+    {
+        "data": st.fixed_dictionaries(
+            {
+                "blocks": st.lists(
+                    st.fixed_dictionaries(
+                        {
+                            "intended_usage": st.sampled_from(["ask_text", "web_results"]),
+                            "markdown_block": st.one_of(
+                                _json_value,
+                                st.fixed_dictionaries(
+                                    {
+                                        "chunks": st.lists(_json_leaf),
+                                        "chunk_starting_offset": _offset,
+                                    }
+                                ),
+                            ),
+                        }
+                    ),
+                    max_size=3,
+                )
+            }
+        )
+    }
+)
+
+
+@given(st.one_of(_json_dict, _patch_event))
+def test_extract_chunk_patches_never_raises(event: dict[str, Any]) -> None:
+    """Total, and an offset is either a non-negative int or None: a bool, a
+    negative or a non-int offset would misplace chunks in the answer."""
+    for offset, run in extract_chunk_patches(event):
+        assert offset is None or (type(offset) is int and offset >= 0)
+        assert all(isinstance(c, str) for c in run)
 
 
 @given(_json_dict)
