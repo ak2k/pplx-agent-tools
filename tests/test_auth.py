@@ -4,15 +4,20 @@ from __future__ import annotations
 
 import json
 import stat
+import sys
+import types
 from pathlib import Path
 
 import pytest
+from hypothesis import given
+from hypothesis import strategies as st
 
 from pplx_agent_tools.auth import (
     DEFAULT_PROFILE,
     SUPPORTED_BROWSERS,
     _normalize,
     default_cookies_path,
+    import_from_browser,
     load_cookies,
     resolve_profile,
     save_cookies,
@@ -58,9 +63,8 @@ def test_normalize_flat_dict() -> None:
     assert out == {"a": "1", "b": "2"}
 
 
-def test_normalize_flat_dict_coerces_values_to_str() -> None:
-    out = _normalize({"x": 42}, source="t")
-    assert out == {"x": "42"}
+def test_normalize_allows_empty_value() -> None:
+    assert _normalize({"x": ""}, source="t") == {"x": ""}
 
 
 def test_normalize_cookie_editor_array() -> None:
@@ -271,3 +275,300 @@ def test_save_cookies_then_load_roundtrip(monkeypatch: pytest.MonkeyPatch, tmp_p
     monkeypatch.delenv("PPLX_COOKIES", raising=False)
     save_cookies({"session-token": "abc123", "csrf": "xyz"})
     assert load_cookies() == {"session-token": "abc123", "csrf": "xyz"}
+
+
+# ---------- cookie-pair boundary (property) ----------
+
+# Text biased toward the characters that split or inject a Cookie header.
+# One sample from every class the gate refuses, plus allowed near-misses
+# (space, non-ASCII, C1 control) so acceptance is exercised too.
+_hostile_text = st.text(
+    alphabet=st.sampled_from(
+        [
+            "a",
+            "=",
+            ";",
+            "\r",
+            "\n",
+            "\x00",
+            "\x01",
+            "\t",
+            "\x1f",
+            "\x7f",
+            "\ud800",
+            "\udfff",
+            " ",
+            "é",
+            "\x85",
+            '"',
+            ",",
+        ]
+    )
+)
+_safe_text = st.text(alphabet=st.sampled_from(["a", "Z", "0", " ", "é", "\x85", '"', ",", "-"]))
+_bad_chars = ["=", ";", "\r", "\n", "\x00", "\x01", "\t", "\x1f", "\x7f", "\ud800", "\udfff"]
+# Clean text with exactly one bad character, so each class is tested alone
+# instead of hiding behind another one the gate already rejects.
+_one_bad = st.builds(lambda a, c, b: a + c + b, _safe_text, st.sampled_from(_bad_chars), _safe_text)
+_json_scalar = st.one_of(
+    _one_bad,
+    st.none(),
+    st.booleans(),
+    st.integers(),
+    st.floats(allow_nan=False),
+    st.text(max_size=10),
+    _hostile_text,
+)
+_json_any = st.recursive(
+    _json_scalar,
+    lambda kids: st.one_of(
+        st.lists(kids, max_size=3), st.dictionaries(st.text(max_size=5), kids, max_size=3)
+    ),
+    max_leaves=8,
+)
+_cookie_key = st.one_of(st.text(max_size=8), _hostile_text, _one_bad)
+_dict_shape = st.dictionaries(_cookie_key, _json_any, max_size=5)
+_entry_shape = st.one_of(
+    _json_any,
+    st.fixed_dictionaries({"name": st.one_of(_cookie_key, _json_any), "value": _json_any}),
+)
+_list_shape = st.lists(_entry_shape, max_size=5)
+
+
+def _sendable(s: str) -> bool:
+    # Stated independently of auth._cookie_text_ok so the test pins the rule.
+    return not any(ord(c) < 0x20 or c in {"\x7f", ";"} or 0xD800 <= ord(c) <= 0xDFFF for c in s)
+
+
+def _assert_clean(out: dict[str, str]) -> None:
+    assert out
+    for name, value in out.items():
+        assert type(name) is str and type(value) is str
+        assert name and "=" not in name
+        assert _sendable(name) and _sendable(value)
+
+
+@given(st.one_of(_dict_shape, _list_shape, _json_any))
+def test_normalize_yields_clean_pairs_or_auth_error(payload: object) -> None:
+    try:
+        out = _normalize(payload, source="prop")
+    except AuthError:
+        return
+    _assert_clean(out)
+
+
+@given(st.one_of(_safe_text, _one_bad), st.one_of(_safe_text, _one_bad))
+def test_single_pair_accepted_iff_sendable(name: str, value: str) -> None:
+    expect_ok = bool(name) and "=" not in name and _sendable(name) and _sendable(value)
+    try:
+        out = _normalize({name: value}, source="prop")
+    except AuthError:
+        assert not expect_ok
+        return
+    assert expect_ok
+    assert out == {name: value}
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"a": None},
+        {"a": {"x": 1}},
+        {"a": 1},
+        {"a": "v\r\nX-Injected: 1"},
+        {"a": "v\x00"},
+        {"a": "v\x01"},
+        {"a": "v\tw"},
+        {"a": "v\x7f"},
+        {"a": "\ud800"},
+        {"\udc00": "v"},
+        {"a=b": "v"},
+        {"a\tb": "v"},
+        {"a": "v;b=c"},
+        {"c\r\nX": "v"},
+        {"": "v"},
+        [{"name": "a", "value": None}],
+        [{"name": "a", "value": 1}],
+        [{"name": "a;b", "value": "v"}],
+    ],
+)
+def test_normalize_rejects_non_string_or_header_breaking(payload: object) -> None:
+    with pytest.raises(AuthError):
+        _normalize(payload, source="t")
+
+
+@pytest.mark.parametrize("value", ["", "a b", "é", "\x85", '"x, y"', "x\\y"])
+def test_normalize_accepts_sendable_values(value: str) -> None:
+    assert _normalize({"a": value}, source="t") == {"a": value}
+
+
+def test_normalize_error_omits_cookie_value() -> None:
+    with pytest.raises(AuthError) as ei:
+        _normalize({"a": "secret;x"}, source="t")
+    assert "secret" not in str(ei.value)
+
+
+# ---------- import_from_browser: rows pass the same gate ----------
+
+
+def _fake_rookiepy(monkeypatch: pytest.MonkeyPatch, rows: object) -> None:
+    mod = types.ModuleType("rookiepy")
+    mod.brave = lambda _domains: rows  # pyright: ignore[reportAttributeAccessIssue]
+    monkeypatch.setitem(sys.modules, "rookiepy", mod)
+
+
+def test_import_from_browser_saves_rows(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    _fake_rookiepy(monkeypatch, [{"name": "a", "value": "1", "domain": ".perplexity.ai"}])
+    dest = import_from_browser("brave")
+    assert json.loads(dest.read_text()) == {"a": "1"}
+
+
+def test_import_from_browser_skips_bad_rows_with_warning(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    rows = [
+        {"name": "session", "value": "good"},
+        {"name": "nullish", "value": None},
+        {"name": "crlf", "value": "SECRET1\r\nX: y"},
+        {"name": "tabbed", "value": "SECRET2\tz"},
+        {"name": "surr", "value": "SECRET3\ud800"},
+        {"name": "a;b", "value": "SECRET4"},
+        "not a row",
+    ]
+    _fake_rookiepy(monkeypatch, rows)
+    dest = import_from_browser("brave")
+    assert json.loads(dest.read_text()) == {"session": "good"}
+    err = capsys.readouterr().err
+    assert err.count("warning: skipping") == 6
+    for name in ("nullish", "crlf", "tabbed", "surr"):
+        assert repr(name) in err
+    assert "has no value" in err
+    assert "SECRET" not in err
+
+
+def test_import_from_browser_all_rows_bad_writes_nothing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    _fake_rookiepy(monkeypatch, [{"name": "a", "value": "x\r\ny"}])
+    with pytest.raises(AuthError, match="sign in"):
+        import_from_browser("brave")
+    assert not default_cookies_path().exists()
+
+
+def test_import_from_browser_empty_says_sign_in(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    _fake_rookiepy(monkeypatch, [])
+    with pytest.raises(AuthError, match="sign in"):
+        import_from_browser("brave")
+
+
+# ---------- import repairs the source load_cookies reads ----------
+
+
+@pytest.fixture
+def no_cookie_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.delenv("PPLX_COOKIES_PATH", raising=False)
+    monkeypatch.delenv("PPLX_COOKIES", raising=False)
+
+
+@pytest.mark.usefixtures("no_cookie_env")
+def test_import_writes_to_cookies_path_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    target = tmp_path / "custom" / "jar.json"
+    monkeypatch.setenv("PPLX_COOKIES_PATH", str(target))
+    _fake_rookiepy(monkeypatch, [{"name": "a", "value": "1"}])
+    assert import_from_browser("brave") == target
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+    assert load_cookies() == {"a": "1"}
+    assert not default_cookies_path().exists()
+
+
+@pytest.mark.usefixtures("no_cookie_env")
+def test_import_refuses_when_inline_env_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PPLX_COOKIES", '{"a": "SECRET"}')
+    called: list[object] = []
+    mod = types.ModuleType("rookiepy")
+    mod.brave = lambda d: called.append(d) or []  # pyright: ignore[reportAttributeAccessIssue]
+    monkeypatch.setitem(sys.modules, "rookiepy", mod)
+    with pytest.raises(AuthError) as ei:
+        import_from_browser("brave")
+    msg = str(ei.value)
+    assert "$PPLX_COOKIES" in msg and "not changed" in msg
+    assert "SECRET" not in msg
+    assert called == []
+    assert not default_cookies_path().exists()
+
+
+@pytest.mark.usefixtures("no_cookie_env")
+@pytest.mark.parametrize(
+    ("content", "mode"),
+    [(None, 0o600), ("{bad", 0o600), ('{"a": "x;y"}', 0o600), ('{"a": "1"}', 0o644)],
+    ids=["missing", "bad-json", "bad-value", "world-readable"],
+)
+def test_load_errors_name_env_path_source(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, content: str | None, mode: int
+) -> None:
+    p = tmp_path / "jar.json"
+    if content is not None:
+        p.write_text(content)
+        p.chmod(mode)
+    monkeypatch.setenv("PPLX_COOKIES_PATH", str(p))
+    with pytest.raises(AuthError) as ei:
+        load_cookies()
+    assert "$PPLX_COOKIES_PATH" in str(ei.value)
+    assert str(p) in str(ei.value)
+
+
+@pytest.mark.usefixtures("no_cookie_env")
+@pytest.mark.parametrize(
+    ("content", "mode"),
+    [("{bad", 0o600), ('{"a": "x;y"}', 0o600), ('{"a": "1"}', 0o644)],
+    ids=["bad-json", "bad-value", "world-readable"],
+)
+def test_load_errors_name_profile_source(content: str, mode: int) -> None:
+    p = default_cookies_path("work")
+    p.parent.mkdir(parents=True)
+    p.write_text(content)
+    p.chmod(mode)
+    with pytest.raises(AuthError) as ei:
+        load_cookies("work")
+    assert "profile 'work'" in str(ei.value)
+    assert str(p) in str(ei.value)
+
+
+@pytest.mark.usefixtures("no_cookie_env")
+@pytest.mark.parametrize("inline", ["{bad", '{"a": "x;SECRET"}', "[]"])
+def test_load_errors_name_inline_source(monkeypatch: pytest.MonkeyPatch, inline: str) -> None:
+    monkeypatch.setenv("PPLX_COOKIES", inline)
+    with pytest.raises(AuthError) as ei:
+        load_cookies()
+    assert "$PPLX_COOKIES" in str(ei.value)
+    assert "SECRET" not in str(ei.value)
+
+
+# ---------- save never writes what load refuses ----------
+
+
+@pytest.mark.usefixtures("no_cookie_env")
+def test_save_cookies_drops_unloadable_values_with_warning(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    dest = save_cookies({"session": "ok", "pref": "x;SECRET", "ctl": "a\r\nb"})
+    assert load_cookies() == {"session": "ok"}
+    assert json.loads(dest.read_text()) == {"session": "ok"}
+    err = capsys.readouterr().err
+    assert "'pref'" in err and "'ctl'" in err
+    assert "SECRET" not in err
+
+
+@pytest.mark.usefixtures("no_cookie_env")
+def test_save_cookies_all_unloadable_keeps_existing_file() -> None:
+    dest = save_cookies({"session": "ok"})
+    with pytest.raises(AuthError):
+        save_cookies({"session": "x;y"})
+    assert json.loads(dest.read_text()) == {"session": "ok"}

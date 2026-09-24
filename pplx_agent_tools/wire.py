@@ -21,6 +21,7 @@ from typing import Any
 from curl_cffi import CurlECode, CurlError
 from curl_cffi import requests as cf_requests
 
+from .auth import cookie_pair_ok
 from .errors import (
     AntiBotError,
     AuthError,
@@ -127,9 +128,19 @@ class Client:
                 # Cookie jar lookup raised — log so silent loss is observable.
                 print(f"warning: cookie jar lookup failed for {name!r}: {e}", file=sys.stderr)
                 continue
-            if new_val is not None and new_val != self._cookies[name]:
-                self._cookies[name] = new_val
-                changed = True
+            if new_val is None or new_val == self._cookies[name]:
+                continue
+            # curl_cffi unquotes values when it rebuilds its jar, so a quoted
+            # value we sent can read back as one the loader refuses.
+            if not cookie_pair_ok(name, new_val):
+                print(
+                    f"warning: keeping prior value of cookie {name!r}: "
+                    "the jar's value would not load",
+                    file=sys.stderr,
+                )
+                continue
+            self._cookies[name] = new_val
+            changed = True
         return changed
 
     @property

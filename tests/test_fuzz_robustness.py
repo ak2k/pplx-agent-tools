@@ -339,10 +339,23 @@ def test_normalize_returns_str_dict_or_raises_auth(payload: Any) -> None:
 # Targeted strategy: well-formed Cookie-Editor entries with some adversarial
 # extra fields. Hypothesis-shrunk failures here will pinpoint specific
 # shapes that break the normalizer.
-_cookie_entry = st.fixed_dictionaries(
+# Sendable cookie text: no controls, surrogates or ';' (and no '=' for names).
+_cookie_value_text = st.text(
+    alphabet=st.characters(
+        min_codepoint=0x20, blacklist_categories=("Cc", "Cs"), blacklist_characters=";"
+    ),
+    max_size=30,
+)
+_cookie_entry: st.SearchStrategy[dict[str, object]] = st.fixed_dictionaries(
     {
-        "name": st.text(min_size=1, max_size=20),
-        "value": st.one_of(_json_leaf, st.text(max_size=30)),
+        "name": st.text(
+            alphabet=st.characters(
+                min_codepoint=0x20, blacklist_categories=("Cc", "Cs"), blacklist_characters=";="
+            ),
+            min_size=1,
+            max_size=20,
+        ),
+        "value": _cookie_value_text,
     },
     optional={
         "domain": st.text(max_size=30),
@@ -356,15 +369,7 @@ _cookie_entry = st.fixed_dictionaries(
 
 @given(st.lists(_cookie_entry, min_size=1, max_size=8))
 def test_normalize_cookie_editor_array_well_formed(entries: list[dict[str, Any]]) -> None:
-    """Well-formed Cookie-Editor arrays must always normalize cleanly.
-
-    The `value` field may be any non-None JSON leaf (int, bool, float, str) —
-    the normalizer must coerce to str.
-    """
-    # Drop entries where value is None (a documented hard failure mode)
-    entries = [e for e in entries if e.get("value") is not None]
-    if not entries:
-        return
+    """Well-formed Cookie-Editor arrays must always normalize cleanly."""
     out = _normalize(entries, source="fuzz")
     assert isinstance(out, dict)
     for k, v in out.items():

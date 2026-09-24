@@ -365,3 +365,15 @@ def test_sse_post_midstream_pplx_error_passes_through() -> None:
     client = _client_with_session(resp)
     with pytest.raises(SchemaError, match="bad shape"):
         list(client.sse_post("/x", {}))
+
+
+def test_capture_keeps_prior_value_when_jar_value_would_not_load(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    client = Client({"pref": '"x\\073y"', "session": "old"})
+    client._session.cookies.set("pref", "x;SECRET")  # pyright: ignore[reportPrivateUsage]
+    client._session.cookies.set("session", "new")  # pyright: ignore[reportPrivateUsage]
+    assert client._capture_rotated_cookies()  # pyright: ignore[reportPrivateUsage]
+    assert client.cookies == {"pref": '"x\\073y"', "session": "new"}
+    err = capsys.readouterr().err
+    assert "'pref'" in err and "SECRET" not in err
