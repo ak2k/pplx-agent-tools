@@ -105,6 +105,8 @@ def _describe(source: CookieSource) -> str:
             return "$PPLX_COOKIES"
         case ProfileSource(name, path):
             return f"profile {name!r} file {path}"
+    # Unreachable while CookieSource has three members; never repr the source, it may hold cookies.
+    raise AssertionError(f"unhandled cookie source {type(source).__name__}")
 
 
 def load_cookies(profile: str | None = None) -> dict[str, str]:
@@ -126,6 +128,7 @@ def load_cookies(profile: str | None = None) -> dict[str, str]:
             raise AuthError(f"no cookies found at {label}; run pplx auth import --browser brave")
         case EnvPathSource(path) | ProfileSource(_, path):
             return _load_from_file(path, label=label)
+    raise AssertionError(f"unhandled cookie source {type(source).__name__}")
 
 
 def save_cookies(

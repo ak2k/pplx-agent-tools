@@ -39,13 +39,14 @@ def session_server() -> Iterator[str]:
         srv = ThreadingHTTPServer(("127.0.0.1", 0), _SessionHandler)
     except OSError as e:
         pytest.skip(f"loopback unavailable: {e}")
-    srv.daemon_threads = True
-    threading.Thread(target=srv.serve_forever, daemon=True).start()
-    try:
-        yield f"http://127.0.0.1:{srv.server_port}"
-    finally:
-        srv.shutdown()
-        srv.server_close()
+    else:
+        srv.daemon_threads = True
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            yield f"http://127.0.0.1:{srv.server_port}"
+        finally:
+            srv.shutdown()
+            srv.server_close()
 
 
 def test_refresh_keeps_quoted_octal_cookie_loadable(
