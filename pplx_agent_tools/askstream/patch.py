@@ -29,7 +29,8 @@ accepts: a value placed under a pointer of n segments may be at most
 `MAX_DEPTH - n` containers deep, else the op is `Rejected("too_deep")`.
 
 A unit costs about 0.43 us of CPU on tiny scalars and up to about 0.65 us on
-the worst measured inputs, under the 0.95 us the timing tests allow. 64
+the worst measured inputs; the timing tests bound it at 30 times a bare node
+walk on the same machine. 64
 characters of the costliest string to encode (non-BMP, 12 output bytes each)
 take about 0.2 us.
 

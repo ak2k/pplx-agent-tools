@@ -465,6 +465,27 @@ def test_small_copy_frames_stop_at_work_per_run() -> None:
     pytest.fail("work_per_run never reached")
 
 
+# CPU per charged unit is bounded relative to a bare node walk timed on the same
+# machine, so the bound holds on slower CI runners; the applier measures about
+# 11x the walk, and the uncharged long-string defect this guards against was
+# about 50x over its charge.
+_MAX_UNIT_COST_VS_WALK = 30
+
+
+def _walk_seconds(nodes: int) -> float:
+    data: list[Any] = [0] * nodes
+    best = float("inf")
+    for _ in range(3):
+        start = time.process_time()
+        stack: list[Any] = [data]
+        while stack:
+            node = stack.pop()
+            if isinstance(node, list):
+                stack.extend(node)
+        best = min(best, time.process_time() - start)
+    return best
+
+
 @pytest.mark.parametrize(
     "value",
     [
@@ -491,7 +512,7 @@ def test_copies_of_long_text_stop_at_work_cap_in_bounded_time(value: JsonValue) 
     assert isinstance(result, CapExceeded)
     assert (result.cap, result.index) == ("work_per_frame", expected)
     assert budget.frame_work <= MIB
-    assert elapsed <= 1.0, elapsed
+    assert elapsed <= _MAX_UNIT_COST_VS_WALK * _walk_seconds(MIB), elapsed
 
 
 def test_end_appends_cost_zero_shifts() -> None:
@@ -529,7 +550,7 @@ def test_ops_per_frame_cap_applies_nothing() -> None:
 
 
 @pytest.mark.slow
-def test_frame_at_work_cap_in_node_visits_takes_under_1s() -> None:
+def test_frame_at_work_cap_in_node_visits_takes_bounded_cpu() -> None:
     # replace /a: 1 segment + (K + 1) nodes measured + 1 compare step + 1 node copied.
     k = MIB - 4
     doc: Any = {"a": [0] * k}
@@ -542,4 +563,4 @@ def test_frame_at_work_cap_in_node_visits_takes_under_1s() -> None:
         elapsed = time.process_time() - start
     assert isinstance(result, Applied)
     assert budget.frame_work == MIB
-    assert elapsed <= 1.0, elapsed
+    assert elapsed <= _MAX_UNIT_COST_VS_WALK * _walk_seconds(MIB), elapsed
