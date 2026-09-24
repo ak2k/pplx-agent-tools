@@ -77,9 +77,9 @@ def test_parse_pointer(raw: object, expected: tuple[str, ...] | None) -> None:
 
 
 def test_parse_patch_op_shapes() -> None:
-    assert parse_patch_op({"op": "add", "path": "/a", "value": None}) == Add(("a",), None, 4)
+    assert parse_patch_op({"op": "add", "path": "/a", "value": None}) == Add(("a",), None, 4, 1, 0)
     assert parse_patch_op({"op": "remove", "path": "/a"}) == Remove(("a",))
-    assert parse_patch_op({"op": "replace", "path": "", "value": [1]}) == Replace((), [1], 4)
+    assert parse_patch_op({"op": "replace", "path": "", "value": [1]}) == Replace((), [1], 4, 2, 1)
     assert parse_patch_op({"op": "move", "from": "/a", "path": "/b"}) == Move(("a",), ("b",))
     assert parse_patch_op({"op": "copy", "from": "/a", "path": "/b"}) == Copy(("a",), ("b",))
     assert parse_patch_op({"op": "test", "path": "/a", "value": "x"}) == patch_mod.Test(
@@ -438,3 +438,165 @@ def test_loads() -> None:
     m = measure({"a": [1, "x"]})
     assert m is not None
     assert (m.weight, m.nodes) == (len('{"a":[1,"x"]}') + 2, 4)
+
+
+# --- depth, pointer cost, ownership and the budget rule ---------------------------------------------
+
+
+def _nested(depth: int) -> Any:
+    v: Any = 0
+    for _ in range(depth):
+        v = [v]
+    return v
+
+
+# (segments in the target pointer, doc and op placing a value `v` there)
+_DEPTH_ROWS: dict[str, tuple[int, Any]] = {
+    "copy": (2, lambda v: ({"a": v, "b": []}, {"op": "copy", "from": "/a", "path": "/b/-"})),
+    "add": (2, lambda v: ({"b": []}, {"op": "add", "path": "/b/-", "value": v})),
+    "replace": (2, lambda v: ({"b": [0]}, {"op": "replace", "path": "/b/0", "value": v})),
+    "move": (
+        3,
+        lambda v: ({"a": v, "b": {"c": {}}}, {"op": "move", "from": "/a", "path": "/b/c/d"}),
+    ),
+}
+
+
+@pytest.mark.parametrize("name", list(_DEPTH_ROWS))
+def test_op_past_max_depth_is_rejected_before_the_write(name: str) -> None:
+    """No applied document nests deeper than `loads` accepts (128)."""
+    segments, make = _DEPTH_ROWS[name]
+    doc, op = make(_nested(129 - segments))
+    before = copy.deepcopy(doc)
+    assert run(doc, [op]) == Rejected(0, "too_deep", weight(before))
+    assert doc == before
+    doc, op = make(_nested(128 - segments))
+    result = run(doc, [op])
+    assert isinstance(result, Applied)
+    assert loads(json.dumps(result.doc)) == result.doc
+
+
+def test_long_pointer_text_is_charged_by_length() -> None:
+    """A pointer segment is read like a key: 1 + len // 64 units, charged
+    before the pointer is used."""
+    key = "k" * 1_000_000
+    op = parse_patch_op({"op": "add", "path": "/" + key, "value": 1})
+    assert op is not None
+    doc: JsonValue = {}
+    budget = Budget(Limits(work_per_frame=1000))
+    result = apply_ops(doc, 2, [op], budget)
+    assert isinstance(result, CapExceeded), result
+    assert (result.cap, result.observed, result.index) == ("work_per_frame", 1 + len(key) // 64, 0)
+    assert doc == {}
+    assert budget.frame_work == 0
+    assert patch_mod.pointer_units(op.path) == 1 + len(key) // 64
+
+
+def _reachable_ids(v: Any) -> set[int]:
+    out: set[int] = set()
+    stack = [v]
+    while stack:
+        x = stack.pop()
+        if isinstance(x, (dict, list)) and id(x) not in out:
+            out.add(id(x))
+            stack.extend(cast("dict[str, Any]", x).values() if isinstance(x, dict) else x)
+    return out
+
+
+@pytest.mark.parametrize("src", ["/a", "/b/0"])
+def test_root_move_detaches_the_new_root_from_the_old_tree(src: str) -> None:
+    doc: Any = {"a": {"x": [1]}, "b": [{"y": [2]}, 3]}
+    result = run(doc, [{"op": "move", "from": src, "path": ""}])
+    assert isinstance(result, Applied)
+    assert result.weight == weight(result.doc)
+    assert not _reachable_ids(result.doc) & _reachable_ids(doc)
+
+
+_OTHER = 5000
+
+
+def _scenarios() -> list[Any]:
+    big = "y" * 1000
+    return [
+        pytest.param({"a": 1}, [{"op": "add", "path": "/b", "value": 2},
+                                {"op": "replace", "path": "", "value": {"only": True}}],
+                     Limits(), Applied, id="applied-add-then-root-replace"),
+        pytest.param({"a": {"x": 1}, "b": 2}, [{"op": "move", "from": "/a", "path": ""}],
+                     Limits(), Applied, id="applied-root-move"),
+        pytest.param({"a": big, "c": 1}, [{"op": "remove", "path": "/a"},
+                                          {"op": "test", "path": "/c", "value": 2}],
+                     Limits(), Rejected, id="rejected-after-remove"),
+        pytest.param({"a": big}, [{"op": "replace", "path": "", "value": [1]},
+                                  {"op": "remove", "path": "/zz"}],
+                     Limits(), Rejected, id="rejected-after-root-replace"),
+        pytest.param({"a": big}, [{"op": "remove", "path": "/a"},
+                                  {"op": "add", "path": "/b", "value": "z" * 2000}],
+                     Limits(field_weight=1500), CapExceeded, id="cap-after-remove"),
+        pytest.param({"a": 1}, [{"op": "replace", "path": "", "value": {"s": big}},
+                                {"op": "remove", "path": "/s"}],
+                     Limits(work_per_frame=15), CapExceeded, id="cap-after-root-replace"),
+        pytest.param({"a": {"s": big}, "b": 1}, [{"op": "move", "from": "/a", "path": ""},
+                                                 {"op": "test", "path": "", "value": {"s": big}}],
+                     Limits(work_per_frame=30), CapExceeded, id="cap-after-root-move"),
+        pytest.param({"a": 1}, [{"op": "add", "path": "/b", "value": 1}] * 3,
+                     Limits(ops_per_frame=2), CapExceeded, id="cap-ops-per-frame"),
+    ]  # fmt: skip
+
+
+@pytest.mark.parametrize(("doc", "raw_ops", "limits", "kind"), _scenarios())
+def test_every_result_lets_the_caller_resync_the_budget(
+    doc: Any, raw_ops: list[Any], limits: Limits, kind: type
+) -> None:
+    """The `apply_ops` rule, using only the result: keep `Applied.doc` at its
+    weight, or drop the field and subtract `result.weight`."""
+    ops = [op for op in (parse_patch_op(r) for r in copy.deepcopy(raw_ops)) if op is not None]
+    budget = Budget(limits)
+    w = weight(doc)
+    budget.total_weight = _OTHER + w
+    result = apply_ops(doc, w, ops, budget)
+    assert isinstance(result, kind), result
+    if isinstance(result, Applied):
+        kept = weight(result.doc)
+        assert result.weight == kept
+    else:
+        budget.total_weight -= result.weight
+        kept = 0
+    assert budget.total_weight == _OTHER + kept
+
+
+def test_inserted_values_are_owned_by_the_document() -> None:
+    """The applier copies every value it inserts, so no node is shared
+    between two places, two documents, or a document and an op."""
+    raw: dict[str, Any] = {"n": 1}
+    add = parse_patch_op({"op": "add", "path": "/a", "value": raw})
+    rep = parse_patch_op({"op": "replace", "path": "/b", "value": raw})
+    move = parse_patch_op({"op": "move", "from": "/a", "path": "/b/child"})
+    assert isinstance(add, Add) and isinstance(rep, Replace) and move is not None
+    docs: list[JsonValue] = []
+    for _ in range(2):
+        doc: JsonValue = {"b": 0}
+        budget = Budget(Limits())
+        result = apply_ops(doc, weight(doc), [add, rep, move], budget)
+        assert isinstance(result, Applied)
+        assert result.doc == {"b": {"n": 1, "child": {"n": 1}}}
+        assert measure(result.doc) is not None  # a tree: no shared or cyclic node
+        docs.append(result.doc)
+    raw["n"] = 99
+    assert docs[0] == docs[1] == {"b": {"n": 1, "child": {"n": 1}}}
+    assert not _reachable_ids(docs[0]) & _reachable_ids(docs[1])
+    assert not _reachable_ids(docs[0]) & _reachable_ids(raw)
+
+
+def test_weight_walk_ends_on_shared_and_cyclic_values() -> None:
+    shared: Any = [0]
+    for _ in range(100):
+        shared = [shared, shared]  # 2**100 paths through 101 containers
+    with untraced():
+        start = time.process_time()
+        assert measure(shared, max_depth=2**62) is None
+        assert weight(shared) == 0
+        cyclic: Any = {"a": [1]}
+        cyclic["a"].append(cyclic)
+        assert measure(cyclic, max_depth=2**62) is None
+        assert weight(cyclic) == 0
+        assert time.process_time() - start < 1.0

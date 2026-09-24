@@ -1,24 +1,32 @@
-"""RFC 6902 JSON Patch over untrusted ops, in place, with bounded cost.
+"""RFC 6902 JSON Patch over untrusted ops, with bounded cost.
 
 `apply_ops` never raises. Every op is charged work units computed from the
 document before the op, and its weight change is known, before anything is
 mutated; a charge that would pass a cap ends the call as `CapExceeded` with
 the op not applied. Work units:
 
-- one per pointer segment of each pointer the op uses;
+- for each segment of each pointer the op uses, one plus `len // 64`;
 - for each node read while measuring a subtree (the old value of a
   non-root `replace` or `remove`, an overwritten object member, a `copy`
-  source, a `move` value when the target is the root or an ancestor object
-  member) or comparing (`test`, and the changed/noop check on `replace`,
-  which stops at the first difference): one, plus `len // 64` for its
-  member key and for a string value, `(digits // 64) ** 2` for an int (the
-  decimal conversion is quadratic; digits is an upper bound from the bit
-  length), and 3 for a float. A compared pair is charged by the document
+  source, a `move` value when the target is the root, an ancestor object
+  member, or more pointer segments deep than the source) or comparing
+  (`test`, and the changed/noop check on `replace`, which stops at the
+  first difference): one, plus `len // 64` for its member key and for a
+  string value, `(digits // 64) ** 2` for an int (the decimal conversion is
+  quadratic; digits is an upper bound from the bit length), and 3 for a
+  float. A compared pair is charged by the document
   side's node. Each node's units are checked against the caps before it is
   read, so a long string costs nothing until it is paid for;
-- one per node deep-copied (`copy`; strings and keys are shared, not copied);
+- one per node deep-copied: a `copy` source, and the value of an `add` or
+  `replace`, which is copied so that the document owns every node it holds
+  (strings and keys are shared, not copied);
 - one per array element shifted: an insert at i on length n shifts n - i,
-  a removal at i shifts n - i - 1.
+  a removal at i shifts n - i - 1, including a root `move`'s removal of
+  the value from its parent.
+
+No op leaves a container nested deeper than `MAX_DEPTH`, the depth `loads`
+accepts: a value placed under a pointer of n segments may be at most
+`MAX_DEPTH - n` containers deep, else the op is `Rejected("too_deep")`.
 
 A unit costs about 0.43 us of CPU on tiny scalars and up to about 0.65 us on
 the worst measured inputs, under the 0.95 us the timing tests allow. 64
@@ -26,13 +34,14 @@ characters of the costliest string to encode (non-BMP, 12 output bytes each)
 take about 0.2 us.
 
 A root `remove` is rejected, as in RFC 6902 there is nothing left to hold.
-A root `move` or `copy` target replaces the document without a removal.
+A root `move` or `copy` target replaces the document; a root `move` detaches
+the value from its old parent, so the old tree holds no node of the new one.
 """
 
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from typing import Literal, Protocol, TypeAlias, cast, final
 
@@ -40,7 +49,9 @@ from typing_extensions import assert_never
 
 from pplx_agent_tools.askstream.jsonval import (
     LIST_OVERHEAD,
+    MAX_DEPTH,
     JsonValue,
+    Measured,
     key_overhead,
     measure,
     scalar_weight,
@@ -61,6 +72,7 @@ RejectReason = Literal[
     "test_failed",
     "move_into_child",
     "remove_root",
+    "too_deep",
 ]
 
 _Container: TypeAlias = "dict[str, JsonValue] | list[JsonValue]"
@@ -93,6 +105,11 @@ def node_units(key: str | None, v: JsonValue) -> int:
     return 1 + (0 if key is None else _text_units(key)) + _scalar_units(v)
 
 
+def pointer_units(p: Pointer) -> int:
+    """Work units to resolve a pointer: each segment is read like a key."""
+    return len(p) + sum(len(seg) // TEXT_CHUNK for seg in p)
+
+
 def parse_pointer(raw: object) -> Pointer | None:
     """RFC 6901 pointer, or None: not a string, no leading `/`, a `~` not
     followed by `0` or `1`, or more than 128 segments (counted before split)."""
@@ -111,6 +128,8 @@ class Add:
     path: Pointer
     value: JsonValue
     value_weight: int
+    value_nodes: int
+    value_depth: int
     op: Literal["add"] = "add"
 
 
@@ -127,6 +146,8 @@ class Replace:
     path: Pointer
     value: JsonValue
     value_weight: int
+    value_nodes: int
+    value_depth: int
     op: Literal["replace"] = "replace"
 
 
@@ -158,17 +179,11 @@ class Test:
 PatchOp: TypeAlias = Add | Remove | Replace | Move | Copy | Test
 
 
-_VALUE_OPS: dict[str, Callable[[Pointer, JsonValue, int], PatchOp]] = {
-    "add": Add,
-    "replace": Replace,
-    "test": Test,
-}
-
-
 def parse_patch_op(raw: object) -> PatchOp | None:
     """One op from a decoded JSON object, or None when it is not a valid op.
-    Members RFC 6902 does not define are ignored. A `value` must be
-    JSON-shaped and nest at most 128 deep; its weight is computed here."""
+    Members RFC 6902 does not define are ignored. A `value` must be a JSON
+    tree nesting at most 128 deep; its weight, node count and depth are
+    computed here. The op borrows `value`; the applier inserts copies."""
     if not isinstance(raw, dict):
         return None
     obj = cast("dict[object, object]", raw)
@@ -183,9 +198,15 @@ def parse_patch_op(raw: object) -> PatchOp | None:
         if src is None:
             return None
         return Move(src, path) if op == "move" else Copy(src, path)
-    make = _VALUE_OPS.get(op) if isinstance(op, str) else None
-    m = measure(obj["value"]) if make is not None and "value" in obj else None
-    return None if make is None or m is None else make(path, m.value, m.weight)
+    m = measure(obj["value"]) if op in ("add", "replace", "test") and "value" in obj else None
+    return None if m is None else _value_op(cast("str", op), path, m)
+
+
+def _value_op(op: str, path: Pointer, m: Measured) -> PatchOp:
+    if op == "test":
+        return Test(path, m.value, m.weight)
+    make = Add if op == "add" else Replace
+    return make(path, m.value, m.weight, m.nodes, m.depth)
 
 
 @final
@@ -250,9 +271,8 @@ class Applied:
 @final
 @dataclass(frozen=True, slots=True)
 class Rejected:
-    """Op `index` is invalid for the document. Earlier ops stay applied (the
-    caller drops the field); `weight` is the field's weight at that point,
-    already counted in `Budget.total_weight`."""
+    """Op `index` is invalid for the document; `weight` is as on every result
+    (see `apply_ops`)."""
 
     index: int
     reason: RejectReason
@@ -263,12 +283,14 @@ class Rejected:
 @dataclass(frozen=True, slots=True)
 class CapExceeded:
     """Op `index` would pass `cap`; it was not applied. `observed` is a lower
-    bound on the value the cap would have reached."""
+    bound on the value the cap would have reached. `weight` is as on every
+    result (see `apply_ops`)."""
 
     cap: CapName
     limit: int
     observed: int
     index: int
+    weight: int
 
 
 class _Halt(Exception):
@@ -320,7 +342,7 @@ class _Run:
         return _Halt(Rejected(self.index, reason, self.weight))
 
     def _cap(self, cap: CapName, limit: int, observed: int) -> _Halt:
-        return _Halt(CapExceeded(cap, limit, observed, self.index))
+        return _Halt(CapExceeded(cap, limit, observed, self.index, self.weight))
 
     # --- work ---------------------------------------------------------------
 
@@ -337,6 +359,13 @@ class _Run:
             raise self._cap("work_per_run", limit, b.run_work + n)
         b.frame_work += n
         b.run_work += n
+
+    def _spend_pointers(self, *ptrs: Pointer) -> None:
+        self._spend(sum(pointer_units(p) for p in ptrs))
+        if self.probe is not None:
+            for p in ptrs:
+                for seg in p:
+                    self.probe.read(seg)
 
     def _overrun(self, done: int, need: int) -> _Halt:
         """A bounded walk spent `done` units and its next node, costing
@@ -358,10 +387,11 @@ class _Run:
             if not _is_container(v):
                 probe.read(v)
 
-    def _measure(self, v: JsonValue) -> tuple[int, int]:
-        """(nodes, weight) of a subtree, charged `node_units` per node."""
+    def _measure(self, v: JsonValue) -> tuple[int, int, int]:
+        """(nodes, weight, depth in containers) of a subtree, charged
+        `node_units` per node."""
         room = self._room()
-        units = nodes = total = 0
+        units = nodes = total = depth = 0
         stack: list[Iterator[tuple[str | None, JsonValue]]] = [iter(((None, v),))]
         while stack:
             item = next(stack[-1], None)
@@ -380,10 +410,11 @@ class _Run:
             if isinstance(child, (dict, list)):
                 total += 2
                 stack.append(_keyed(child))
+                depth = max(depth, len(stack) - 1)
             else:
                 total += scalar_weight(child)
         self._spend(units)
-        return nodes, total
+        return nodes, total, depth
 
     def _equal(self, a: JsonValue, b: JsonValue) -> bool:
         """JSON equality, pre-order, stopping at the first difference. Each
@@ -424,7 +455,7 @@ class _Run:
         return True
 
     def _deep_copy(self, v: JsonValue) -> JsonValue:
-        """A deep copy; its node count was charged by the caller."""
+        """A deep copy; its node count is charged by `_put` before the call."""
         probe = self.probe
         if probe is not None:
             probe.visit()
@@ -511,6 +542,11 @@ class _Run:
         if nt > lim.total_weight:
             raise self._cap("total_weight", lim.total_weight, nt)
 
+    def _fits(self, path: Pointer, depth: int) -> None:
+        # Each segment of `path` passes through one container above the value.
+        if len(path) + depth > MAX_DEPTH:
+            raise self._reject("too_deep")
+
     def _commit(self, delta: int) -> None:
         self.weight += delta
         self.budget.total_weight += delta
@@ -521,41 +557,48 @@ class _Run:
 
     # --- ops --------------------------------------------------------------------
 
-    def _put(self, path: Pointer, make: Callable[[], JsonValue], value_weight: int) -> None:
-        """RFC 6902 `add`. `make` builds the value, and runs only after every
-        charge and cap check has passed."""
+    def _put(
+        self, path: Pointer, src: JsonValue, value_weight: int, nodes: int, depth: int
+    ) -> None:
+        """RFC 6902 `add` of a deep copy of `src`, which has `nodes` nodes and
+        is `depth` containers deep. The copy is charged, and made, only after
+        every other charge and check has passed."""
         if not path:
+            self._fits(path, depth)
             self._admit(value_weight - self.weight)
-            self.doc = make()
+            self._spend(nodes)
+            self.doc = self._deep_copy(src)
             self._commit(value_weight - self.weight)
             return
         parent, seg = self._parent(path)
+        self._fits(path, depth)
         if isinstance(parent, dict):
             if seg in parent:
                 delta = value_weight - self._measure(parent[seg])[1]
             else:
                 delta = key_overhead(seg) + value_weight
             self._admit(delta)
-            parent[seg] = make()
+            self._spend(nodes)
+            parent[seg] = self._deep_copy(src)
         else:
             n = len(parent)
             i = self._index(seg, n, allow_end=True)
             self._spend(n - i)
             delta = value_weight + LIST_OVERHEAD
             self._admit(delta)
-            new = make()
+            self._spend(nodes)
+            new = self._deep_copy(src)
             self._shift(n - i)
             parent.insert(i, new)
         self._commit(delta)
 
     def add(self, op: Add) -> Changed:
-        self._spend(len(op.path))
-        value = op.value
-        self._put(op.path, lambda: value, op.value_weight)
+        self._spend_pointers(op.path)
+        self._put(op.path, op.value, op.value_weight, op.value_nodes, op.value_depth)
         return "changed"
 
     def remove(self, op: Remove) -> Changed:
-        self._spend(len(op.path))
+        self._spend_pointers(op.path)
         if not op.path:
             raise self._reject("remove_root")
         parent, key, old = self._locate(op.path)
@@ -573,38 +616,42 @@ class _Run:
         return "changed"
 
     def replace(self, op: Replace) -> Changed:
-        self._spend(len(op.path))
+        self._spend_pointers(op.path)
         if not op.path:
+            self._fits(op.path, op.value_depth)
             same = self._equal(self.doc, op.value)
             delta = op.value_weight - self.weight
             self._admit(delta)
+            self._spend(op.value_nodes)
+            self.doc = self._deep_copy(op.value)
             self._commit(delta)
-            self.doc = op.value
             return "noop" if same else "changed"
         parent, key, old = self._locate(op.path)
+        self._fits(op.path, op.value_depth)
         w_old = self._measure(old)[1]
         same = self._equal(old, op.value)
         delta = op.value_weight - w_old
         self._admit(delta)
+        self._spend(op.value_nodes)
+        new = self._deep_copy(op.value)
         if isinstance(parent, dict):
-            parent[cast("str", key)] = op.value
+            parent[cast("str", key)] = new
         else:
-            parent[cast("int", key)] = op.value
+            parent[cast("int", key)] = new
         self._commit(delta)
         return "noop" if same else "changed"
 
     def test(self, op: Test) -> Changed:
-        self._spend(len(op.path))
+        self._spend_pointers(op.path)
         if not self._equal(self._get(op.path), op.value):
             raise self._reject("test_failed")
         return "noop"
 
     def copy(self, op: Copy) -> Changed:
-        self._spend(len(op.from_) + len(op.path))
+        self._spend_pointers(op.from_, op.path)
         src = self._get(op.from_)
-        nodes, w_src = self._measure(src)
-        self._spend(nodes)
-        self._put(op.path, lambda: self._deep_copy(src), w_src)
+        nodes, w_src, depth = self._measure(src)
+        self._put(op.path, src, w_src, nodes, depth)
         return "changed"
 
     def _move_target(
@@ -630,8 +677,15 @@ class _Run:
         tindex = self._index(tseg, n, allow_end=True)
         return tparent, tseg, tindex, n - tindex, LIST_OVERHEAD - from_overhead
 
+    def _detach(self, parent: _Container, key: str | int, shift: int) -> None:
+        if isinstance(parent, dict):
+            del parent[cast("str", key)]
+        else:
+            self._shift(shift)
+            parent.pop(cast("int", key))
+
     def move(self, op: Move) -> Changed:
-        self._spend(len(op.from_) + len(op.path))
+        self._spend_pointers(op.from_, op.path)
         if not op.from_:
             if op.path:
                 raise self._reject("move_into_child")
@@ -647,23 +701,24 @@ class _Run:
         else:
             from_overhead = LIST_OVERHEAD
             skip = (fparent, cast("int", fkey))
+        remove_shift = len(fparent) - cast("int", fkey) - 1 if skip is not None else 0
         if not op.path:
             w_v = self._measure(value)[1]
+            self._spend(remove_shift)
             self._admit(w_v - self.weight)
+            # Detached, so the old tree holds no node of the new document.
+            self._detach(fparent, fkey, remove_shift)
             self._commit(w_v - self.weight)
             self.doc = value
             return "changed"
-        remove_shift = len(fparent) - cast("int", fkey) - 1 if skip is not None else 0
+        if len(op.path) > len(op.from_):
+            self._fits(op.path, self._measure(value)[2])
         tparent, tseg, tindex, add_shift, delta = self._move_target(
             op, value, fparent, from_overhead, skip
         )
         self._spend(remove_shift + add_shift)
         self._admit(delta)
-        if isinstance(fparent, dict):
-            del fparent[cast("str", fkey)]
-        else:
-            self._shift(remove_shift)
-            fparent.pop(cast("int", fkey))
+        self._detach(fparent, fkey, remove_shift)
         if isinstance(tparent, dict):
             tparent[tseg] = value
         else:
@@ -708,15 +763,25 @@ def apply_ops(
     budget: Budget,
     probe: Probe | None = None,
 ) -> Applied | Rejected | CapExceeded:
-    """Apply `ops` to `doc` (whose weight is `weight`) in place.
+    """Apply `ops` to `doc`, a field whose weight `weight` is counted in
+    `budget.total_weight`.
 
-    The document takes ownership of the op values it inserts. On `Rejected`
-    and `CapExceeded` the document may hold the earlier ops' changes and must
-    not be used as a synced copy again.
+    `doc` is consumed: ops may mutate it, and a root op replaces it, so the
+    caller never uses it again. Values are copied in, so the document shares
+    no node with the ops or with any other document.
+
+    Every result's `weight` is the field's weight as `budget.total_weight`
+    counts it when the call returns. The caller's one rule: on `Applied`,
+    keep `result.doc` as the field, at `result.weight`; on `Rejected` or
+    `CapExceeded`, drop the field and do `budget.total_weight -=
+    result.weight`. Either way the budget then counts exactly the documents
+    the caller holds.
     """
     lim = budget.limits
     if budget.frame_ops + len(ops) > lim.ops_per_frame:
-        return CapExceeded("ops_per_frame", lim.ops_per_frame, budget.frame_ops + len(ops), 0)
+        return CapExceeded(
+            "ops_per_frame", lim.ops_per_frame, budget.frame_ops + len(ops), 0, weight
+        )
     budget.frame_ops += len(ops)
     run = _Run(doc, weight, budget, probe)
     changed: Changed = "noop"

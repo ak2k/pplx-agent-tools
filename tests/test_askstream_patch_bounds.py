@@ -16,7 +16,7 @@ import pytest
 from hypothesis import event, given, settings
 from hypothesis import strategies as st
 
-from pplx_agent_tools.askstream.jsonval import weight
+from pplx_agent_tools.askstream.jsonval import measure, weight
 from pplx_agent_tools.askstream.patch import (
     MIB,
     Add,
@@ -78,6 +78,11 @@ def ref_units(v: Any, key: str | None = None) -> int:
     if isinstance(v, list):
         return own + sum(ref_units(c) for c in cast("list[Any]", v))
     return own + ref_extra(v)
+
+
+def ref_pointer(p: tuple[str, ...]) -> int:
+    """Units to resolve a pointer: each segment is read like a key."""
+    return sum(1 + ref_extra(seg) for seg in p)
 
 
 def ref_nodes(v: Any) -> int:
@@ -151,32 +156,39 @@ def _put_cost(doc: Any, path: tuple[str, ...]) -> int:
 
 
 def ref_charge(doc: Any, op: PatchOp) -> int:  # noqa: PLR0911
-    """Work units of an op that applied, from the document before it."""
+    """Work units of an op that applied, from the document before it. An
+    inserted value is deep-copied: one unit per node."""
     if isinstance(op, Add):
-        return len(op.path) + _put_cost(doc, op.path)
+        return ref_pointer(op.path) + _put_cost(doc, op.path) + ref_nodes(op.value)
     if isinstance(op, Remove):
         parent, seg = _slot(doc, op.path)
         if isinstance(parent, dict):
-            return len(op.path) + ref_units(parent[seg])
+            return ref_pointer(op.path) + ref_units(parent[seg])
         p_l = cast("list[Any]", parent)
         i = int(seg)
-        return len(op.path) + ref_units(p_l[i]) + len(p_l) - i - 1
+        return ref_pointer(op.path) + ref_units(p_l[i]) + len(p_l) - i - 1
     if isinstance(op, Replace):
         old = get(doc, op.path)
         measured = ref_units(old) if op.path else 0
-        return len(op.path) + measured + ref_compare(old, op.value)[0]
+        copied = ref_nodes(op.value)
+        return ref_pointer(op.path) + measured + ref_compare(old, op.value)[0] + copied
     if isinstance(op, _TestOp):
-        return len(op.path) + ref_compare(get(doc, op.path), op.value)[0]
+        return ref_pointer(op.path) + ref_compare(get(doc, op.path), op.value)[0]
+    base = ref_pointer(op.from_) + ref_pointer(op.path)
     if isinstance(op, Copy):
-        base = len(op.from_) + len(op.path)
         src = get(doc, op.from_)
         return base + ref_units(src) + ref_nodes(src) + _put_cost(doc, op.path)
-    base = len(op.from_) + len(op.path)
     if not op.from_ or op.path == op.from_:
         return base
     value = get(doc, op.from_)
     if not op.path:
-        return base + ref_units(value)
+        # The value is also removed from its old parent.
+        fparent, fseg = _slot(doc, op.from_)
+        shift = len(fparent) - int(fseg) - 1 if isinstance(fparent, list) else 0
+        return base + ref_units(value) + shift
+    if len(op.path) > len(op.from_):
+        # A deeper target: the value's depth is measured.
+        base += ref_units(value)
     post = copy.deepcopy(doc)
     fparent, fseg = _slot(post, op.from_)
     shift = 0
@@ -295,7 +307,7 @@ def _bounds_op(draw: st.DrawFn, doc: Any) -> dict[str, Any]:  # noqa: PLR0911
     inserts, copy-doubling), mixed with arbitrary ones."""
     src = draw(st.sampled_from(_containers(doc)))
     node = get(doc, src)
-    kind = draw(st.integers(0, 12))
+    kind = draw(st.integers(0, 14))
     if kind == 0:
         # Copy-doubling: a container copied into itself or beside itself.
         dst = (*src, "-") if isinstance(node, list) else (*src[:-1], draw(KEYS))
@@ -319,6 +331,14 @@ def _bounds_op(draw: st.DrawFn, doc: Any) -> dict[str, Any]:  # noqa: PLR0911
         return {"op": "move", "from": ptr(q), "path": ptr(q[:-1])}
     if kind == 8 and src:
         return {"op": "move", "from": ptr(src), "path": ""}
+    if kind == 9 and isinstance(node, dict):
+        # A pointer whose text is charged by its length.
+        key = draw(st.text("ab", min_size=64, max_size=300))
+        return {"op": "add", "path": ptr((*src, key)), "value": draw(_BIG)}
+    dst = draw(st.sampled_from(_containers(doc)))
+    if kind == 10 and src and isinstance(get(doc, dst), dict) and dst[: len(src)] != src:
+        # A move to a deeper place: the value's depth is measured.
+        return {"op": "move", "from": ptr(src), "path": ptr((*dst, "d"))}
     return {"op": "test", "path": ptr(src), "value": copy.deepcopy(node)}
 
 
@@ -339,17 +359,22 @@ def test_weight_and_work_bounds(data: st.DataObject) -> None:
         rec = Recorder(fields[k], ops, budget)
         result = apply_ops(fields[k], weights[k], ops, budget, rec)
         event(f"{type(result).__name__}:{getattr(result, 'cap', getattr(result, 'reason', ''))}")
+        others = sum(ref_weight(f) for j, f in enumerate(fields) if j != k)
         if isinstance(result, Applied):
             assert result.weight == ref_weight(result.doc)
+            assert budget.total_weight == others + result.weight
+            assert measure(result.doc) is not None  # a tree that `loads` would accept
             fields[k], weights[k] = result.doc, result.weight
             continue
         rec.stopped()
+        # The weight after the ops that applied before the failing one.
+        assert result.weight == ref_weight(rec.root)
+        # The failed field is dropped (the `apply_ops` rule).
+        budget.total_weight -= result.weight
+        assert budget.total_weight == others
         if isinstance(result, CapExceeded):
             return
-        # The weight after the ops that applied before the rejected one.
-        assert result.weight == ref_weight(rec.root)
-        # A rejected field is dropped; a later snapshot resyncs it.
-        budget.total_weight -= result.weight
+        # A later snapshot resyncs it.
         fields[k], weights[k] = {}, 2
         fresh: Any = data.draw(_WIDE | _BIG)
         w_fresh = weight(fresh)
@@ -373,7 +398,7 @@ def test_4096_front_inserts_on_2_pow_20_array_stop_before_first_crossing_op() ->
     budget.total_weight = w = weight(doc)
     result = apply_ops(doc, w, _adds_at_front(4096), budget)
     # The first op alone is charged 2 + 2**20 > 2**20.
-    assert result == CapExceeded("work_per_frame", 2**20, 2 + n, 0)
+    assert result == CapExceeded("work_per_frame", 2**20, 2 + n, 0, w)
     assert len(arr) == n
     assert arr[0] == 0
     assert budget.frame_work <= 2**20
@@ -389,8 +414,9 @@ def test_front_inserts_stop_exactly_at_the_crossing_op() -> None:
     rec = Recorder(doc, ops, budget)
     result = apply_ops(doc, w, ops, budget, rec)
     spent, expected = 0, 0
-    while spent + 2 + n + expected <= 2**20:
-        spent += 2 + n + expected
+    # Each op: two pointer segments, the shifts, one node copied.
+    while spent + 3 + n + expected <= 2**20:
+        spent += 3 + n + expected
         expected += 1
     assert isinstance(result, CapExceeded)
     assert (result.cap, result.index) == ("work_per_frame", expected)
@@ -476,7 +502,7 @@ def test_end_appends_cost_zero_shifts() -> None:
     rec = Recorder(doc, ops, budget)
     assert isinstance(apply_ops(doc, w, ops, budget, rec), Applied)
     assert rec.shifts == [0] * 100
-    assert rec.charges == [2] * 100
+    assert rec.charges == [3] * 100
 
 
 @pytest.mark.parametrize("cap", ["field_weight", "total_weight"])
@@ -498,14 +524,14 @@ def test_ops_per_frame_cap_applies_nothing() -> None:
     budget = Budget(SMALL)
     budget.total_weight = w = weight(doc)
     ops = _parse_all([{"op": "add", "path": "/a/-", "value": 1}] * 17)
-    assert apply_ops(doc, w, ops, budget) == CapExceeded("ops_per_frame", 16, 17, 0)
+    assert apply_ops(doc, w, ops, budget) == CapExceeded("ops_per_frame", 16, 17, 0, w)
     assert doc == {"a": []}
 
 
 @pytest.mark.slow
 def test_frame_at_work_cap_in_node_visits_takes_under_1s() -> None:
-    # replace /a: 1 segment + (K + 1) nodes measured + 1 compare step.
-    k = MIB - 3
+    # replace /a: 1 segment + (K + 1) nodes measured + 1 compare step + 1 node copied.
+    k = MIB - 4
     doc: Any = {"a": [0] * k}
     budget = Budget(Limits())
     budget.total_weight = w = weight(doc)

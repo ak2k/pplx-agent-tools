@@ -49,6 +49,8 @@ class Measured:
     value: JsonValue
     weight: int
     nodes: int
+    # Containers on the longest root-to-leaf chain; 0 for a scalar.
+    depth: int
 
 
 def scalar_weight(v: JsonValue) -> int:
@@ -93,16 +95,18 @@ def _is_scalar(v: object) -> bool:
 
 
 def measure(value: object, max_depth: int = MAX_DEPTH) -> Measured | None:
-    """Weight and node count of `value`, or None when it is not JSON-shaped
-    (a non-str key, a non-finite float, a type JSON has no form for) or nests
-    deeper than `max_depth` containers. The depth bound also ends the walk on
-    a cycle."""
+    """Weight, node count and depth of `value`, or None when it is not a JSON
+    tree: a non-str key, a non-finite float, a type JSON has no form for, a
+    container reached twice (shared or cyclic), or nesting deeper than
+    `max_depth` containers. Each container is walked once, so the walk ends on
+    any input."""
     if _is_scalar(value):
-        return Measured(from_parser(value), scalar_weight(from_parser(value)), 1)
+        return Measured(from_parser(value), scalar_weight(from_parser(value)), 1, 0)
     root = _children(value)
     if root is None:
         return None
-    total, nodes = 2, 1
+    total, nodes, depth = 2, 1, 1
+    seen = {id(value)}
     stack = [root]
     while stack:
         pair = next(stack[-1], None)
@@ -118,15 +122,17 @@ def measure(value: object, max_depth: int = MAX_DEPTH) -> Measured | None:
             total += scalar_weight(from_parser(child))
             continue
         sub = _children(child)
-        if sub is None or len(stack) >= max_depth:
+        if sub is None or len(stack) >= max_depth or id(child) in seen:
             return None
+        seen.add(id(child))
         total += 2
         stack.append(sub)
-    return Measured(from_parser(value), total, nodes)
+        depth = max(depth, len(stack))
+    return Measured(from_parser(value), total, nodes, depth)
 
 
 def weight(value: JsonValue) -> int:
-    """Weight of a JSON value at any depth."""
+    """Weight of a JSON tree at any depth; 0 when `value` is not a tree."""
     m = measure(value, max_depth=2**62)
     return 0 if m is None else m.weight
 
