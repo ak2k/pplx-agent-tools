@@ -20,8 +20,10 @@ the op not applied. Work units:
 - one per array element shifted: an insert at i on length n shifts n - i,
   a removal at i shifts n - i - 1.
 
-A unit is calibrated to at most about 0.43 us of CPU; 64 characters of the
-costliest string to encode (non-BMP, 12 output bytes each) take about 0.2 us.
+A unit costs about 0.43 us of CPU on tiny scalars and up to about 0.65 us on
+the worst measured inputs, under the 0.95 us the timing tests allow. 64
+characters of the costliest string to encode (non-BMP, 12 output bytes each)
+take about 0.2 us.
 
 A root `remove` is rejected, as in RFC 6902 there is nothing left to hold.
 A root `move` or `copy` target replaces the document without a removal.
