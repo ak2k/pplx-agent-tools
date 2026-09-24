@@ -20,10 +20,11 @@ the values U5a, U6 and U7 take from them.
 - Offline analysis (`analyze.py`) replays each capture through an RFC 6902 applier
   (all six ops) keyed by `(intended_usage, field)`.
 - Every run was incognito and its thread was deleted in a `finally`
-  (`delete_thread ok=True` on all 17 runs). `GET /rest/thread/list_recent`
-  returned 20 threads before and after, with the same hashed id set, and none of
-  the probes' `backend_uuid` or `context_uuid` hashes (`preflight.log`).
-- Spend: 5 of 5 Deep Research runs, 12 of 12 ask/fetch runs (`budget.jsonl`).
+  (`delete_thread ok=True` on all 18 runs). `GET /rest/thread/list_recent`
+  returned 20 threads before and after the probes, and again before and after P5 C,
+  with the same hashed id set each time, and none of the probes' `backend_uuid` or
+  `context_uuid` hashes (`preflight.log`).
+- Spend: 5 of 5 Deep Research runs, 13 of 13 ask/fetch runs (`budget.jsonl`).
   `pro_search.remaining_detail.kind` was `not_provided` before and after.
 
 ## P5 static: terminate shape (`p5_static.log`)
@@ -207,13 +208,23 @@ Two short research runs, concurrent.
 - **Verdict for U7:** send terminate (no token needed), then delete. Delete alone
   gives no evidence of a stop.
 
-**P5 live C was not run.** It would have been the 13th ask/fetch run against a
-ceiling of 12. Plan §8 gives U1 13 ask runs (P2 11, P3 1, P5 C 1). The P5 C spend
-check (§3.5 first row, no Terminate after `SettledWithoutTerminal`) is therefore
-still unmeasured. Some evidence exists from other runs, but it is not the probe:
-P3 showed that a copilot run dropped at 2 s continues to COMPLETED on its own, and
-P3's post-COMPLETED reconnects showed a finished run that stays COMPLETED and not
-reconnectable.
+## P5 live C: a run closed after `text_completed` (`p5live.log`)
+
+One turbo ask, incognito, 29-entry list. `GET rate-limit/status` first:
+`modes.pro_search.remaining_detail.kind = not_provided` (no count).
+
+- The connection was closed on the first `text_completed` frame, at 14.15 s
+  (frame 72, `status` PENDING). No Terminate was sent.
+- **COMPLETED on its own:** the snapshot reconnect at +30 s returned one 65.8 KB
+  frame: `status` COMPLETED, `reconnectable` false, `final_sse_message` true.
+- **Spend check (kind `not_provided`):** a second snapshot reconnect at +90 s
+  returned the same frame: COMPLETED, `reconnectable` false, and the same
+  materialized-block hash (`4f8c609f1a36`) as at +30 s, with no progress frames
+  after either snapshot. The run ended and did not resume.
+- Both checks pass. **Verdict for U7:** keep §3.5's first row as it is, with no
+  Terminate after `SettledWithoutTerminal`. Spend after `text_completed` was not
+  measured, because the quota reports no count. This shows only that the run
+  completed and stayed idle. It does not show zero spend.
 
 ## Derived values
 
@@ -226,7 +237,7 @@ reconnectable.
 | `Gone` | 403 with body `{}`; no 404 or 410 seen | P3, P5 B, smoke |
 | terminate | works without the token; stops the run; U7 uses terminate, then delete | P5 A/B |
 | first content | first progress within 5 s on every run (0.49 to 4.54 s), so `FirstContentWithin(90)` is supported | P1, P2 |
-| P5 C spend check | not run (budget); spend after `text_completed` not measured | none |
+| `SettledWithoutTerminal` cleanup | no Terminate (the run completes on its own and stays idle); spend after `text_completed` not measured under `not_provided` | P5 C |
 
 ## Plan assumptions these probes contradict
 
@@ -252,4 +263,3 @@ reconnectable.
 5. **§10 "use the minimal use-case list" as the fix for quadratic growth.** The
    minimal list moves the whole-string report replaces into `workflow_block`, which
    §5.1 classifies as `content` and §2.4.1 tracks.
-6. **§8 budget.** U1's rows need 13 ask runs, not 12, so P5 C did not run.
