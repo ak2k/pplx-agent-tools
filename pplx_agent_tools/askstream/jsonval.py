@@ -12,10 +12,11 @@ Being additive, it can be kept exact by crediting and charging subtrees.
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Iterator
 from dataclasses import dataclass
 from json.encoder import encode_basestring_ascii
-from typing import Literal, cast, final
+from typing import Literal, NoReturn, cast, final
 
 from pplx_agent_tools.jsonval import JsonValue, from_parser
 
@@ -63,7 +64,10 @@ def scalar_weight(v: JsonValue) -> int:
             # Past the interpreter's int-to-str digit limit; a JSON parser under
             # that limit never produces one. Upper bound on the digit count.
             return v.bit_length() * 30103 // 100000 + 2
-    return len(json.dumps(v)) if isinstance(v, float) else 0
+    if isinstance(v, float):
+        # A finite float's JSON text is its repr, which skips the encoder setup.
+        return len(float.__repr__(v)) if math.isfinite(v) else len(json.dumps(v))
+    return 0
 
 
 def key_overhead(key: str) -> int:
@@ -82,13 +86,17 @@ def _children(v: object) -> Iterator[tuple[int, object]] | None:
 
 
 def _is_scalar(v: object) -> bool:
-    return v is None or isinstance(v, (bool, int, float, str))
+    """A JSON scalar; NaN and the infinities have no JSON form."""
+    if isinstance(v, float):
+        return math.isfinite(v)
+    return v is None or isinstance(v, (bool, int, str))
 
 
 def measure(value: object, max_depth: int = MAX_DEPTH) -> Measured | None:
     """Weight and node count of `value`, or None when it is not JSON-shaped
-    (a non-str key, a type JSON has no form for) or nests deeper than
-    `max_depth` containers. The depth bound also ends the walk on a cycle."""
+    (a non-str key, a non-finite float, a type JSON has no form for) or nests
+    deeper than `max_depth` containers. The depth bound also ends the walk on
+    a cycle."""
     if _is_scalar(value):
         return Measured(from_parser(value), scalar_weight(from_parser(value)), 1)
     root = _children(value)
@@ -123,11 +131,26 @@ def weight(value: JsonValue) -> int:
     return 0 if m is None else m.weight
 
 
+def _reject_constant(name: str) -> NoReturn:
+    raise ValueError(name)
+
+
+def _finite_float(text: str) -> float:
+    f = float(text)
+    if not math.isfinite(f):
+        raise ValueError(text)
+    return f
+
+
 def loads(raw: str) -> JsonValue | JsonError:
     """Parse JSON text; nesting deeper than `MAX_DEPTH` is an error too, so
-    every later walker may recurse safely. Never raises."""
+    every later walker may recurse safely. `NaN`, `Infinity`, `-Infinity`
+    and numbers too large for a float are not JSON: `syntax`. Never raises."""
     try:
-        value = cast("object", json.loads(raw))
+        value = cast(
+            "object",
+            json.loads(raw, parse_constant=_reject_constant, parse_float=_finite_float),
+        )
     except RecursionError:
         return JsonError("depth")
     except ValueError:

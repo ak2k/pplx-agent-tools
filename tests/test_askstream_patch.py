@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 import time
 import tracemalloc
 from typing import Any, cast
@@ -222,7 +223,11 @@ def test_differential_against_jsonpatch(case: tuple[Any, list[dict[str, Any]]]) 
 # --- arbitrary JSON as ops ----------------------------------------------------------------
 
 _ANY_JSON = st.recursive(
-    st.none() | st.booleans() | st.integers() | st.floats() | st.text(),
+    st.none()
+    | st.booleans()
+    | st.integers()
+    | st.floats(allow_nan=False, allow_infinity=False)
+    | st.text(),
     lambda inner: st.lists(inner, max_size=4) | st.dictionaries(st.text(), inner, max_size=4),
     max_leaves=16,
 )
@@ -232,7 +237,8 @@ _OPISH = st.fixed_dictionaries(
         "op": st.sampled_from(["add", "remove", "replace", "move", "copy", "test"]) | _ANY_JSON,
         "path": st.sampled_from(["", "/", "/a", "/a/0", "/a/-", "/0", "/a/01", "/~"]) | _ANY_JSON,
         "from": st.sampled_from(["", "/a", "/a/0", "/b"]) | _ANY_JSON,
-        "value": _ANY_JSON,
+        # Non-finite floats have no JSON form; parsing refuses them.
+        "value": _ANY_JSON | st.sampled_from([math.nan, math.inf, -math.inf]),
     },
 )
 
@@ -363,6 +369,54 @@ def test_changed_flag() -> None:
     assert run({"a": 1}, [{"op": "test", "path": "/a", "value": 1}]).changed == "noop"
     # JSON equality: true is not 1.
     assert isinstance(run({"a": True}, [{"op": "test", "path": "/a", "value": 1}]), Rejected)
+
+
+@pytest.mark.parametrize(
+    ("held", "tested", "equal"),
+    [
+        (1, 1.0, True),
+        (1.0, 1, True),
+        (-0.0, 0, True),
+        (2**53, float(2**53), True),
+        (1, 1.5, False),
+        (True, 1, False),
+        (1, True, False),
+        (False, 0, False),
+        (0, False, False),
+        (None, 0, False),
+        ("1", 1, False),
+        (1, "1", False),
+    ],
+)
+def test_json_number_equality(held: Any, tested: Any, equal: bool) -> None:
+    """JSON has one number type: 1 and 1.0 are equal; true is not 1."""
+    t = run({"a": [held]}, [{"op": "test", "path": "/a", "value": [tested]}])
+    assert isinstance(t, Applied if equal else Rejected)
+    r = run({"a": held}, [{"op": "replace", "path": "/a", "value": tested}])
+    assert isinstance(r, Applied)
+    assert r.changed == ("noop" if equal else "changed")
+
+
+def test_rejected_weight_counts_the_earlier_ops() -> None:
+    result = run(
+        {"a": 1, "c": [1, 2]},
+        [
+            {"op": "add", "path": "/b", "value": "xyz"},
+            {"op": "remove", "path": "/c/0"},
+            {"op": "test", "path": "/a", "value": 2},
+        ],
+    )
+    assert result == Rejected(2, "test_failed", weight({"a": 1, "c": [2], "b": "xyz"}))
+
+
+def test_loads_rejects_non_finite_numbers() -> None:
+    for raw in ["NaN", "Infinity", "-Infinity", "1e400", "-1e400", '{"a": [1, NaN]}', "[1e999]"]:
+        assert loads(raw) == JsonError("syntax"), raw
+    assert loads("1e308") == 1e308
+    assert loads("-0.0") == 0.0
+    for bad in [math.nan, math.inf, [1, -math.inf]]:
+        assert measure(bad) is None
+        assert parse_patch_op({"op": "add", "path": "/a", "value": bad}) is None
 
 
 # --- jsonval ---------------------------------------------------------------------------------------
