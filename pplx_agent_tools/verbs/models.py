@@ -14,9 +14,9 @@ Shapes (observed 2026-06-22):
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
 
 from ..errors import SchemaError
+from ..jsonval import as_array, as_object, str_or_none
 from ..wire import Client
 
 CONFIG_ENDPOINT = "/rest/models/config"
@@ -69,13 +69,12 @@ def models(client: Client) -> ModelsResult:
     return ModelsResult(models=model_infos, modes=mode_infos, default_models=defaults, cards=cards)
 
 
-def decode_model_cards(raw: Any) -> list[ModelCard]:
+def decode_model_cards(raw: object) -> list[ModelCard]:
     """Pure decode of /rest/models/config `config` array → the picker rows."""
-    if not isinstance(raw, dict):
-        return []
+    body = as_object(raw) or {}
     cards: list[ModelCard] = []
-    for e in raw.get("config") or []:
-        if not isinstance(e, dict):
+    for e in map(as_object, as_array(body.get("config")) or []):
+        if e is None:
             continue
         label = e.get("label")
         if not isinstance(label, str):
@@ -83,50 +82,47 @@ def decode_model_cards(raw: Any) -> list[ModelCard]:
         cards.append(
             ModelCard(
                 label=label,
-                base=_str_or_none(e.get("non_reasoning_model")),
-                thinking=_str_or_none(e.get("reasoning_model")),
-                tier=_str_or_none(e.get("subscription_tier")),
+                base=str_or_none(e.get("non_reasoning_model")),
+                thinking=str_or_none(e.get("reasoning_model")),
+                tier=str_or_none(e.get("subscription_tier")),
             )
         )
     return cards
 
 
-def decode_models_config(raw: Any) -> tuple[list[ModelInfo], dict[str, str]]:
+def decode_models_config(raw: object) -> tuple[list[ModelInfo], dict[str, str]]:
     """Pure decode of /rest/models/config → (models, default_models)."""
-    if not isinstance(raw, dict):
+    body = as_object(raw)
+    if body is None:
         raise SchemaError(f"unexpected response type from {CONFIG_ENDPOINT}: {type(raw).__name__}")
-    models_raw = raw.get("models")
+    models_raw = as_object(body.get("models")) or {}
     infos: list[ModelInfo] = []
-    if isinstance(models_raw, dict):
-        for key, v in sorted(models_raw.items()):
-            if not isinstance(v, dict):
-                continue
-            infos.append(
-                ModelInfo(
-                    key=key,
-                    label=_str_or_none(v.get("label")),
-                    description=_str_or_none(v.get("description")),
-                    mode=_str_or_none(v.get("mode")),
-                    provider=_str_or_none(v.get("provider")),
-                )
+    for key in sorted(models_raw):
+        v = as_object(models_raw[key])
+        if v is None:
+            continue
+        infos.append(
+            ModelInfo(
+                key=key,
+                label=str_or_none(v.get("label")),
+                description=str_or_none(v.get("description")),
+                mode=str_or_none(v.get("mode")),
+                provider=str_or_none(v.get("provider")),
             )
-    defaults_raw = raw.get("default_models")
-    defaults: dict[str, str] = {}
-    if isinstance(defaults_raw, dict):
-        defaults = {str(k): str(v) for k, v in defaults_raw.items() if isinstance(v, str)}
+        )
+    defaults_raw = as_object(body.get("default_models")) or {}
+    defaults = {k: v for k, v in defaults_raw.items() if isinstance(v, str)}
     return infos, defaults
 
 
-def decode_modes(raw: Any) -> list[ModeInfo]:
+def decode_modes(raw: object) -> list[ModeInfo]:
     """Pure decode of /rest/models/modes → list[ModeInfo]."""
-    if not isinstance(raw, dict):
+    body = as_object(raw)
+    if body is None:
         raise SchemaError(f"unexpected response type from {MODES_ENDPOINT}: {type(raw).__name__}")
-    modes_raw = raw.get("modes")
-    if not isinstance(modes_raw, list):
-        return []
     out: list[ModeInfo] = []
-    for m in modes_raw:
-        if not isinstance(m, dict):
+    for m in map(as_object, as_array(body.get("modes")) or []):
+        if m is None:
             continue
         mid = m.get("id")
         if not isinstance(mid, str):
@@ -134,12 +130,8 @@ def decode_modes(raw: Any) -> list[ModeInfo]:
         out.append(
             ModeInfo(
                 id=mid,
-                label=_str_or_none(m.get("label")),
-                description=_str_or_none(m.get("description")),
+                label=str_or_none(m.get("label")),
+                description=str_or_none(m.get("description")),
             )
         )
     return out
-
-
-def _str_or_none(v: Any) -> str | None:
-    return v if isinstance(v, str) and v else None

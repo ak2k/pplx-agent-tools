@@ -24,10 +24,11 @@ exhausted account. See tests/fixtures/rate-limit-status/anonymous.json.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any
 
 from ..errors import SchemaError
+from ..jsonval import as_object, int_or_none
 from ..wire import Client
 
 ENDPOINT = "/rest/rate-limit/status"
@@ -60,35 +61,33 @@ def quota(client: Client) -> QuotaResult:
     return decode_quota(raw)
 
 
-def decode_quota(raw: Any) -> QuotaResult:
+def decode_quota(raw: object) -> QuotaResult:
     """Pure decode: raw /rest/rate-limit/status response → QuotaResult.
 
     Tolerant of missing groups (returns empty lists) but raises SchemaError if
     the top-level shape isn't an object — that signals Perplexity changed the
     contract rather than just dropping an optional field.
     """
-    if not isinstance(raw, dict):
+    body = as_object(raw)
+    if body is None:
         raise SchemaError(f"unexpected response type from {ENDPOINT}: {type(raw).__name__}")
-    fq_raw = raw.get("free_queries")
-    free_queries = _item("free_queries", fq_raw) if isinstance(fq_raw, dict) else None
+    fq_raw = as_object(body.get("free_queries"))
     return QuotaResult(
-        free_queries=free_queries,
-        modes=_group(raw.get("modes")),
-        sources=_group(raw.get("sources")),
+        free_queries=_item("free_queries", fq_raw) if fq_raw is not None else None,
+        modes=_group(body.get("modes")),
+        sources=_group(body.get("sources")),
     )
 
 
-def _group(raw: Any) -> list[QuotaItem]:
-    if not isinstance(raw, dict):
-        return []
-    return [_item(name, v) for name, v in sorted(raw.items()) if isinstance(v, dict)]
+def _group(raw: object) -> list[QuotaItem]:
+    group = as_object(raw) or {}
+    items = ((name, as_object(group[name])) for name in sorted(group))
+    return [_item(name, v) for name, v in items if v is not None]
 
 
-def _item(name: str, raw: dict[str, Any]) -> QuotaItem:
-    detail = raw.get("remaining_detail")
-    remaining: int | None = None
-    if isinstance(detail, dict) and detail.get("kind") == "exact":
-        rv = detail.get("remaining")
-        if isinstance(rv, int):
-            remaining = rv
-    return QuotaItem(name=name, available=bool(raw.get("available")), remaining=remaining)
+def _item(name: str, raw: Mapping[str, object]) -> QuotaItem:
+    detail = as_object(raw.get("remaining_detail")) or {}
+    remaining = int_or_none(detail.get("remaining")) if detail.get("kind") == "exact" else None
+    # Only a literal `true` counts: a truthy string or number is not a
+    # promise the mode will accept a request.
+    return QuotaItem(name=name, available=raw.get("available") is True, remaining=remaining)

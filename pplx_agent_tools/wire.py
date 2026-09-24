@@ -31,6 +31,7 @@ from .errors import (
     StreamDeadlineError,
     StreamStallError,
 )
+from .jsonval import JsonValue, from_parser
 
 BASE_URL = "https://www.perplexity.ai"
 DEFAULT_TIMEOUT = 30.0
@@ -139,19 +140,15 @@ class Client:
         """
         return dict(self._cookies)
 
-    def get_json(self, path: str) -> Any:
+    def get_json(self, path: str) -> JsonValue:
         """GET a path, return the parsed JSON response.
 
         Same error mapping as `_get` / `post_json`: auth/rate-limit/network/CF.
         Used by the read-only stateless verbs (quota, models).
         """
-        resp = self._get(path)
-        try:
-            return resp.json()
-        except Exception as e:
-            raise SchemaError(f"non-JSON response from {path}") from e
+        return _json_body(self._get(path), path)
 
-    def post_json(self, path: str, body: dict[str, Any]) -> Any:
+    def post_json(self, path: str, body: dict[str, Any]) -> JsonValue:
         """POST a JSON body, return the parsed JSON response.
 
         Same error mapping as `_get`: auth/rate-limit/network/CF.
@@ -167,10 +164,7 @@ class Client:
         except Exception as e:
             raise NetworkError(f"POST {path} failed: {e!s}") from e
         self._check_status(resp, path)
-        try:
-            return resp.json()
-        except Exception as e:
-            raise SchemaError(f"non-JSON response from {path}") from e
+        return _json_body(resp, path)
 
     def delete_thread(self, entry_uuid: str, read_write_token: str) -> bool:
         """Delete a thread by entry UUID. Best-effort: any failure is logged
@@ -437,6 +431,13 @@ class _SSEFramer:
         self._parts = [rest] if rest else []
         self.pending_chars = len(rest)
         return events
+
+
+def _json_body(resp: Any, path: str) -> JsonValue:
+    try:
+        return from_parser(resp.json())
+    except Exception as e:
+        raise SchemaError(f"non-JSON response from {path}") from e
 
 
 def _silence_bounds(

@@ -11,24 +11,45 @@ a bug — it means the verb leaks an implementation detail.
   4. Cookie shape normalization   — auth._normalize (dict[str,str] or AuthError)
   5. Snippets retrieval pipeline  — _build_index + _hybrid_retrieve over
                                     adversarial corpora
+  6. JSON decoders (search, quota, models) — every decoded field has its
+                                    declared type, so both renderers are total
 """
 
 from __future__ import annotations
 
+import dataclasses
+import json
 import sqlite3
+import types
+import typing
 from collections.abc import Callable, Iterator
 from typing import Any
 
-from hypothesis import HealthCheck, given, settings
+from hypothesis import HealthCheck, example, given, settings
 from hypothesis import strategies as st
 
 from pplx_agent_tools.auth import _normalize
 from pplx_agent_tools.errors import AuthError, SchemaError
+from pplx_agent_tools.render import (
+    render_models_json,
+    render_models_text,
+    render_quota_json,
+    render_quota_text,
+    render_search_json,
+    render_search_text,
+)
 from pplx_agent_tools.verbs._ask_common import (
     event_marks_completed,
     extract_chunks_from_event,
 )
 from pplx_agent_tools.verbs.fetch import _fetch_with_prompt
+from pplx_agent_tools.verbs.models import (
+    ModelsResult,
+    decode_model_cards,
+    decode_models_config,
+    decode_modes,
+)
+from pplx_agent_tools.verbs.quota import decode_quota
 from pplx_agent_tools.verbs.search import (
     _keep,
     _to_hit,
@@ -414,3 +435,170 @@ def test_hybrid_retrieve_never_crashes_on_arbitrary_corpus(
             assert words > 0
     finally:
         conn.close()
+
+
+# ====================================================================
+# 6. JSON decoders: declared field types hold for any JSON input
+# ====================================================================
+
+
+def _conforms(value: object, hint: object) -> bool:
+    """Runtime check of `value` against a resolved annotation. Covers the
+    shapes the result dataclasses use; bool is not accepted where int is
+    declared (JSON `true` is not a count)."""
+    origin = typing.get_origin(hint)
+    args = typing.get_args(hint)
+    if origin in (typing.Union, types.UnionType):
+        ok = any(_conforms(value, a) for a in args)
+    elif origin is list:
+        ok = isinstance(value, list) and all(_conforms(v, args[0]) for v in value)
+    elif origin is dict:
+        ok = isinstance(value, dict) and all(
+            _conforms(k, args[0]) and _conforms(v, args[1]) for k, v in value.items()
+        )
+    elif hint is int:
+        ok = isinstance(value, int) and not isinstance(value, bool)
+    elif isinstance(hint, type) and dataclasses.is_dataclass(hint):
+        ok = isinstance(value, hint) and _fields_conform(value)
+    else:
+        assert isinstance(hint, type), f"unsupported annotation {hint!r}"
+        ok = isinstance(value, hint)
+    return ok
+
+
+def _fields_conform(obj: object) -> bool:
+    hints = typing.get_type_hints(type(obj))
+    return all(
+        _conforms(getattr(obj, f.name), hints[f.name])
+        for f in dataclasses.fields(obj)  # type: ignore[arg-type]
+    )
+
+
+# Optional fields drawn from arbitrary JSON so every ill-typed variant of a
+# known key reaches the decoder, not just the rare well-shaped payload.
+_web_result_optional: dict[str, st.SearchStrategy[Any]] = {
+    "domain": _json_value,
+    "snippet": _json_value,
+    "summary": _json_value,
+    "timestamp": _json_value,
+    "meta_data": st.one_of(
+        _json_value, st.fixed_dictionaries({"images": st.lists(_json_value, max_size=4)})
+    ),
+}
+_web_result = st.fixed_dictionaries(
+    {"url": st.text(max_size=20), "name": st.text(max_size=20)},
+    optional=_web_result_optional,
+)
+_search_payload = st.one_of(
+    _json_value, st.fixed_dictionaries({"web_results": st.lists(_web_result, max_size=5)})
+)
+
+
+@given(_search_payload)
+@example(
+    {"web_results": [{"url": "u", "name": "n", "domain": 5, "snippet": ["x"], "timestamp": {}}]}
+)
+def test_decoded_search_fields_have_declared_types_and_render(payload: Any) -> None:
+    try:
+        result = decode_search_response(payload, query="q", limit=10)
+    except SchemaError:
+        return
+    assert _fields_conform(result)
+    render_search_text(result)
+    json.dumps(render_search_json(result))
+
+
+_remaining_optional: dict[str, st.SearchStrategy[Any]] = {"remaining": _json_value}
+_quota_item = st.fixed_dictionaries(
+    {},
+    optional={
+        "available": _json_value,
+        "remaining_detail": st.one_of(
+            _json_value,
+            st.fixed_dictionaries(
+                {"kind": st.sampled_from(["exact", "not_provided"])},
+                optional=_remaining_optional,
+            ),
+        ),
+    },
+)
+_quota_payload = st.one_of(
+    _json_value,
+    st.fixed_dictionaries(
+        {},
+        optional={
+            "free_queries": st.one_of(_json_value, _quota_item),
+            "modes": st.dictionaries(st.text(max_size=10), _quota_item, max_size=4),
+            "sources": st.dictionaries(st.text(max_size=10), _quota_item, max_size=4),
+        },
+    ),
+)
+
+
+@given(_quota_payload)
+@example(
+    {"modes": {"m": {"available": 1, "remaining_detail": {"kind": "exact", "remaining": True}}}}
+)
+def test_decoded_quota_fields_have_declared_types_and_render(payload: Any) -> None:
+    try:
+        result = decode_quota(payload)
+    except SchemaError:
+        return
+    assert _fields_conform(result)
+    render_quota_text(result)
+    json.dumps(render_quota_json(result))
+
+
+def _any_keys(*keys: str) -> st.SearchStrategy[dict[str, Any]]:
+    optional: dict[str, st.SearchStrategy[Any]] = {k: _json_value for k in keys}
+    return st.fixed_dictionaries({}, optional=optional)
+
+
+_models_config = st.one_of(
+    _json_value,
+    st.fixed_dictionaries(
+        {},
+        optional={
+            "models": st.one_of(
+                _json_value,
+                st.dictionaries(
+                    st.text(max_size=10),
+                    _any_keys("label", "description", "mode", "provider"),
+                    max_size=4,
+                ),
+            ),
+            "default_models": _json_value,
+            "config": st.one_of(
+                _json_value,
+                st.lists(
+                    _any_keys(
+                        "label", "non_reasoning_model", "reasoning_model", "subscription_tier"
+                    ),
+                    max_size=4,
+                ),
+            ),
+        },
+    ),
+)
+_models_modes = st.one_of(
+    _json_value,
+    st.fixed_dictionaries(
+        {},
+        optional={"modes": st.lists(_any_keys("id", "label", "description"), max_size=4)},
+    ),
+)
+
+
+@given(_models_config, _models_modes)
+def test_decoded_models_fields_have_declared_types_and_render(config: Any, modes: Any) -> None:
+    try:
+        infos, defaults = decode_models_config(config)
+        mode_infos = decode_modes(modes)
+    except SchemaError:
+        return
+    result = ModelsResult(
+        models=infos, modes=mode_infos, default_models=defaults, cards=decode_model_cards(config)
+    )
+    assert _fields_conform(result)
+    render_models_text(result)
+    json.dumps(render_models_json(result))
