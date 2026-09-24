@@ -220,7 +220,7 @@ def _parse_figures(text: str) -> list[_Figure]:
         scale_word = m.group("word") or m.group("abbr")
         scale = _SCALES[scale_word.lower()] if scale_word else Decimal(1)
         unit = Decimal(1).scaleb(-decimals) * scale
-        bare = not (m.group("cur") or scale_word or m.group("pct") or decimals)
+        bare = not any((m.group("cur"), scale_word, m.group("pct"), decimals))
         if m.group("sign"):
             value = -value
         out.append(_Figure(m.group(0).strip(), value * scale, unit / 2, bare))
