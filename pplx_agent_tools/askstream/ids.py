@@ -2,14 +2,16 @@
 
 Each id has one smart constructor that returns None for anything it does not
 accept, so a value of these types was always checked. `ReadWriteToken` is a
-credential: no public route (repr, str, format, dataclass walks, json, pickle,
-copy) yields its value, and `reveal()` is the one reader.
+credential: no route (repr, str, format, dataclass walks, json, pickle, copy,
+state and attribute introspection) yields its value, and `reveal()` is the
+one reader.
 """
 
 from __future__ import annotations
 
 import hmac
 import re
+import secrets
 import uuid
 from dataclasses import dataclass
 from typing import NewType, NoReturn, final
@@ -63,10 +65,17 @@ class ReadWriteToken:
 
     A slots class rather than a dataclass: `dataclasses.asdict` recurses into
     dataclass fields, and would copy the raw value out.
+
+    The instance never holds the raw text: `_v` is its bytes XORed with the
+    random `_pad`. So every route that reads or prints stored state
+    (`__getstate__`, `inspect.getmembers`, `"{0._v}".format`, a debugger)
+    sees only masked bytes; unmasking takes a call, which only this class
+    makes.
     """
 
-    __slots__ = ("_v",)
-    _v: str
+    __slots__ = ("_pad", "_v")
+    _pad: bytes
+    _v: bytes
 
     def __init__(self) -> None:
         raise TypeError("use ReadWriteToken.parse")
@@ -77,12 +86,18 @@ class ReadWriteToken:
         (ASCII only), else None."""
         if not isinstance(raw, str) or _TOKEN_RE.fullmatch(raw) is None:
             return None
+        data = raw.encode("ascii")
+        pad = secrets.token_bytes(len(data))
         tok = object.__new__(cls)
-        object.__setattr__(tok, "_v", raw)
+        object.__setattr__(tok, "_pad", pad)
+        object.__setattr__(tok, "_v", bytes(a ^ b for a, b in zip(data, pad, strict=True)))
         return tok
 
+    def _raw(self) -> bytes:
+        return bytes(a ^ b for a, b in zip(self._v, self._pad, strict=True))
+
     def reveal(self) -> str:
-        return self._v
+        return self._raw().decode("ascii")
 
     def __repr__(self) -> str:
         return _REDACTED
@@ -96,11 +111,10 @@ class ReadWriteToken:
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, ReadWriteToken):
             return NotImplemented
-        # Bytes, not str: `compare_digest` raises on non-ASCII str.
-        return hmac.compare_digest(self._v.encode(), other._v.encode())
+        return hmac.compare_digest(self._raw(), other._raw())
 
     def __hash__(self) -> int:
-        return hash(self._v)
+        return hash(self._raw())
 
     def __setattr__(self, name: str, value: object) -> NoReturn:
         raise AttributeError("ReadWriteToken is immutable")
@@ -113,6 +127,9 @@ class ReadWriteToken:
 
     def __deepcopy__(self, memo: dict[int, object]) -> ReadWriteToken:
         return self
+
+    def __getstate__(self) -> NoReturn:
+        raise TypeError("ReadWriteToken is not picklable")
 
     def __reduce__(self) -> NoReturn:
         raise TypeError("ReadWriteToken is not picklable")

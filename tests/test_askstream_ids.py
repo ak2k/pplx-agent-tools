@@ -5,7 +5,10 @@ from __future__ import annotations
 import ast
 import copy
 import dataclasses
+import inspect
+import io
 import json
+import logging
 import pickle
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -26,6 +29,9 @@ from pplx_agent_tools.askstream.ids import (
 REPO = Path(__file__).resolve().parent.parent
 UUID = "0d2b1c3a-1111-2222-3333-444455556666"
 TOKENS = st.from_regex(r"[A-Za-z0-9_-]{1,256}", fullmatch=True)
+# Routes that show the masked state print random bytes, in which a token of a
+# few characters can appear by chance; 16 or more cannot in practice.
+LONG_TOKENS = st.from_regex(r"[A-Za-z0-9_-]{16,256}", fullmatch=True)
 OTHER_RAW = "zzzzzzzz-other-token"
 
 
@@ -165,6 +171,123 @@ def test_setattr_and_delattr_raise(raw: str, other: str) -> None:
     assert tok.reveal() == raw
 
 
+def _shown(route: Callable[[], object]) -> str:
+    """What a route shows: its result's repr and str, or its error's message."""
+    try:
+        out = route()
+    except Exception as e:
+        return f"{type(e).__name__}: {e} {e.args!r}"
+    return f"{out!r} {out!s}"
+
+
+def _assert_route_hides(route: Callable[[ReadWriteToken], object], raw: str) -> None:
+    tok = _tok(raw)
+    assert raw not in _shown(lambda: route(tok))
+
+
+@given(LONG_TOKENS)
+def test_getstate_raises_and_hides_token(raw: str) -> None:
+    tok = _tok(raw)
+    with pytest.raises(TypeError, match="not picklable"):
+        tok.__getstate__()
+    _assert_route_hides(lambda t: t.__getstate__(), raw)
+
+
+@given(LONG_TOKENS)
+def test_reduce_and_reduce_ex_raise_and_hide_token(raw: str) -> None:
+    tok = _tok(raw)
+    with pytest.raises(TypeError, match="not picklable"):
+        tok.__reduce__()
+    for protocol in range(pickle.HIGHEST_PROTOCOL + 1):
+        with pytest.raises(TypeError, match="not picklable"):
+            tok.__reduce_ex__(protocol)
+    _assert_route_hides(lambda t: t.__reduce__(), raw)
+    _assert_route_hides(lambda t: t.__reduce_ex__(2), raw)
+
+
+@given(LONG_TOKENS)
+def test_copy_and_deepcopy_hide_token(raw: str) -> None:
+    _assert_route_hides(copy.copy, raw)
+    _assert_route_hides(copy.deepcopy, raw)
+
+
+@given(LONG_TOKENS)
+def test_format_field_access_hides_token(raw: str) -> None:
+    """`str.format` reads attributes without a call: every attribute of the
+    token, and every conversion, shows no raw value."""
+    tok = _tok(raw)
+    for name in dir(tok):
+        assert raw not in _shown(lambda n=name: f"{{0.{n}}}".format(tok))
+        assert raw not in _shown(lambda n=name: f"{{0.{n}!r}}".format(tok))
+    for spec in ("{0._v}", "{0._pad}", "{0.__slots__}", "{0!r}", "{0!s}", "{0!a}"):
+        assert raw not in _shown(lambda sp=spec: sp.format(tok))
+
+
+@given(LONG_TOKENS)
+def test_inspect_getmembers_hides_token(raw: str) -> None:
+    _assert_route_hides(inspect.getmembers, raw)
+
+
+@given(LONG_TOKENS)
+def test_vars_and_dict_hide_token(raw: str) -> None:
+    tok = _tok(raw)
+    with pytest.raises(TypeError):
+        vars(tok)
+    with pytest.raises(AttributeError):
+        _ = tok.__dict__
+    _assert_route_hides(vars, raw)
+
+
+@given(LONG_TOKENS)
+def test_slot_reads_hide_token(raw: str) -> None:
+    tok = _tok(raw)
+    slots: tuple[str, ...] = ReadWriteToken.__slots__
+    for name in slots:
+        assert raw not in _shown(lambda n=name: getattr(tok, n))
+        assert raw.encode() not in getattr(tok, name)
+    assert raw not in _shown(lambda: [getattr(tok, n) for n in slots])
+
+
+@given(LONG_TOKENS)
+def test_exception_messages_hide_token(raw: str) -> None:
+    other = _tok(OTHER_RAW)
+    routes: list[Callable[[ReadWriteToken], object]] = [
+        lambda t: t + 1,  # pyright: ignore[reportOperatorIssue, reportUnknownLambdaType]
+        lambda t: t < other,  # pyright: ignore[reportOperatorIssue, reportUnknownLambdaType]
+        int,  # pyright: ignore[reportAssignmentType]
+        lambda t: t["x"],  # pyright: ignore[reportIndexIssue, reportUnknownLambdaType]
+        lambda t: t.missing,  # pyright: ignore[reportAttributeAccessIssue, reportUnknownLambdaType]
+        lambda t: setattr(t, "_v", b""),
+        lambda t: delattr(t, "_v"),
+        json.dumps,
+        lambda t: json.dumps({"k": t}),
+        pickle.dumps,
+        lambda t: pickle.dumps(ThreadRef(BackendUuid(UUID), t)),
+    ]
+    for route in routes:
+        _assert_route_hides(route, raw)
+
+
+@given(LONG_TOKENS)
+def test_logging_percent_formatting_hides_token(raw: str) -> None:
+    tok = _tok(raw)
+    stream = io.StringIO()
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(logging.Formatter("%(message)s %(args)s"))
+    log = logging.getLogger("askstream-i13")
+    log.addHandler(handler)
+    log.propagate = False
+    try:
+        log.warning("%s %r %a", tok, tok, tok)
+        log.warning("%(t)s %(t)r", {"t": tok})
+        log.warning("ref %s", ThreadRef(BackendUuid(UUID), tok))
+    finally:
+        log.removeHandler(handler)
+    out = stream.getvalue()
+    assert out.count("ReadWriteToken(<redacted>)") >= 5
+    assert raw not in out
+
+
 def test_direct_construction_is_refused() -> None:
     with pytest.raises(TypeError):
         ReadWriteToken()
@@ -261,6 +384,7 @@ def test_parse_cursor() -> None:
 # The one place the raw token may be read: the delete request body.
 _REVEAL_ALLOWED = {("pplx_agent_tools/wire.py", "AsyncTransport", "delete")}
 _V_ALLOWED = {"pplx_agent_tools/askstream/ids.py"}
+_TOKEN_SLOTS = {"_v", "_pad"}
 
 
 def _scanned_files() -> Iterator[tuple[str, str]]:
@@ -286,8 +410,12 @@ def _violations(rel: str, source: str) -> list[str]:
                 and (rel, cls, fn) not in _REVEAL_ALLOWED
             ):
                 found.append(f"{rel}:{child.lineno}: .reveal()")
-            if isinstance(child, ast.Attribute) and child.attr == "_v" and rel not in _V_ALLOWED:
-                found.append(f"{rel}:{child.lineno}: ._v")
+            if (
+                isinstance(child, ast.Attribute)
+                and child.attr in _TOKEN_SLOTS
+                and rel not in _V_ALLOWED
+            ):
+                found.append(f"{rel}:{child.lineno}: .{child.attr}")
             walk(child, c, f)
 
     walk(ast.parse(source), None, None)
@@ -306,13 +434,16 @@ def test_scans_detect_violations() -> None:
         "def f(t):\n    return t.reveal()\n"
         "class AsyncTransport:\n    def delete(self, r):\n        return r.token.reveal()\n"
         "x = tok._v\n"
+        "y = tok._pad\n"
     )
     assert _violations("pplx_agent_tools/other.py", src) == [
         "pplx_agent_tools/other.py:2: .reveal()",
         "pplx_agent_tools/other.py:5: .reveal()",
         "pplx_agent_tools/other.py:6: ._v",
+        "pplx_agent_tools/other.py:7: ._pad",
     ]
     assert _violations("pplx_agent_tools/wire.py", src) == [
         "pplx_agent_tools/wire.py:2: .reveal()",
         "pplx_agent_tools/wire.py:6: ._v",
+        "pplx_agent_tools/wire.py:7: ._pad",
     ]
