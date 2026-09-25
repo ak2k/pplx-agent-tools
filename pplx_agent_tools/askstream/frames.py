@@ -65,6 +65,7 @@ MalformedReason = Literal[
     "field_too_deep",
     "patches_not_list",
     "bad_op",
+    "pointer_too_deep",
 ]
 # (intended_usage, field). A dotted diff `field` keeps only its first part
 # here; the rest is a pointer prefix on its ops, so every patch to one block
@@ -281,6 +282,19 @@ def _prefixed(op: PatchOp, prefix: Pointer) -> PatchOp:
     return dataclasses.replace(op, path=prefix + op.path)
 
 
+def _field_op(raw: JsonValue, prefix: Pointer) -> PatchOp | MalformedReason:
+    op = parse_patch_op(raw)
+    if op is None:
+        return "bad_op"
+    op = _prefixed(op, prefix)
+    # The dotted field and the op path are each within the limit; the
+    # pointer they join into must be too.
+    from_ = op.from_ if isinstance(op, (Move, Copy)) else ()
+    if max(len(op.path), len(from_)) > MAX_POINTER_SEGMENTS:
+        return "pointer_too_deep"
+    return op
+
+
 def _malformed(
     usage: str, field: tuple[str, ...], reason: MalformedReason, drift: list[Drift]
 ) -> BlockMalformed:
@@ -304,10 +318,10 @@ def _diff(usage: str, raw: JsonValue, drift: list[Drift]) -> BlockUpdate:
         return _malformed(usage, field, "patches_not_list", drift)
     ops: list[PatchOp] = []
     for p in patches:
-        op = parse_patch_op(p)
-        if op is None:
-            return _malformed(usage, field, "bad_op", drift)
-        ops.append(_prefixed(op, field[1:]))
+        op = _field_op(p, field[1:])
+        if isinstance(op, str):
+            return _malformed(usage, field, op, drift)
+        ops.append(op)
     return BlockDiff((usage, field[:1]), tuple(ops))
 
 
