@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from pplx_agent_tools.askstream import fsm
+from pplx_agent_tools.askstream import blocks, frames, fsm
 from pplx_agent_tools.askstream.fsm import (
     AwaitingFirst,
     FrameSummary,
@@ -122,7 +122,7 @@ def live(
     ids: fsm.Ids = NO_IDS,
     started_at: float = 0.0,
     deadline: At | Unbounded = AT_540,
-    reconnectable: fsm.Reconnectable = "absent",
+    reconnectable: frames.Reconnectable = "absent",
     rc_consecutive: int = 0,
     rc_total: int = 0,
     next_conn: int = 2,
@@ -148,7 +148,7 @@ def streaming(
 
 
 def frame(
-    stage: fsm.Stage = "pending", change: fsm.Change = "progress", **kw: object
+    stage: frames.Stage = "pending", change: blocks.Change = "progress", **kw: object
 ) -> FrameSummary:
     return replace(FrameSummary(stage, change), **kw)  # pyright: ignore[reportArgumentType]
 

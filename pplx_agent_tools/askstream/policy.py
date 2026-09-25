@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Literal, TypeAlias, final
 
 from pplx_agent_tools.askstream.patch import Limits
+from pplx_agent_tools.askstream.projections import AnswerPaths
 
 
 @final
@@ -104,10 +105,6 @@ class Bounded:
 
 
 Reconnect: TypeAlias = Off | Bounded
-
-# Which answer paths a verb's projection reads; research's workflow text items
-# are step summaries, never its answer.
-AnswerPaths = Literal["ask_text_or_workflow", "ask_text_only"]
 
 Verb = Literal["ask", "fetch", "research"]
 

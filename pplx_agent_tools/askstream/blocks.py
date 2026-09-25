@@ -43,6 +43,7 @@ from pplx_agent_tools.askstream.projections import (
     report_body,
 )
 
+# Whether the frame changed content the progress rule counts.
 Change = Literal["idle", "progress"]
 FieldClass = Literal["content", "report_asset", "chrome", "unknown"]
 Verdict = Literal["equal", "citations_renumbered", "at_or_ahead", "mismatch", "not_compared"]

@@ -49,12 +49,14 @@ __all__ = [
     "FieldKey",
     "Frame",
     "Heartbeat",
+    "Reconnectable",
     "Stage",
     "Unparseable",
     "decode_frame",
     "known_usage",
 ]
 
+# Derived once per frame from (status, text_completed).
 Stage = Literal["pending", "text_complete", "completed", "failed", "other"]
 Reconnectable = Literal["yes", "no", "absent"]
 UnparseableReason = Literal["syntax", "depth", "not_object"]

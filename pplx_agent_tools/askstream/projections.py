@@ -30,6 +30,8 @@ READS: Mapping[ReadKey, FieldKey] = MappingProxyType(
 )
 READ_FIELDS: frozenset[FieldKey] = frozenset(READS.values())
 
+# Which answer paths a verb's projection reads; research's workflow text items
+# are step summaries, never its answer.
 AnswerPaths = Literal["ask_text_or_workflow", "ask_text_only"]
 
 CITATIONS_NOT_FINAL = "the answer's citation numbers may not match `sources`"

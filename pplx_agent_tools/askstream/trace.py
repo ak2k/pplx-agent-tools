@@ -12,10 +12,11 @@ from typing import Literal, TypeAlias, final
 
 from typing_extensions import assert_never
 
+from pplx_agent_tools.askstream.blocks import Change
+from pplx_agent_tools.askstream.frames import Stage
 from pplx_agent_tools.askstream.fsm import (
     AwaitingFirst,
     BrokeKind,
-    Change,
     Close,
     Done,
     DueTag,
@@ -36,7 +37,6 @@ from pplx_agent_tools.askstream.fsm import (
     Reconnecting,
     ReconnectReason,
     ReconnectTarget,
-    Stage,
     StartBackoff,
     Starting,
     State,
