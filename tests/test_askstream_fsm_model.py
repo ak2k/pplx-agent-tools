@@ -80,6 +80,8 @@ from pplx_agent_tools.askstream.policy import (
     Policy,
     PolicyError,
     SettleAfterText,
+    StallAfter,
+    StallOff,
     Unbounded,
 )
 from pplx_agent_tools.errors import AuthError, SchemaError
@@ -92,7 +94,7 @@ def policies(draw: st.DrawFn) -> Policy:
     cap = deadline.t if isinstance(deadline, At) else 700.0
     p = Policy.make(
         deadline=deadline,
-        stall_s=draw(st.floats(5, cap)),
+        stall=draw(st.sampled_from([StallAfter(draw(st.floats(5, cap))), StallOff()])),
         completion=draw(
             st.sampled_from(
                 [SettleAfterText(15.0), SettleAfterText(3.0), AtTextComplete(), AtCompleted()]
@@ -356,15 +358,19 @@ class LifecycleModel(RuleBasedStateMachine):
         ):
             lp = _lp(before)
             assert lp is not None
-            assert e.now >= lp + p.stall_s
+            assert isinstance(p.stall, StallAfter)
+            assert e.now >= lp + p.stall.s
         if current and isinstance(e, OpenFailed) and isinstance(e.f, RateLimited):
             self.saw_429 = True
         cut = s2.outcome if isinstance(s2, Done) else None
-        if isinstance(cut, Cut) and cut.cause == "stall" and not self.late:
+        # With the stall check off only silence cuts, and bytes without progress defer it.
+        stall_on = isinstance(p.stall, StallAfter)
+        if isinstance(cut, Cut) and cut.cause == "stall" and not self.late and stall_on:
             k = p.reconnect.consecutive if isinstance(p.reconnect, Bounded) else 0
             # A 429 on a reconnect may wait its retry-after, capped, instead of the backoff.
             wait = max(p.backoff_cap_s, RATE_LIMIT_CAP_S) if self.saw_429 else p.backoff_cap_s
-            bound = self.last_progress + p.stall_s + k * (wait + p.open_s + p.grace_s)
+            assert isinstance(p.stall, StallAfter)
+            bound = self.last_progress + p.stall.s + k * (wait + p.open_s + p.grace_s)
             assert self.now <= bound + 1e-6
 
         if isinstance(s2, Done):

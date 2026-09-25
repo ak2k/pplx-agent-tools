@@ -49,6 +49,8 @@ from pplx_agent_tools.askstream.policy import (
     Off,
     Policy,
     SettleAfterText,
+    StallAfter,
+    StallOff,
     Unbounded,
     rate_limit_delay,
     reconnect_delay,
@@ -451,7 +453,8 @@ def timers(policy: Policy, s: State) -> list[tuple[DueTag, float]]:
                 policy.first_content, FirstContentWithin
             ):
                 out.append(("first_content", live.started_at + policy.first_content.s))
-            out.append(("stall", max(last_progress + policy.stall_s, floor)))
+            if isinstance(policy.stall, StallAfter):
+                out.append(("stall", max(last_progress + policy.stall.s, floor)))
             out.append(("silence", max(last_byte_at + policy.silence_s, floor)))
         case _:
             assert_never(s)
@@ -525,7 +528,7 @@ def fallback(policy: Policy, reason: ReconnectReason, live: Live) -> Outcome:
             return EndedEarly(n, "server")
         # Settle is due only in TextComplete; a stall is the nearest meaning.
         case "stall" | "silence" | "settle":
-            return Cut("stall", policy.stall_s, n)
+            return Cut("stall", stall_window(policy), n)
         case "first_content":
             fc = policy.first_content
             match fc:
@@ -537,6 +540,19 @@ def fallback(policy: Policy, reason: ReconnectReason, live: Live) -> Outcome:
                     assert_never(fc)
         case _:
             assert_never(reason)
+
+
+def stall_window(policy: Policy) -> float:
+    """The seconds a stall cut reports; with the stall check off only
+    silence can cut, so it reports the silence window."""
+    stall = policy.stall
+    match stall:
+        case StallAfter(s):
+            return s
+        case StallOff():
+            return policy.silence_s
+        case _:
+            assert_never(stall)
 
 
 def deadline_outcome(live: Live) -> Outcome:

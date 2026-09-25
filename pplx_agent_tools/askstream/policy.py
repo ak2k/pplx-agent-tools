@@ -33,6 +33,23 @@ Deadline: TypeAlias = At | Unbounded
 
 @final
 @dataclass(frozen=True, slots=True)
+class StallAfter:
+    """Cut after `s` seconds without progress."""
+
+    s: float
+
+
+@final
+@dataclass(frozen=True, slots=True)
+class StallOff:
+    pass
+
+
+Stall: TypeAlias = StallAfter | StallOff
+
+
+@final
+@dataclass(frozen=True, slots=True)
 class SettleAfterText:
     """Ask: COMPLETED completes; after `text_completed`, wait at most
     `settle_s` for it."""
@@ -116,7 +133,7 @@ class Policy:
     """Build with `Policy.make` (validated) or `for_verb`."""
 
     deadline: Deadline
-    stall_s: float
+    stall: Stall
     completion: Completion
     answer_paths: AnswerPaths
     first_content: FirstContent
@@ -134,7 +151,7 @@ class Policy:
     def make(
         *,
         deadline: Deadline,
-        stall_s: float,
+        stall: Stall,
         completion: Completion,
         answer_paths: AnswerPaths,
         first_content: FirstContent = FIRST_CONTENT_OFF,
@@ -149,7 +166,6 @@ class Policy:
         limits: Limits = DEFAULT_LIMITS,
     ) -> Policy | PolicyError:
         seconds = {
-            "stall_s": stall_s,
             "silence_s": silence_s,
             "open_s": open_s,
             "grace_s": grace_s,
@@ -161,6 +177,11 @@ class Policy:
             case At(t):
                 seconds["deadline"] = t
             case Unbounded():
+                pass
+        match stall:
+            case StallAfter(s):
+                seconds["stall_s"] = s
+            case StallOff():
                 pass
         match completion:
             case SettleAfterText(settle_s):
@@ -175,8 +196,10 @@ class Policy:
         for name, v in seconds.items():
             if not (math.isfinite(v) and v > 0):
                 return PolicyError(f"{name} must be a positive finite number")
-        if isinstance(deadline, At) and stall_s > deadline.t:
-            return PolicyError("stall_s must not exceed the deadline")
+        # A stall window past the deadline can never fire first; the CLI
+        # accepts one, so it is capped rather than refused.
+        if isinstance(deadline, At) and isinstance(stall, StallAfter) and stall.s > deadline.t:
+            stall = StallAfter(deadline.t)
         if backoff_base_s > backoff_cap_s:
             return PolicyError("backoff_base_s must not exceed backoff_cap_s")
         if rate_limit_attempts < 1:
@@ -189,7 +212,7 @@ class Policy:
                 pass
         return Policy(
             deadline=deadline,
-            stall_s=stall_s,
+            stall=stall,
             completion=completion,
             answer_paths=answer_paths,
             first_content=first_content,
@@ -211,44 +234,47 @@ class Policy:
         return max(self.open_s, self.silence_s) + 5
 
 
+def deadline_of(seconds: float | None) -> Deadline:
+    """The CLI's resolved `--timeout`: None, 0, a negative value or infinity
+    means no deadline."""
+    if seconds is None or seconds <= 0 or math.isinf(seconds):
+        return Unbounded()
+    return At(float(seconds))
+
+
+def stall_of(seconds: float | None) -> Stall:
+    """The CLI's resolved `--stall-timeout`, with `deadline_of`'s meanings."""
+    if seconds is None or seconds <= 0 or math.isinf(seconds):
+        return StallOff()
+    return StallAfter(float(seconds))
+
+
+_DEFAULTS: dict[Verb, tuple[Deadline, Stall, Completion, AnswerPaths]] = {
+    "ask": (At(540.0), StallAfter(480.0), SettleAfterText(15.0), "ask_text_or_workflow"),
+    "fetch": (At(540.0), StallAfter(480.0), AtTextComplete(), "ask_text_or_workflow"),
+    "research": (At(3600.0), StallAfter(240.0), AtCompleted(), "ask_text_only"),
+}
+
+
 def for_verb(
     verb: Verb,
     *,
-    deadline_s: float | None = None,
-    stall_s: float | None = None,
+    deadline: Deadline | None = None,
+    stall: Stall | None = None,
     reconnect: Reconnect = OFF,
     first_content: FirstContent = FIRST_CONTENT_OFF,
 ) -> Policy | PolicyError:
-    """The measured defaults for one verb; `deadline_s` and `stall_s` are the
-    CLI's `--timeout` and `--stall-timeout`."""
-    match verb:
-        case "ask":
-            return Policy.make(
-                deadline=At(540.0 if deadline_s is None else deadline_s),
-                stall_s=480.0 if stall_s is None else stall_s,
-                completion=SettleAfterText(15.0),
-                answer_paths="ask_text_or_workflow",
-                first_content=first_content,
-                reconnect=reconnect,
-            )
-        case "fetch":
-            return Policy.make(
-                deadline=At(540.0 if deadline_s is None else deadline_s),
-                stall_s=480.0 if stall_s is None else stall_s,
-                completion=AtTextComplete(),
-                answer_paths="ask_text_or_workflow",
-                first_content=first_content,
-                reconnect=reconnect,
-            )
-        case "research":
-            return Policy.make(
-                deadline=At(3600.0 if deadline_s is None else deadline_s),
-                stall_s=240.0 if stall_s is None else stall_s,
-                completion=AtCompleted(),
-                answer_paths="ask_text_only",
-                first_content=first_content,
-                reconnect=reconnect,
-            )
+    """The measured defaults for one verb; None keeps the verb's default
+    deadline or stall window."""
+    default_deadline, default_stall, completion, answer_paths = _DEFAULTS[verb]
+    return Policy.make(
+        deadline=default_deadline if deadline is None else deadline,
+        stall=default_stall if stall is None else stall,
+        completion=completion,
+        answer_paths=answer_paths,
+        first_content=first_content,
+        reconnect=reconnect,
+    )
 
 
 def jitter(u: float) -> float:

@@ -52,6 +52,8 @@ from pplx_agent_tools.askstream.policy import (
     PolicyError,
     Reconnect,
     SettleAfterText,
+    Stall,
+    StallAfter,
     Unbounded,
 )
 from pplx_agent_tools.errors import SchemaError
@@ -87,17 +89,20 @@ NO_IDS = NoIds()
 NO_GRACE = NoGrace()
 
 
+STALL_480 = StallAfter(480.0)
+
+
 def policy(
     completion: Completion = SETTLE,
     *,
     reconnect: Reconnect = OFF,
     first_content: FirstContent = FC_OFF,
     deadline: At | Unbounded = AT_540,
-    stall_s: float = 480.0,
+    stall: Stall = STALL_480,
 ) -> Policy:
     p = Policy.make(
         deadline=deadline,
-        stall_s=stall_s,
+        stall=stall,
         completion=completion,
         answer_paths="ask_text_or_workflow",
         first_content=first_content,
@@ -193,7 +198,7 @@ def expected_fallback(p: Policy, reason: ReconnectReason, lv: Live) -> Outcome:
     if reason == "first_content":
         fc = p.first_content
         return Cut("first_content", fc.s if isinstance(fc, FirstContentWithin) else 0.0, n)
-    return Cut("stall", p.stall_s, n)
+    return Cut("stall", p.stall.s if isinstance(p.stall, StallAfter) else p.silence_s, n)
 
 
 def expected_deadline_outcome(lv: Live) -> Outcome:

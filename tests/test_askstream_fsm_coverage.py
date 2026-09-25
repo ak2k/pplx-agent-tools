@@ -79,6 +79,8 @@ from pplx_agent_tools.askstream.policy import (
     Policy,
     PolicyError,
     SettleAfterText,
+    StallAfter,
+    StallOff,
     Unbounded,
 )
 from pplx_agent_tools.errors import (
@@ -221,7 +223,8 @@ def _policy(rng: random.Random, completion_cls: type) -> Policy:
     cap = deadline.t if isinstance(deadline, At) else 600.0
     p = Policy.make(
         deadline=deadline,
-        stall_s=rng.uniform(5, cap),
+        # Mostly on: T24 cells need the stall term to come first.
+        stall=rng.choice([StallAfter(rng.uniform(5, cap))] * 3 + [StallOff()]),
         completion=completion,
         answer_paths="ask_text_or_workflow",
         first_content=rng.choice([FirstContentOff(), FirstContentWithin(rng.uniform(1, 120))]),

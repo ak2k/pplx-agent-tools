@@ -65,6 +65,7 @@ from pplx_agent_tools.askstream.policy import (
     Policy,
     PolicyError,
     SettleAfterText,
+    StallAfter,
     Unbounded,
     for_verb,
     jitter,
@@ -615,7 +616,7 @@ def test_t26_nothing_due() -> None:
 
 def test_grace_raises_stall_and_silence() -> None:
     s0 = streaming(live(phase=Producing(0.0)), last_byte_at=0.0, grace=GraceUntil(100.0))
-    p = policy(deadline=At(3600.0), stall_s=50.0)
+    p = policy(deadline=At(3600.0), stall=StallAfter(50.0))
     assert fsm.due_class(p, s0, 99.999) == "none"
     assert fsm.due_class(p, s0, 100.0) == "stall"
     assert fsm.next_wake(p, s0) == 100.0
@@ -623,7 +624,7 @@ def test_grace_raises_stall_and_silence() -> None:
 
 def test_settle_precedes_stall_and_silence_on_the_same_tick() -> None:
     s0 = streaming(live(phase=TextComplete(0.0, 10.0)), last_byte_at=0.0)
-    p = policy(stall_s=25.0)
+    p = policy(stall=StallAfter(25.0))
     assert fsm.due_class(p, s0, 25.0) == "settle"
 
 
@@ -794,14 +795,14 @@ def test_round5_ends_after_text_done(tail: list[fsm.Event], outcome: object) -> 
 
 
 def test_round5_stall_after_text_done() -> None:
-    p = policy(stall_s=10.0)
+    p = policy(stall=StallAfter(10.0))
     s = _run(p, [*TEXT_DONE, HeartbeatIn(C1, 12.0), Tick(13.0)])
     assert isinstance(s, Done)
     assert s.outcome == SettledWithoutTerminal(0, "stall")
 
 
 def test_round5_silence_after_text_done() -> None:
-    p = policy(completion=SettleAfterText(100.0), stall_s=400.0)
+    p = policy(completion=SettleAfterText(100.0), stall=StallAfter(400.0))
     s = _run(p, [*TEXT_DONE, Tick(28.0)])
     assert isinstance(s, Done)
     assert s.outcome == SettledWithoutTerminal(0, "stall")
@@ -835,16 +836,20 @@ def test_verb_policies() -> None:
     assert isinstance(ask, Policy)
     assert isinstance(fetch, Policy)
     assert isinstance(research, Policy)
-    assert (ask.deadline, ask.stall_s, ask.completion, ask.answer_paths) == (
+    assert (ask.deadline, ask.stall, ask.completion, ask.answer_paths) == (
         At(540.0),
-        480.0,
+        StallAfter(480.0),
         SettleAfterText(15.0),
         "ask_text_or_workflow",
     )
-    assert (fetch.deadline, fetch.stall_s, fetch.completion) == (At(540.0), 480.0, AtTextComplete())
-    assert (research.deadline, research.stall_s, research.completion, research.answer_paths) == (
+    assert (fetch.deadline, fetch.stall, fetch.completion) == (
+        At(540.0),
+        StallAfter(480.0),
+        AtTextComplete(),
+    )
+    assert (research.deadline, research.stall, research.completion, research.answer_paths) == (
         At(3600.0),
-        240.0,
+        StallAfter(240.0),
         AtCompleted(),
         "ask_text_only",
     )
@@ -863,9 +868,8 @@ def test_verb_policies() -> None:
 @pytest.mark.parametrize(
     "kw",
     [
-        {"stall_s": 0.0},
-        {"stall_s": 600.0},
-        {"stall_s": float("nan")},
+        {"stall": StallAfter(0.0)},
+        {"stall": StallAfter(float("nan"))},
         {"deadline": At(-1.0)},
         {"completion": SettleAfterText(0.0)},
         {"first_content": FirstContentWithin(float("inf"))},
@@ -878,7 +882,7 @@ def test_verb_policies() -> None:
 def test_policy_make_rejects(kw: dict[str, object]) -> None:
     args: dict[str, object] = {
         "deadline": At(540.0),
-        "stall_s": 480.0,
+        "stall": StallAfter(480.0),
         "completion": SETTLE_,
         "answer_paths": "ask_text_or_workflow",
     }
@@ -892,7 +896,10 @@ SETTLE_ = SettleAfterText(15.0)
 def test_policy_unbounded_skips_the_stall_check() -> None:
     assert isinstance(
         Policy.make(
-            deadline=Unbounded(), stall_s=1e6, completion=SETTLE_, answer_paths="ask_text_only"
+            deadline=Unbounded(),
+            stall=StallAfter(1e6),
+            completion=SETTLE_,
+            answer_paths="ask_text_only",
         ),
         Policy,
     )
