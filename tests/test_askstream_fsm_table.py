@@ -9,7 +9,7 @@ import itertools
 from dataclasses import replace
 
 import pytest
-from hypothesis import given
+from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from pplx_agent_tools.askstream import fsm
@@ -60,12 +60,14 @@ from pplx_agent_tools.askstream.policy import (
     AtCompleted,
     AtTextComplete,
     Bounded,
+    FirstContentOff,
     FirstContentWithin,
     Off,
     Policy,
     PolicyError,
     SettleAfterText,
     StallAfter,
+    StallOff,
     Unbounded,
     for_verb,
     jitter,
@@ -420,7 +422,7 @@ def test_t15_progress() -> None:
     assert isinstance(s, Streaming)
     assert s.live.phase == Producing(7.0)
     assert (s.live.rc_consecutive, s.live.rc_total) == (0, 2)
-    assert s.grace == NoGrace()
+    assert s.grace == GraceUntil(50.0)
     assert s.last_byte_at == 7.0
     assert s.live.ids == KNOWN
     assert (s.live.cursor, s.live.reconnectable) == ("c1", "yes")
@@ -446,7 +448,8 @@ def test_t16_idle_text_complete_starts_the_window(phase: fsm.Phase, lp: float) -
     assert isinstance(s, Streaming)
     assert s.live.phase == TextComplete(lp, 7.0)
     assert s.grace == GraceUntil(50.0)
-    assert fsm.next_wake(ASK, s) == 22.0
+    assert fsm.next_wake(ASK, s) == 50.0  # settle at 22, raised to the grace
+    assert fsm.next_wake(ASK, replace(s, grace=NoGrace())) == 22.0
 
 
 def test_t16_idle_frame_moves_only_last_byte() -> None:
@@ -900,6 +903,173 @@ def test_policy_unbounded_skips_the_stall_check() -> None:
         ),
         Policy,
     )
+
+
+# --- the grace floor after a reconnect (I26) ------------------------------------------------------
+
+
+def _settle_probe(snapshot_after: float | None) -> tuple[fsm.State, list[float]]:
+    """text_completed at t=2, settle due at 17; a driver opens each reconnect
+    0.1 s after its backoff and, when given, the snapshot with COMPLETED
+    arrives `snapshot_after` seconds into the first reopened conn."""
+    p = ASK_RC
+    s: fsm.State
+    s, _ = fsm.initial(p, 0.0)
+    s, _ = step(p, s, Opened(C1, 0.5))
+    s, _ = step(p, s, FrameIn(C1, 1.0, frame("pending", uuid=UUID, token=token(), context=CTX)))
+    s, _ = step(p, s, FrameIn(C1, 2.0, frame("text_complete")))
+    rcs: list[float] = []
+    t = 2.0
+    for _ in range(12):
+        if isinstance(s, Done):
+            break
+        wake = fsm.next_wake(p, s)
+        assert wake is not None
+        t = max(t, wake)
+        s, eff = step(p, s, Tick(t))
+        if isinstance(s, ReconnectBackoff):
+            rcs.append(t)
+        opens = [x for x in eff if isinstance(x, Open)]
+        if opens:
+            t += 0.1
+            s, _ = step(p, s, Opened(opens[0].conn, t))
+            if snapshot_after is not None and len(rcs) == 1:
+                t += snapshot_after
+                wake = fsm.next_wake(p, s)
+                assert wake is not None and wake > t
+                s, _ = step(p, s, FrameIn(opens[0].conn, t, frame("completed", "idle")))
+    return s, rcs
+
+
+@pytest.mark.parametrize("snapshot_after", [0.0, 5.0, 29.9])
+def test_settle_reconnect_gets_its_grace(snapshot_after: float) -> None:
+    s, rcs = _settle_probe(snapshot_after)
+    assert s == Done(Completed(1), KNOWN)
+    assert rcs == [17.0]
+
+
+def test_settle_reconnects_without_a_snapshot_are_a_grace_apart() -> None:
+    s, rcs = _settle_probe(None)
+    assert s == Done(SettledWithoutTerminal(3, "settle"), KNOWN)
+    assert len(rcs) == 3
+    for a, b in itertools.pairwise(rcs):
+        assert b - a >= ASK_RC.grace_s
+
+
+FLOOR_CASES: list[tuple[str, Policy, fsm.Phase]] = [
+    ("settle", ASK_RC, TextComplete(10.0, 10.0)),
+    ("first_content", ASK_RC, AwaitingFirst()),
+    ("stall", policy(reconnect=Bounded(3, 6), stall=StallAfter(20.0)), Producing(10.0)),
+    ("silence", ASK_RC, Producing(100.0)),
+]
+
+
+@pytest.mark.parametrize(("tag", "p", "phase"), FLOOR_CASES)
+def test_every_reconnecting_timer_waits_for_the_grace(
+    tag: str, p: Policy, phase: fsm.Phase
+) -> None:
+    """Each term is overdue when the reconnect opens at 105; none fires
+    before 135."""
+    s0 = streaming(live(phase=phase, ids=KNOWN, next_conn=3), last_byte_at=60.0)
+    s = replace(s0, grace=GraceUntil(135.0))
+    assert fsm.due_class(p, s, 134.999) == "none"
+    assert fsm.due_class(p, s, 135.0) == tag
+    assert fsm.next_wake(p, s) == 135.0
+
+
+def test_progress_keeps_the_grace() -> None:
+    """A snapshot with new blocks but no COMPLETED still leaves the settle
+    reconnect its grace."""
+    s0 = streaming(live(phase=TextComplete(10.0, 10.0), ids=KNOWN), grace=GraceUntil(135.0))
+    s, _ = step(ASK_RC, replace(s0, last_byte_at=105.0), FrameIn(C1, 106.0, frame()))
+    assert isinstance(s, Streaming)
+    assert s.grace == GraceUntil(135.0)
+    assert fsm.due_class(ASK_RC, s, 134.999) == "none"
+    assert fsm.due_class(ASK_RC, s, 135.0) == "settle"
+
+
+GRACE_POLICIES = [
+    Policy.make(
+        deadline=dl,
+        stall=stall,
+        completion=completion,
+        answer_paths="ask_text_or_workflow",
+        first_content=fc,
+        reconnect=Bounded(3, 8),
+        silence_s=silence,
+    )
+    for dl, stall, completion, fc, silence in [
+        (At(3600.0), StallAfter(20.0), SettleAfterText(15.0), FirstContentWithin(4.0), 8.0),
+        (Unbounded(), StallAfter(480.0), SettleAfterText(3.0), FirstContentWithin(90.0), 25.0),
+        (At(900.0), StallOff(), AtCompleted(), FirstContentWithin(4.0), 8.0),
+        (At(900.0), StallAfter(5.0), AtTextComplete(), FirstContentOff(), 25.0),
+    ]
+]
+ACTIONS = st.sampled_from(["wake"] * 6 + ["idle", "progress", "text", "beat", "drop", "fail"])
+
+
+@settings(max_examples=300, deadline=None)
+@given(
+    pi=st.integers(0, len(GRACE_POLICIES) - 1),
+    acts=st.lists(st.tuples(ACTIONS, st.floats(0, 40)), min_size=1, max_size=60),
+    open_after=st.floats(0, 5),
+)
+def test_no_timer_reconnects_within_the_grace(
+    pi: int, acts: list[tuple[str, float]], open_after: float
+) -> None:
+    """I26 over random histories: once a reconnect opens, no settle,
+    first-content, stall or silence reconnect comes before `grace_s` has
+    passed, so no two timer reconnects are closer than the grace."""
+    p = GRACE_POLICIES[pi]
+    assert isinstance(p, Policy)
+    s: fsm.State
+    s, _ = fsm.initial(p, 0.0)
+    s, _ = step(p, s, Opened(C1, 0.0))
+    s, _ = step(p, s, FrameIn(C1, 0.0, frame("pending", "idle", uuid=UUID, token=token())))
+    now, reopened_at = 0.0, None
+    for act, dt in acts:
+        if isinstance(s, Done):
+            break
+        if not isinstance(s, Streaming):
+            wake = fsm.next_wake(p, s)
+            assert wake is not None
+            now = max(now, wake)
+            s, eff = step(p, s, Tick(now))
+            opens = [x for x in eff if isinstance(x, Open)]
+            if opens and isinstance(s, Reconnecting):
+                now += open_after
+                e: fsm.Event = (
+                    OpenFailed(s.conn, now, Transient("x"))
+                    if act == "fail"
+                    else Opened(s.conn, now)
+                )
+                s, _ = step(p, s, e)
+                if isinstance(e, Opened):
+                    reopened_at = now
+            continue
+        conn = s.conn
+        if act == "wake":
+            wake = fsm.next_wake(p, s)
+            assert wake is not None
+            now = max(now, wake)
+            due = fsm.due_class(p, s, now)
+            if due in ("settle", "first_content", "stall", "silence") and reopened_at is not None:
+                assert now >= reopened_at + p.grace_s
+            s, _ = step(p, s, Tick(now))
+            continue
+        # A body item never skips a timer that is already due.
+        wake = fsm.next_wake(p, s)
+        assert wake is not None
+        now = min(now + dt, max(now, wake))
+        body: fsm.Event = {
+            "idle": FrameIn(conn, now, frame("pending", "idle")),
+            "progress": FrameIn(conn, now, frame()),
+            "text": FrameIn(conn, now, frame("text_complete", "idle")),
+            "beat": HeartbeatIn(conn, now),
+            "drop": StreamBroke(conn, now, "transport", "reset"),
+            "fail": HeartbeatIn(conn, now),
+        }[act]
+        s, _ = step(p, s, body)
 
 
 # --- a failed reconnect ends as reconnect Off would (§3.4) ----------------------------------------

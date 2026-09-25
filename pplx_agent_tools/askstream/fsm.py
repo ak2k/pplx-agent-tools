@@ -184,8 +184,8 @@ class NoGrace:
 @final
 @dataclass(frozen=True, slots=True)
 class GraceUntil:
-    """A reconnect opened; its snapshot has until `t` before stall or
-    silence can fire."""
+    """A reconnect opened; no timer that could reconnect again fires before
+    `t`, so the new conn always has a chance to deliver its snapshot."""
 
     t: float
 
@@ -447,12 +447,14 @@ def timers(policy: Policy, s: State) -> list[tuple[DueTag, float]]:
                     last_progress = lp
                 case _:
                     assert_never(phase)
+            # Settle and first-content count from before the reconnect, so
+            # without the floor they would already be due when it opens.
             if isinstance(phase, TextComplete) and isinstance(policy.completion, SettleAfterText):
-                out.append(("settle", phase.at + policy.completion.settle_s))
+                out.append(("settle", max(phase.at + policy.completion.settle_s, floor)))
             if isinstance(phase, AwaitingFirst) and isinstance(
                 policy.first_content, FirstContentWithin
             ):
-                out.append(("first_content", live.started_at + policy.first_content.s))
+                out.append(("first_content", max(live.started_at + policy.first_content.s, floor)))
             if isinstance(policy.stall, StallAfter):
                 out.append(("stall", max(last_progress + policy.stall.s, floor)))
             out.append(("silence", max(last_byte_at + policy.silence_s, floor)))
@@ -790,8 +792,7 @@ def _frame_in(policy: Policy, s: Streaming, fs: FrameSummary, now: float) -> Liv
         phase=_advance_phase(policy, live, fs, now),
         rc_consecutive=0 if progress else live.rc_consecutive,
     )
-    grace: Grace = NoGrace() if progress else s.grace
-    return Streaming(nxt, s.conn, now, grace), ()
+    return Streaming(nxt, s.conn, now, s.grace), ()
 
 
 def step_live(policy: Policy, s: LiveState, e: Event, u: float) -> LiveStep:

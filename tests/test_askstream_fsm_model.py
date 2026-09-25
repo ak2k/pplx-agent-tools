@@ -179,6 +179,7 @@ class LifecycleModel(RuleBasedStateMachine):
         self.late = False
         self.last_progress = t0
         self.saw_429 = False
+        self.reopened_at: float | None = None
         assert eff == (Open(ConnId(1), InitialPost(), p.low_speed_s),)
 
     # --- event sources ---------------------------------------------------------------------------
@@ -350,12 +351,15 @@ class LifecycleModel(RuleBasedStateMachine):
                 lp2 = _lp(s2)
                 assert lp2 is not None
                 self.last_progress = lp2
+        # I26: no timer reconnects within grace_s of a reconnect opening.
+        if current and isinstance(e, Opened) and isinstance(before, Reconnecting):
+            self.reopened_at = e.now
+        due = fsm.due_class(p, before, e.now) if isinstance(e, Tick) else "none"
+        timer_r = due in ("settle", "first_content", "stall", "silence")
+        if timer_r and isinstance(before, Streaming) and self.reopened_at is not None:
+            assert e.now >= self.reopened_at + p.grace_s
         # I8: never early, and bounded late when every Tick came on time.
-        if (
-            isinstance(e, Tick)
-            and isinstance(before, Streaming)
-            and fsm.due_class(p, before, e.now) == "stall"
-        ):
+        if isinstance(before, Streaming) and due == "stall":
             lp = _lp(before)
             assert lp is not None
             assert isinstance(p.stall, StallAfter)

@@ -642,7 +642,7 @@ def _chk_t15_t16(
     progress = e.s.change == "progress"
     assert s2.conn == s.conn
     assert s2.last_byte_at == e.now
-    assert s2.grace == (NoGrace() if progress else s.grace)
+    assert s2.grace == s.grace
     assert lv2.phase == expected_phase(p, lv, e.s, e.now)
     assert lv2.ids == expected_ids(lv.ids, e.s)
     assert lv2.rc_consecutive == (0 if progress else lv.rc_consecutive)
@@ -758,6 +758,9 @@ def _chk_tick_r(reason: fsm.ReconnectReason) -> Check:
         p: Policy, s: fsm.State, e: fsm.Event, s2: fsm.State, eff: tuple[fsm.Effect, ...]
     ) -> None:
         assert isinstance(s, Streaming)
+        # I26: a timer never reconnects before a new conn's grace ends.
+        if isinstance(s.grace, GraceUntil):
+            assert e.now >= s.grace.t
         _check_r(p, s.live, s.conn, reason, e.now, s2, eff)
 
     return chk
