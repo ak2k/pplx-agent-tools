@@ -250,6 +250,29 @@ def test_diff_fixtures_carry_no_identifiers_or_telemetry(san: ModuleType) -> Non
         assert san.leaks(path.read_text()) == [], path.name
 
 
+@pytest.mark.parametrize("run", RUNS)
+def test_diff_fixture_projections_carry_no_identifiers(san: ModuleType, run: str) -> None:
+    """The raw walk cannot see a value split across chunk patches; the
+    projected text can."""
+    files, _ = RUNS[run]
+    runs = [[json.loads(line) for line in _path(stem).read_text().splitlines()] for stem in files]
+    assert san.projected_leaks(runs) == []
+
+
+def test_projected_leak_check_sees_an_email_split_across_chunk_patches(san: ModuleType) -> None:
+    def patch(op: dict[str, Any]) -> dict[str, Any]:
+        diff = {"field": "markdown_block", "patches": [op]}
+        return _envelope(blocks=[{"intended_usage": "ask_text", "diff_block": diff}])
+
+    run = [
+        patch({"op": "replace", "path": "", "value": {"chunks": []}}),
+        patch({"op": "add", "path": "/chunks/0", "value": "mail real.person"}),
+        patch({"op": "add", "path": "/chunks/1", "value": "@corp.example.com now"}),
+    ]
+    assert san.leaks(json.dumps(run)) == []
+    assert san.projected_leaks([run]) == ["real.person@corp.example.com"]
+
+
 def test_diff_sanitizer_shares_the_research_sanitizer_policy(san: ModuleType) -> None:
     research = _load_script("re_sanitize_research_fixture", RESEARCH_SANITIZER_SCRIPT)
     assert san.SENTINELS == research.SENTINELS

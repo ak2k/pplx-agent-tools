@@ -55,6 +55,15 @@ SMALL = Limits(
     run_work_factor=0,
     run_work_base=300,
 )
+# Only the frame work cap tight, so the markdown merge charge is what hits it.
+MERGE_WORK = Limits(
+    field_weight=1 << 20,
+    total_weight=1 << 20,
+    ops_per_frame=64,
+    work_per_frame=24,
+    run_work_factor=0,
+    run_work_base=1 << 20,
+)
 # Weight caps loose, work caps tight: reaches the work caps SMALL rarely does.
 SMALL_WORK = Limits(
     field_weight=1 << 20,
@@ -315,6 +324,12 @@ def frames_for(draw: st.DrawFn, s: BlockStore) -> AskFrame:
     for usage, field in draw(st.lists(st.sampled_from(FIELDS), min_size=1, max_size=3)):
         if draw(st.booleans()):
             doc = draw(st.dictionaries(st.text("ab", max_size=2), VALUES, max_size=3))
+            if field == "markdown_block" and draw(st.booleans()):
+                # A chunk run merges over the held chunks: the merge has its
+                # own work charge and cap path.
+                doc["chunks"] = draw(st.lists(st.text("xy", max_size=3), max_size=8))
+                if draw(st.booleans()):
+                    doc["chunk_starting_offset"] = draw(st.integers(0, 10))
             out.append(snap(usage, field, doc))
         else:
             state = s.state((usage, (field,)))
@@ -324,7 +339,9 @@ def frames_for(draw: st.DrawFn, s: BlockStore) -> AskFrame:
     return frame(*out, status=draw(st.sampled_from(["PENDING", "COMPLETED"])))
 
 
-@pytest.mark.parametrize("lim", [SMALL, SMALL_WORK], ids=["weight_caps", "work_caps"])
+@pytest.mark.parametrize(
+    "lim", [SMALL, SMALL_WORK, MERGE_WORK], ids=["weight_caps", "work_caps", "merge_work_cap"]
+)
 @settings(max_examples=150, deadline=None)
 @given(data=st.data())
 def test_weight_rule_and_caps_hold_across_fields_after_every_result(
@@ -336,6 +353,8 @@ def test_weight_rule_and_caps_hold_across_fields_after_every_result(
     probe = CountingProbe()
     s = BlockStore("ask_text_or_workflow", lim, track_all=True, probe=probe)
     for _ in range(data.draw(st.integers(1, 30))):
+        if data.draw(st.integers(0, 9)) == 0:
+            s.begin_reconnect()
         r = s.apply_frame(data.draw(frames_for(s)))
         b = s.budget
         assert b.total_weight == held_weight(s)
@@ -435,19 +454,51 @@ def test_terminal_parity_accepts_renumbered_citations_and_returns_the_final() ->
 
 
 @pytest.mark.parametrize(
-    ("final", "urls", "name"),
+    ("final", "urls", "last_chunk", "name"),
     [
-        ("Hi [1] there [2]!", (A, B), "answer"),
-        ("Hi [1] there [2].", (B, A), "sources"),
+        ("Hi [1] there [2]!", (A, B), " there [2].", "answer"),
+        ("Hi [1] there [2].", (B, A), " there [2].", "sources"),
+        # The terminal chunks differ from the streamed ones while its answer
+        # still equals the streamed join.
+        ("Hi [1] there [2].", (A, B), " there [2]!", "answer"),
     ],
+    ids=["final", "sources", "terminal_chunks"],
 )
 def test_one_mutation_gives_exactly_one_mismatch(
-    final: str, urls: tuple[str, ...], name: str
+    final: str, urls: tuple[str, ...], last_chunk: str, name: str
 ) -> None:
     s = store()
     chunks = ["Hi [1]", " there [2]."]
-    results = feed(s, *ask_stream(chunks), ask_terminal(chunks, final, urls))
+    results = feed(s, *ask_stream(chunks), ask_terminal([chunks[0], last_chunk], final, urls))
     assert mismatches(results) == [Drift("projection_mismatch", name_of(name))]
+
+
+def test_workflow_final_may_not_renumber_citations() -> None:
+    """Only `ask_text`'s final may differ from the join in citation digits."""
+    s = store()
+    results = feed(
+        s,
+        frame(
+            diff("workflow_root", "workflow_block", replace("", workflow_text((["a [1]"], None))))
+        ),
+        terminal(snap("workflow_root", "workflow_block", workflow_text((["a [1]"], "a [2]")))),
+    )
+    assert results[-1].parity == Parity("terminal", "mismatch", "equal", "equal")
+    assert mismatches(results) == [Drift("projection_mismatch", name_of("answer"))]
+
+
+def test_reconnect_that_switches_answer_source_is_a_mismatch() -> None:
+    """A snapshot whose `ask_text` extends the streamed workflow text is
+    still a different source, not a snapshot ahead of the stream."""
+    s = store()
+    feed(
+        s,
+        frame(diff("workflow_root", "workflow_block", replace("", workflow_text((["ab"], None))))),
+    )
+    s.begin_reconnect()
+    (r,) = feed(s, frame(md(["abc"], 0)))
+    assert r.parity is not None and r.parity.answer == "mismatch"
+    assert mismatches([r]) == [Drift("projection_mismatch", name_of("answer"))]
 
 
 def research_stream(body: str) -> list[AskFrame]:
