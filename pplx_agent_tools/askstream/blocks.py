@@ -2,7 +2,8 @@
 
 `BlockStore` has one owner. It applies each frame's snapshots and patches
 under one `Budget`: after any `apply_frame`, `budget.total_weight` equals the
-weight of the documents the store holds, and no cap is passed, even for a
+weight of the documents the store holds plus the retained sources list
+(`run_sources`), and no cap is passed, even for a
 moment, because every charge is checked before the work it pays for.
 A cap hit ends the store: it returns the same `CapExceeded` from then on.
 
@@ -26,7 +27,7 @@ from pplx_agent_tools.askstream.frames import (
     BlockSnapshot,
     FieldKey,
 )
-from pplx_agent_tools.askstream.jsonval import JsonValue, measure
+from pplx_agent_tools.askstream.jsonval import JsonValue, measure, weight
 from pplx_agent_tools.askstream.patch import Budget, CapName, Limits, Probe, node_units
 from pplx_agent_tools.askstream.projections import (
     READ_FIELDS,
@@ -182,6 +183,7 @@ class BlockStore:
         "_seen",
         "_seen_text",
         "_sources",
+        "_sources_weight",
         "_track_all",
         "budget",
     )
@@ -208,9 +210,10 @@ class BlockStore:
         self._reconnect_pending = False
         self._dead: CapExceeded | None = None
         self._drift_once: set[Drift] = set()
-        # A projection value, not a document: it shares the strings of the
-        # list it came from and carries no weight of its own.
+        # Charged like a tracked field: it outlives the `web_results` document
+        # it came from, which an empty list or a desync can drop.
         self._sources: tuple[WebSource, ...] = ()
+        self._sources_weight = 0
 
     # --- read side ------------------------------------------------------------
 
@@ -277,7 +280,9 @@ class BlockStore:
             sources_touched = sources_touched or u.key == READS["web_results"]
             progress = progress or (r and cls == "content")
         if sources_touched:
-            self._sources = latest_sources(self._sources, self)
+            cap = self._retain_sources(latest_sources(self._sources, self))
+            if cap is not None:
+                return self._die(cap)
         if report_touched:
             n = len(report_body(self))
             if n > self._report_high:
@@ -404,6 +409,21 @@ class BlockStore:
                 self._drop(key, r.weight)
                 return CapExceeded(r.cap, r.limit, r.observed, key)
 
+    def _retain_sources(self, held: tuple[WebSource, ...]) -> CapExceeded | None:
+        if held is self._sources:
+            return None
+        w = _sources_rows_weight(held)
+        lim = self.budget.limits
+        key = READS["web_results"]
+        if w > lim.field_weight:
+            return CapExceeded("field_weight", lim.field_weight, w, key)
+        total = self.budget.total_weight - self._sources_weight + w
+        if total > lim.total_weight:
+            return CapExceeded("total_weight", lim.total_weight, total, key)
+        self.budget.total_weight = total
+        self._sources, self._sources_weight = held, w
+        return None
+
     def _drop(self, key: FieldKey, weight: int) -> None:
         self._fields.pop(key, None)
         self.budget.total_weight -= weight
@@ -478,6 +498,12 @@ def _merge_chunks(
     if repaint and run:
         del chunks[end:]
     return {**value, "chunks": chunks}
+
+
+def _sources_rows_weight(srcs: tuple[WebSource, ...]) -> int:
+    """The weight of a sources list as JSON rows of (url, title, snippet);
+    no list retained weighs nothing."""
+    return weight([[s.url, s.title, s.snippet] for s in srcs]) if srcs else 0
 
 
 def _bytes_in(u: BlockSnapshot | BlockDiff) -> int:

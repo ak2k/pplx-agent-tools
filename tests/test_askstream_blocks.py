@@ -74,6 +74,19 @@ SMALL_WORK = Limits(
     run_work_base=200,
 )
 VALUES = DOCS | DOCS | DOCS | st.integers(0, 300).map(lambda n: "x" * n)
+# Rows that `sources` keeps, so the retained list is non-empty, grows and can
+# reach the weight caps on its own.
+SOURCE_ROWS = st.lists(
+    st.fixed_dictionaries(
+        {
+            "url": st.text("uv", min_size=1, max_size=2)
+            | st.integers(1, 300).map(lambda n: "u" * n),
+            "name": st.text("n", max_size=2),
+            "snippet": st.text("s", max_size=2) | st.integers(0, 300).map(lambda n: "s" * n),
+        }
+    ),
+    max_size=4,
+)
 
 
 def store(paths: AnswerPaths = "ask_text_or_workflow", **kw: Any) -> BlockStore:
@@ -94,7 +107,10 @@ def text_of(s: BlockStore, completed: bool = True) -> str:
 
 
 def held_weight(s: BlockStore) -> int:
-    return sum(st.weight for st in s.fields.values() if isinstance(st, Synced))
+    """The held documents plus the retained sources list, as JSON rows."""
+    docs = sum(st.weight for st in s.fields.values() if isinstance(st, Synced))
+    rows: list[JsonValue] = [[x.url, x.title, x.snippet] for x in s.run_sources]
+    return docs + (weight(rows) if rows else 0)
 
 
 def mismatches(results: list[FrameApplied]) -> list[Drift]:
@@ -275,6 +291,25 @@ def test_field_weight_cap_drops_the_field_and_keeps_the_count_exact() -> None:
     assert s.budget.total_weight == held_weight(s) > 0
 
 
+def test_retained_sources_are_charged_after_their_document_empties() -> None:
+    s = BlockStore("ask_text_or_workflow", SMALL)
+    feed(s, frame(web("u" * 200)), frame(web()))
+    assert [x.url for x in s.run_sources] == ["u" * 200]
+    assert s.budget.total_weight == held_weight(s) > weight({"web_results": []}) + 200
+
+
+def test_retained_sources_pass_the_total_weight_cap_before_they_are_kept() -> None:
+    """The document fits field_weight; it and the list it yields do not fit
+    total_weight together."""
+    s = BlockStore("ask_text_or_workflow", SMALL)
+    r = s.apply_frame(frame(web("u" * 380)))
+    assert isinstance(r, CapExceeded)
+    assert (r.cap, r.field) == ("total_weight", ("web_results", ("web_result_block",)))
+    assert r.observed > SMALL.total_weight
+    assert s.run_sources == ()
+    assert s.budget.total_weight == held_weight(s) <= SMALL.total_weight
+
+
 def test_markdown_merge_work_is_charged_before_the_merge() -> None:
     """Each appended chunk re-places every held one, so the charge grows with
     the list; it is checked before the merge and the copy run."""
@@ -330,6 +365,9 @@ def frames_for(draw: st.DrawFn, s: BlockStore) -> AskFrame:
                 doc["chunks"] = draw(st.lists(st.text("xy", max_size=3), max_size=8))
                 if draw(st.booleans()):
                     doc["chunk_starting_offset"] = draw(st.integers(0, 10))
+            if field == "web_result_block" and draw(st.booleans()):
+                # An empty list keeps the earlier sources retained and charged.
+                doc["web_results"] = draw(SOURCE_ROWS)
             out.append(snap(usage, field, doc))
         else:
             state = s.state((usage, (field,)))
@@ -348,7 +386,7 @@ def test_weight_rule_and_caps_hold_across_fields_after_every_result(
     lim: Limits, data: st.DataObject
 ) -> None:
     """I20 and I21 through `apply_frame`: after any result the budget counts
-    exactly the held documents, no cap is passed, and the real steps never
+    exactly the held documents and the retained sources list, no cap is passed, and the real steps never
     exceed the work charged."""
     probe = CountingProbe()
     s = BlockStore("ask_text_or_workflow", lim, track_all=True, probe=probe)
@@ -362,6 +400,8 @@ def test_weight_rule_and_caps_hold_across_fields_after_every_result(
             if isinstance(st_, Synced):
                 assert st_.weight == weight(st_.doc) <= lim.field_weight
         assert b.total_weight <= lim.total_weight
+        if s.run_sources:
+            event("sources retained")
         assert b.frame_work <= lim.work_per_frame
         assert b.run_work <= b.run_work_limit
         assert probe.steps <= b.run_work
