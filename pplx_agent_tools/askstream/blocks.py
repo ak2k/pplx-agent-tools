@@ -268,21 +268,22 @@ class BlockStore:
 
         drift: list[Drift] = []
         progress = frame.text is not None and self._seen_text.add(hash(frame.text))
-        report_touched = sources_touched = False
+        report_touched = False
         for u in frame.blocks:
             if isinstance(u, BlockMalformed):
                 continue
             r = self._update(u, terminal or reconnect, drift)
             if isinstance(r, CapExceeded):
                 return self._die(r)
+            # Per block, not per frame: a later empty block in the same frame
+            # must not hide an earlier non-empty one.
+            if u.key == READS["web_results"]:
+                cap = self._retain_sources(latest_sources(self._sources, self))
+                if cap is not None:
+                    return self._die(cap)
             cls = classify_field(_field_name(u.key))
             report_touched = report_touched or cls == "report_asset"
-            sources_touched = sources_touched or u.key == READS["web_results"]
             progress = progress or (r and cls == "content")
-        if sources_touched:
-            cap = self._retain_sources(latest_sources(self._sources, self))
-            if cap is not None:
-                return self._die(cap)
         if report_touched:
             n = len(report_body(self))
             if n > self._report_high:

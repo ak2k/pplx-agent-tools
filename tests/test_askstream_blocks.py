@@ -28,6 +28,7 @@ from pplx_agent_tools.askstream.frames import AskFrame, decode_frame
 from pplx_agent_tools.askstream.jsonval import JsonValue, weight
 from pplx_agent_tools.askstream.patch import Limits
 from pplx_agent_tools.askstream.projections import AnswerPaths, answer, answer_text, sources
+from pplx_agent_tools.verbs._ask_common import extract_web_results, to_source
 from tests._askframes import (
     add,
     diff,
@@ -542,6 +543,72 @@ def test_a_non_empty_snapshot_list_replaces_the_sources() -> None:
     s = store()
     feed(s, frame(web(A, B)), frame(web(C)))
     assert [x.url for x in s.run_sources] == [C]
+
+
+def test_an_empty_block_after_a_non_empty_one_in_the_same_frame_keeps_it() -> None:
+    s = store()
+    feed(s, frame(web(A), web()))
+    assert [x.url for x in s.run_sources] == [A]
+    assert s.budget.total_weight == held_weight(s)
+
+
+# Each kind a `web_results` block can take: an empty list, no list, a list
+# with a usable URL, and a list with none.
+WEB_BLOCKS = st.one_of(
+    st.just(web()),
+    st.just(snap("web_results", "web_result_block", {"progress": "DONE"})),
+    st.lists(st.sampled_from([A, B, C]), min_size=1, max_size=3).map(lambda us: web(*us)),
+    st.lists(
+        st.sampled_from([{"name": "n"}, {"url": ""}, {"url": 7, "snippet": "s"}, "row"]),
+        min_size=1,
+        max_size=3,
+    ).map(lambda rows: snap("web_results", "web_result_block", {"web_results": rows})),
+)
+
+
+def ask_py_sources(held: list[Any], block: dict[str, Any]) -> list[Any]:
+    """The sources `verbs.ask` keeps after an event holding only `block`."""
+    raw = extract_web_results({"data": {"blocks": [block]}})
+    if not raw:
+        return held
+    out: list[Any] = []
+    for src in filter(None, map(to_source, raw)):
+        if src.url not in {o.url for o in out}:
+            out.append(src)
+    return out
+
+
+@settings(max_examples=200, deadline=None)
+@given(st.lists(st.lists(WEB_BLOCKS, min_size=1, max_size=4), min_size=1, max_size=4))
+def test_retained_sources_match_the_ask_verb_after_every_block(
+    frames: list[list[dict[str, Any]]],
+) -> None:
+    s = store()
+    expected: list[Any] = []
+    for blocks_ in frames:
+        ok(s.apply_frame(frame(*blocks_)))
+        for b in blocks_:
+            expected = ask_py_sources(expected, b)
+        got = [(x.url, x.title, x.snippet) for x in s.run_sources]
+        assert got == [(x.url, x.title, x.snippet) for x in expected]
+        assert s.budget.total_weight == held_weight(s)
+
+
+def test_retained_sources_pass_the_field_weight_cap_before_they_are_kept() -> None:
+    """URL-only rows weigh more as (url, title, snippet) rows than as the
+    document, so the list alone can pass field_weight."""
+    rows: list[JsonValue] = [{"url": f"u{i}"} for i in range(20)]
+    block = snap("web_results", "web_result_block", {"web_results": rows})
+    doc_w = weight({"web_results": rows})
+    rows_w = weight([[f"u{i}", None, None] for i in range(20)])
+    assert doc_w < rows_w
+    s = BlockStore("ask_text_or_workflow", Limits(field_weight=doc_w, total_weight=1 << 20))
+    r = s.apply_frame(frame(block))
+    assert isinstance(r, CapExceeded)
+    assert (r.cap, r.limit, r.observed) == ("field_weight", doc_w, rows_w)
+    assert r.field == ("web_results", ("web_result_block",))
+    assert s.run_sources == ()
+    assert s.budget.total_weight == held_weight(s)
 
 
 def test_workflow_final_may_not_renumber_citations() -> None:
