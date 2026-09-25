@@ -18,11 +18,12 @@ checklist in `verbs/__init__.py` for the full file-edit list.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from typing_extensions import assert_never
 
 from . import __version__
+from .askstream import outcome as stream_end
 from .grounding import (
     Grounded,
     Grounding,
@@ -146,6 +147,36 @@ def render_snippets_json(result: SnippetsResult) -> dict[str, Any]:
         },
         warnings=result.warnings,
     )
+
+
+CutBy = Literal["stall", "deadline"]
+
+
+def stream_status(
+    end: stream_end.AskEnd | stream_end.FetchStream,
+) -> tuple[bool, CutBy | None]:
+    """`(stream_complete, cut_by)` for any stream end: the one place both are
+    computed. A first-content cut reports as a stall."""
+    match end:
+        case (
+            stream_end.Completed() | stream_end.SettledWithoutTerminal() | stream_end.NotStreamed()
+        ):
+            return True, None
+        case stream_end.Cut(cause="deadline"):
+            return False, "deadline"
+        case stream_end.Cut():
+            return False, "stall"
+        case stream_end.EndedEarly():
+            return False, None
+        case _:
+            assert_never(end)
+
+
+def ask_status(end: stream_end.AskEnd) -> tuple[bool, CutBy | None, bool]:
+    """`(stream_complete, cut_by, sources_complete)` for ask; only the
+    terminal frame carries the citation-ordered sources."""
+    complete, cut_by = stream_status(end)
+    return complete, cut_by, isinstance(end, stream_end.Completed)
 
 
 def _incomplete_marker(cut_by: str | None) -> str:

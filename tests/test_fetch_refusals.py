@@ -406,6 +406,7 @@ EXPECTED_EXIT = {
     "StreamStallError": 4,
     "AntiBotError": 5,
     "SchemaError": 1,
+    "ResourceLimitError": 1,
     "BlockedUrlError": 1,
     "TargetHttpError": 1,
 }

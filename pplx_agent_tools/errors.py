@@ -94,6 +94,12 @@ class SchemaError(PplxError):
     """
 
 
+class ResourceLimitError(SchemaError):
+    """A stream's decoded content passed a size or work cap. The caps sit far
+    above anything observed, so this means wire drift or a bug. Exit 1.
+    """
+
+
 class BlockedUrlError(PplxError):
     """A fetch URL refused before any request: not http(s), no or malformed
     host, or a host that resolves to a non-public address. Retrying cannot
