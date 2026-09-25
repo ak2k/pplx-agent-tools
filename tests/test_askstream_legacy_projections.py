@@ -95,7 +95,28 @@ def test_legacy_ask_fixture_answer_and_sources_match_today() -> None:
     store, completed = _replay(path, "ask_text_or_workflow")
     today, urls = _today_ask(path)
     _check(today, store, completed)
+    assert [s.url for s in store.run_sources] == urls
+    # The fixture's last web_results block is its latest non-empty one.
     assert [s.url for s in sources(store)] == urls
+
+
+def _web(*urls: str) -> dict[str, Any]:
+    rows = [{"url": u, "name": u} for u in urls]
+    block = {"intended_usage": "web_results", "web_result_block": {"web_results": rows}}
+    return {"status": "PENDING", "blocks": [block]}
+
+
+def test_empty_web_results_block_keeps_sources_as_today(tmp_path: Path) -> None:
+    """Today's extractor keeps the latest non-empty block; an empty one,
+    mid-run or terminal, erases nothing."""
+    a, b = "https://a.example/", "https://b.example/"
+    events = [_web(a, b), _web(), {**_web(), "status": "COMPLETED", "text_completed": True}]
+    path = tmp_path / "empty-web.events.jsonl"
+    path.write_text("".join(json.dumps(e) + "\n" for e in events))
+    store, _ = _replay(path, "ask_text_or_workflow")
+    _, urls = _today_ask(path)
+    assert urls == [a, b]
+    assert [s.url for s in store.run_sources] == urls
 
 
 FETCH = [

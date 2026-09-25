@@ -174,8 +174,9 @@ def citation_warnings(t: AnswerText) -> tuple[str, ...]:
 
 
 def sources(view: TrackedView) -> tuple[WebSource, ...]:
-    """`web_results` in order, deduplicated by URL; an entry without a
-    non-empty string `url` is skipped. Accepts `name` or `title`."""
+    """The current `web_results` list in order, deduplicated by URL; an entry
+    without a non-empty string `url` is skipped. Accepts `name` or `title`.
+    A run's sources are `latest_sources`, which this list can empty."""
     out: list[WebSource] = []
     seen: set[str] = set()
     for raw in _list(_obj(view.get("web_results")).get("web_results")):
@@ -194,6 +195,14 @@ def sources(view: TrackedView) -> tuple[WebSource, ...]:
             )
         )
     return tuple(out)
+
+
+def latest_sources(held: tuple[WebSource, ...], view: TrackedView) -> tuple[WebSource, ...]:
+    """A run's sources after a frame: the latest non-empty `web_results`
+    list wins, so an empty, absent or desynced one keeps `held`."""
+    if _list(_obj(view.get("web_results")).get("web_results")):
+        return sources(view)
+    return held
 
 
 def _asset_bodies(assets: JsonValue | None) -> Iterator[str]:

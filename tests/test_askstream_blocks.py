@@ -473,6 +473,37 @@ def test_one_mutation_gives_exactly_one_mismatch(
     assert mismatches(results) == [Drift("projection_mismatch", name_of(name))]
 
 
+def test_empty_web_results_never_erase_earlier_sources() -> None:
+    """The latest non-empty list wins, whether the empty one comes from a
+    snapshot or a diff, mid-run or in the terminal frame."""
+    chunks = ["Hi"]
+    s = store()
+    results = feed(s, *ask_stream(chunks), ask_terminal(chunks, "Hi", ()))
+    assert results[-1].parity == Parity("terminal", "equal", "equal", "equal")
+    assert mismatches(results) == []
+    assert [x.url for x in s.run_sources] == [A, B]
+
+    mid = store()
+    results = feed(
+        mid,
+        *ask_stream(chunks),
+        frame(diff("web_results", "web_result_block", replace("/web_results", []))),
+        ask_terminal(chunks, "Hi", ()),
+    )
+    assert mismatches(results) == []
+    assert [x.url for x in mid.run_sources] == [A, B]
+
+    legacy = store()
+    feed(legacy, frame(web(A, B)), frame(web()), terminal(md(["x"], 0), web()))
+    assert [x.url for x in legacy.run_sources] == [A, B]
+
+
+def test_a_non_empty_snapshot_list_replaces_the_sources() -> None:
+    s = store()
+    feed(s, frame(web(A, B)), frame(web(C)))
+    assert [x.url for x in s.run_sources] == [C]
+
+
 def test_workflow_final_may_not_renumber_citations() -> None:
     """Only `ask_text`'s final may differ from the join in citation digits."""
     s = store()

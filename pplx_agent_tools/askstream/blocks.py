@@ -35,11 +35,12 @@ from pplx_agent_tools.askstream.projections import (
     AnswerPaths,
     AskTextPath,
     ReadKey,
+    WebSource,
     answer,
     citations_renumbered,
+    latest_sources,
     projection_missing,
     report_body,
-    sources,
 )
 
 Change = Literal["idle", "progress"]
@@ -179,6 +180,7 @@ class BlockStore:
         "_report_high",
         "_seen",
         "_seen_text",
+        "_sources",
         "_track_all",
         "budget",
     )
@@ -205,6 +207,9 @@ class BlockStore:
         self._reconnect_pending = False
         self._dead: CapExceeded | None = None
         self._drift_once: set[Drift] = set()
+        # A projection value, not a document: it shares the strings of the
+        # list it came from and carries no weight of its own.
+        self._sources: tuple[WebSource, ...] = ()
 
     # --- read side ------------------------------------------------------------
 
@@ -218,6 +223,11 @@ class BlockStore:
     @property
     def fields(self) -> Mapping[FieldKey, FieldState]:
         return dict(self._fields)
+
+    @property
+    def run_sources(self) -> tuple[WebSource, ...]:
+        """The run's sources: the latest non-empty `web_results` list."""
+        return self._sources
 
     def seen_sizes(self) -> tuple[int, ...]:
         return (len(self._seen_text), *(len(s) for s in self._seen.values()))
@@ -254,7 +264,7 @@ class BlockStore:
 
         drift: list[Drift] = []
         progress = frame.text is not None and self._seen_text.add(hash(frame.text))
-        report_touched = False
+        report_touched = sources_touched = False
         for u in frame.blocks:
             if isinstance(u, BlockMalformed):
                 continue
@@ -263,7 +273,10 @@ class BlockStore:
                 return self._die(r)
             cls = classify_field(_field_name(u.key))
             report_touched = report_touched or cls == "report_asset"
+            sources_touched = sources_touched or u.key == READS["web_results"]
             progress = progress or (r and cls == "content")
+        if sources_touched:
+            self._sources = latest_sources(self._sources, self)
         if report_touched:
             n = len(report_body(self))
             if n > self._report_high:
@@ -396,7 +409,7 @@ class BlockStore:
 
     def _project(self) -> _Projected:
         ans, _ = answer(self, self._answer_paths)
-        return _Projected(ans, tuple(s.url for s in sources(self)), report_body(self))
+        return _Projected(ans, tuple(s.url for s in self._sources), report_body(self))
 
     def _parity(
         self,
