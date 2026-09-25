@@ -34,6 +34,7 @@ from pplx_agent_tools.askstream.patch import (
 )
 from pplx_agent_tools.jsonval import JsonValue
 from tests._patch_strategies import DOCS, get, op_for, untraced
+from tests._timing import walk_seconds
 
 
 def run(doc: Any, raw_ops: list[Any], limits: Limits | None = None) -> Any:
@@ -256,7 +257,7 @@ def test_arbitrary_json_as_ops_never_raises(doc: Any, raws: list[Any]) -> None:
 # --- throughput -----------------------------------------------------------------------------
 
 
-def test_10k_chunk_appends_under_50ms() -> None:
+def test_10k_chunk_appends_take_linear_cpu() -> None:
     ops = [
         parse_patch_op({"op": "add", "path": "/chunks/-", "value": f"c{i} "}) for i in range(10_000)
     ]
@@ -265,12 +266,13 @@ def test_10k_chunk_appends_under_50ms() -> None:
     typed = [op for op in ops if op is not None]
     w = weight(doc)
     with untraced():
-        start = time.perf_counter()
+        start = time.process_time()
         result = apply_ops(doc, w, typed, budget)
-        elapsed = time.perf_counter() - start
+        elapsed = time.process_time() - start
     assert isinstance(result, Applied)
     assert len(cast("list[str]", cast("dict[str, Any]", result.doc)["chunks"])) == 10_000
-    assert elapsed < 0.050, elapsed
+    # About 50x a bare walk of as many nodes; a per-append copy would be ~10,000x.
+    assert elapsed <= 150 * walk_seconds(10_000), elapsed
 
 
 # --- rejections before allocation ----------------------------------------------------------------
@@ -599,4 +601,4 @@ def test_weight_walk_ends_on_shared_and_cyclic_values() -> None:
         cyclic["a"].append(cyclic)
         assert measure(cyclic, max_depth=2**62) is None
         assert weight(cyclic) == 0
-        assert time.process_time() - start < 1.0
+        assert time.process_time() - start <= walk_seconds(1 << 20)

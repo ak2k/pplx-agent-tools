@@ -36,6 +36,7 @@ from pplx_agent_tools.askstream.patch import (
 )
 from pplx_agent_tools.jsonval import JsonValue
 from tests._patch_strategies import KEYS, SCALARS, get, op_for, paths, ptr, untraced
+from tests._timing import walk_seconds
 
 SMALL = Limits(
     field_weight=4 * 1024,
@@ -472,20 +473,6 @@ def test_small_copy_frames_stop_at_work_per_run() -> None:
 _MAX_UNIT_COST_VS_WALK = 30
 
 
-def _walk_seconds(nodes: int) -> float:
-    data: list[Any] = [0] * nodes
-    best = float("inf")
-    for _ in range(3):
-        start = time.process_time()
-        stack: list[Any] = [data]
-        while stack:
-            node = stack.pop()
-            if isinstance(node, list):
-                stack.extend(node)
-        best = min(best, time.process_time() - start)
-    return best
-
-
 @pytest.mark.parametrize(
     "value",
     [
@@ -512,7 +499,7 @@ def test_copies_of_long_text_stop_at_work_cap_in_bounded_time(value: JsonValue) 
     assert isinstance(result, CapExceeded)
     assert (result.cap, result.index) == ("work_per_frame", expected)
     assert budget.frame_work <= MIB
-    assert elapsed <= _MAX_UNIT_COST_VS_WALK * _walk_seconds(MIB), elapsed
+    assert elapsed <= _MAX_UNIT_COST_VS_WALK * walk_seconds(MIB), elapsed
 
 
 def test_end_appends_cost_zero_shifts() -> None:
@@ -563,4 +550,4 @@ def test_frame_at_work_cap_in_node_visits_takes_bounded_cpu() -> None:
         elapsed = time.process_time() - start
     assert isinstance(result, Applied)
     assert budget.frame_work == MIB
-    assert elapsed <= _MAX_UNIT_COST_VS_WALK * _walk_seconds(MIB), elapsed
+    assert elapsed <= _MAX_UNIT_COST_VS_WALK * walk_seconds(MIB), elapsed
