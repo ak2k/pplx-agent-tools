@@ -433,10 +433,10 @@ def timers(policy: Policy, s: State) -> list[tuple[DueTag, float]]:
         case Unbounded():
             pass
     match s:
-        case Starting(open_due_at=due) | Reconnecting(open_due_at=due):
-            out.append(("open_due", due))
-        case StartBackoff(until=until) | ReconnectBackoff(until=until):
-            out.append(("backoff", until))
+        case Starting() | Reconnecting():
+            out.append(("open_due", s.open_due_at))
+        case StartBackoff() | ReconnectBackoff():
+            out.append(("backoff", s.until))
         case Streaming(live, _, last_byte_at, grace):
             floor = grace.t if isinstance(grace, GraceUntil) else float("-inf")
             phase = live.phase
@@ -591,17 +591,20 @@ def _failure_error(f: Failure) -> PplxError:
 
 def initial(policy: Policy, now: float) -> tuple[Starting, tuple[Open[InitialPost]]]:
     """The first state and its one effect: the initial POST on conn 1."""
-    deadline: Deadline
-    match policy.deadline:
-        case At(s):
-            deadline = At(now + s)
-        case Unbounded():
-            deadline = Unbounded()
-        case _:
-            assert_never(policy.deadline)
     conn = ConnId(1)
-    state = Starting(now, deadline, conn, 1, now + policy.open_s)
+    state = Starting(now, _anchored(policy.deadline, now), conn, 1, now + policy.open_s)
     return state, (Open(conn, InitialPost(), policy.low_speed_s),)
+
+
+def _anchored(deadline: Deadline, now: float) -> Deadline:
+    """The policy's relative deadline as an absolute time from `now`."""
+    match deadline:
+        case At(s):
+            return At(now + s)
+        case Unbounded():
+            return Unbounded()
+        case _:
+            assert_never(deadline)
 
 
 def _cut_before_first_byte(s: StartState) -> Done:
@@ -691,8 +694,8 @@ def lifecycle_valid(policy: Policy, s: State) -> bool:
     """False only for a state no history can build: TextComplete is entered
     only under SettleAfterText."""
     match s:
-        case Streaming(live=live) | Reconnecting(live=live) | ReconnectBackoff(live=live):
-            return not isinstance(live.phase, TextComplete) or isinstance(
+        case Streaming() | Reconnecting() | ReconnectBackoff():
+            return not isinstance(s.live.phase, TextComplete) or isinstance(
                 policy.completion, SettleAfterText
             )
         case Starting() | StartBackoff() | Done():
@@ -939,8 +942,8 @@ EventSub: TypeAlias = "type[Failure] | tuple[Stage, Change] | BrokeKind | DueTag
 
 def state_class(s: State) -> tuple[type[State], type[Phase] | None]:
     match s:
-        case Streaming(live=live) | Reconnecting(live=live) | ReconnectBackoff(live=live):
-            return type(s), type(live.phase)
+        case Streaming() | Reconnecting() | ReconnectBackoff():
+            return type(s), type(s.live.phase)
         case Starting() | StartBackoff() | Done():
             return type(s), None
         case _:
@@ -949,8 +952,8 @@ def state_class(s: State) -> tuple[type[State], type[Phase] | None]:
 
 def current_conn(s: State) -> ConnId | None:
     match s:
-        case Starting(conn=conn) | Streaming(conn=conn) | Reconnecting(conn=conn):
-            return conn
+        case Starting() | Streaming() | Reconnecting():
+            return s.conn
         case StartBackoff() | ReconnectBackoff() | Done():
             return None
         case _:
@@ -966,12 +969,12 @@ def event_class(
             return Tick, due_class(policy, s, now), None
         case Opened() | HeartbeatIn() | StreamEnded():
             pass
-        case OpenFailed(f=f):
-            sub = type(f)
-        case FrameIn(s=fs):
-            sub = (fs.stage, fs.change)
-        case StreamBroke(kind=kind):
-            sub = kind
+        case OpenFailed():
+            sub = type(e.f)
+        case FrameIn():
+            sub = (e.s.stage, e.s.change)
+        case StreamBroke():
+            sub = e.kind
         case _:
             assert_never(e)
     return type(e), sub, "current" if e.conn == current_conn(s) else "stale"

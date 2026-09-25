@@ -126,8 +126,8 @@ def _state_tag(s: State) -> StateTag:
 
 def _phase_tag(s: State) -> PhaseTag:
     match s:
-        case Streaming(live=live) | Reconnecting(live=live) | ReconnectBackoff(live=live):
-            phase = live.phase
+        case Streaming() | Reconnecting() | ReconnectBackoff():
+            phase = s.live.phase
             match phase:
                 case AwaitingFirst():
                     return "AwaitingFirst"
@@ -190,8 +190,8 @@ def _event_parts(  # noqa: PLR0911 - one return per variant
     match e:
         case Opened():
             return "Opened", (), 0
-        case OpenFailed(f=f):
-            match f:
+        case OpenFailed():
+            match e.f:
                 case RateLimited():
                     return "OpenFailed", ("RateLimited",), 429
                 case Transient():
@@ -201,15 +201,15 @@ def _event_parts(  # noqa: PLR0911 - one return per variant
                 case Fatal():
                     return "OpenFailed", ("Fatal",), 0
                 case _:
-                    assert_never(f)
-        case FrameIn(s=fs):
-            return "FrameIn", (fs.stage, fs.change), 0
+                    assert_never(e.f)
+        case FrameIn():
+            return "FrameIn", (e.s.stage, e.s.change), 0
         case HeartbeatIn():
             return "HeartbeatIn", (), 0
         case StreamEnded():
             return "StreamEnded", (), 0
-        case StreamBroke(kind=kind):
-            return "StreamBroke", (kind,), 0
+        case StreamBroke():
+            return "StreamBroke", (e.kind,), 0
         case Tick(now):
             return "Tick", (due_class(policy, s, now),), 0
         case _:

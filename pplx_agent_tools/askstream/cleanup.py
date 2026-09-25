@@ -99,14 +99,14 @@ DeleteLeg: TypeAlias = Delete | DeleteNotNeeded | DeleteKept | DeleteNoToken
 
 def _run_may_be_live(last: State) -> bool:
     match last:
-        case Done(outcome=outcome):
-            match outcome:
+        case Done():
+            match last.outcome:
                 case Completed() | SettledWithoutTerminal() | ServerFailed():
                     return False
                 case Cut() | Lost() | EndedEarly() | Rejected():
                     return True
                 case _:
-                    assert_never(outcome)
+                    assert_never(last.outcome)
         case Streaming() | Reconnecting() | ReconnectBackoff():
             return True
         case Starting() | StartBackoff():
@@ -117,10 +117,10 @@ def _run_may_be_live(last: State) -> bool:
 
 def _ids(last: State) -> Ids:
     match last:
-        case Done(ids=ids):
-            return ids
-        case Streaming(live=live) | Reconnecting(live=live) | ReconnectBackoff(live=live):
-            return live.ids
+        case Done():
+            return last.ids
+        case Streaming() | Reconnecting() | ReconnectBackoff():
+            return last.live.ids
         case Starting() | StartBackoff():
             return NoIds()
         case _:
@@ -131,10 +131,10 @@ def _terminate(ids: Ids, display_model: str | None) -> TerminateLeg:
     match ids:
         case NoIds():
             return TerminateNotNeeded()
-        case UuidOnly(context=context) | Known(context=context):
-            if context is None or display_model is None:
+        case UuidOnly() | Known():
+            if ids.context is None or display_model is None:
                 return TerminateUnsupported()
-            return Terminate(TerminateRef(ids_uuid(ids), context, display_model))
+            return Terminate(TerminateRef(ids_uuid(ids), ids.context, display_model))
         case _:
             assert_never(ids)
 
@@ -147,8 +147,8 @@ def _delete(ids: Ids, keep_thread: bool) -> DeleteLeg:
             return DeleteKept()
         case UuidOnly():
             return DeleteNoToken()
-        case Known(ref=ref):
-            return Delete(ref)
+        case Known():
+            return Delete(ids.ref)
         case _:
             assert_never(ids)
 
