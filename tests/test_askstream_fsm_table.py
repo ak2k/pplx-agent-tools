@@ -311,10 +311,7 @@ def test_t10_gone_or_fatal_falls_back(
     lv = live(ids=KNOWN, next_conn=3, phase=phase)
     s, eff = step(ASK_RC, reconnecting(lv, reason), OpenFailed(C2, 105.0, f))
     assert isinstance(s, Done)
-    expected = expected_fallback(ASK_RC, reason, lv)
-    if isinstance(expected, SettledWithoutTerminal):
-        expected = replace(expected, by="server")
-    assert s.outcome == expected
+    assert s.outcome == expected_fallback(ASK_RC, reason, lv)
     assert s.ids == KNOWN
     assert eff[0] == Close(C2)
     assert isinstance(eff[1], Notice)
@@ -903,3 +900,88 @@ def test_policy_unbounded_skips_the_stall_check() -> None:
         ),
         Policy,
     )
+
+
+# --- a failed reconnect ends as reconnect Off would (§3.4) ----------------------------------------
+
+
+def _trigger_case(reason: ReconnectReason) -> tuple[dict[str, object], float]:
+    """Policy fields and last byte time under which `reason` is the first
+    thing due, plus the time it is due."""
+    kw: dict[str, object] = {"stall": StallAfter(120.0), "completion": SettleAfterText(1000.0)}
+    last_byte = 200.0
+    match reason:
+        case "silence":
+            last_byte = 10.0
+        case "stall":
+            kw["stall"] = StallAfter(50.0)
+        case "settle":
+            kw["completion"] = SettleAfterText(15.0)
+        case "first_content":
+            kw["first_content"] = FirstContentWithin(40.0)
+        case "drop" | "eof":
+            last_byte = 20.0
+    return kw, last_byte
+
+
+def _cut(reason: ReconnectReason, s: fsm.State, p: Policy) -> fsm.Event:
+    match reason:
+        case "drop":
+            return StreamBroke(C1, 30.0, "transport", "reset")
+        case "eof":
+            return StreamEnded(C1, 30.0)
+        case _:
+            wake = fsm.next_wake(p, s)
+            assert wake is not None
+            assert fsm.due_class(p, s, wake) == reason
+            return Tick(wake)
+
+
+def _without_reconnects(o: object) -> object:
+    return replace(o, reconnects=0) if hasattr(o, "reconnects") else o  # pyright: ignore[reportArgumentType]
+
+
+REASON_PHASES = [
+    (r, ph)
+    for r in REASONS
+    for ph in PHASES
+    if (r != "settle" or isinstance(ph, TextComplete))
+    and (r != "first_content" or isinstance(ph, AwaitingFirst))
+]
+REFUSALS: list[str] = ["gone", "fatal", "redirect", "transient", "open_timeout"]
+
+
+@pytest.mark.parametrize(("reason", "phase"), REASON_PHASES)
+@pytest.mark.parametrize("refusal", REFUSALS)
+def test_failed_reconnect_ends_as_reconnect_off(
+    reason: ReconnectReason, phase: fsm.Phase, refusal: str
+) -> None:
+    kw, last_byte = _trigger_case(reason)
+    ph = TextComplete(10.0, 10.0) if isinstance(phase, TextComplete) else phase
+    base = live(phase=ph, ids=KNOWN)
+    s0 = streaming(base, last_byte_at=last_byte)
+
+    off = policy(reconnect=Off(), **kw)  # pyright: ignore[reportArgumentType]
+    want, _ = step(off, s0, _cut(reason, s0, off))
+    assert isinstance(want, Done)
+
+    # One reconnect allowed, so a retryable failure cannot try again.
+    on = policy(reconnect=Bounded(1, 1), **kw)  # pyright: ignore[reportArgumentType]
+    s, _ = step(on, s0, _cut(reason, s0, on))
+    assert isinstance(s, ReconnectBackoff)
+    s, _ = step(on, s, Tick(s.until))
+    assert isinstance(s, Reconnecting)
+    assert s.reason == reason
+    failure: dict[str, fsm.Failure] = {
+        "gone": Gone(403),
+        "fatal": Fatal(SchemaError("x")),
+        "redirect": Fatal(UnexpectedRedirect("302")),
+        "transient": Transient("reset"),
+    }
+    if refusal == "open_timeout":
+        got, _ = step(on, s, Tick(s.open_due_at))
+    else:
+        got, _ = step(on, s, OpenFailed(s.conn, s.open_due_at - 1.0, failure[refusal]))
+    assert isinstance(got, Done)
+    assert got.ids == want.ids
+    assert _without_reconnects(got.outcome) == _without_reconnects(want.outcome)

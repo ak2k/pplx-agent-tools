@@ -602,10 +602,7 @@ def _chk_t10(
         assert eff[0] == Close(s.conn)
         assert isinstance(eff[1], Notice)
         assert eff[1].detail != AUTH_NOTICE
-        fb = expected_fallback(p, s.reason, s.live)
-        if isinstance(fb, SettledWithoutTerminal):
-            fb = SettledWithoutTerminal(fb.reconnects, "server")
-        assert s2.outcome == fb
+        assert s2.outcome == expected_fallback(p, s.reason, s.live)
         assert getattr(s2.outcome, "by", None) != "auth"
 
 

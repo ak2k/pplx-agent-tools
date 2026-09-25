@@ -830,13 +830,6 @@ def _reconnecting(policy: Policy, s: Reconnecting, e: ConnEvent, u: float) -> Li
             assert_never(e)
 
 
-def _refused(policy: Policy, s: Reconnecting) -> Outcome:
-    """The server refused the reconnect, so it, not the trigger, ended an
-    answer that was already whole."""
-    o = fallback(policy, s.reason, s.live)
-    return replace(o, by="server") if isinstance(o, SettledWithoutTerminal) else o
-
-
 def _reconnect_failed(
     policy: Policy, s: Reconnecting, conn: ConnId, now: float, f: Failure, u: float
 ) -> LiveStep:
@@ -860,10 +853,10 @@ def _reconnect_failed(
             )
         case Fatal(err):
             notice = Notice("reconnect_failed", f"reconnect refused: {type(err).__name__}")
-            return Done(_refused(policy, s), live.ids), (Close(conn), notice)
+            return Done(fallback(policy, s.reason, live), live.ids), (Close(conn), notice)
         case Gone(status):
             notice = Notice("reconnect_failed", f"reconnect refused: Gone (HTTP {status})")
-            return Done(_refused(policy, s), live.ids), (Close(conn), notice)
+            return Done(fallback(policy, s.reason, live), live.ids), (Close(conn), notice)
         case _:
             assert_never(f)
 
