@@ -1,0 +1,10 @@
+# Keeps the security-and-quality suite (set via the workflow's `queries:` input) but drops
+# py/uninitialized-local-variable, which false-positives on `match` class-pattern keyword
+# captures and on `assert_never` calls it doesn't recognize as NoReturn. basedpyright's
+# reportPossiblyUnboundVariable (pyproject.toml) covers the same class of real bug without
+# those false positives.
+name: "pplx-agent-tools CodeQL config"
+
+query-filters:
+  - exclude:
+      id: py/uninitialized-local-variable
