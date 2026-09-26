@@ -138,14 +138,18 @@ class _Session:
 
 
 class _CleanupClient(_TestClientBase):
-    # The real cleanup requests, so the table sees what goes on the wire.
-    terminate = Client.terminate
-    delete_thread = Client.delete_thread
+    """Sends the real cleanup requests, so the table sees what goes on the wire."""
 
     def __init__(self, session: _Session) -> None:
         super().__init__()
         self.session = session
         vars(self)["_session"] = session
+
+    def terminate(self, entry_uuid: str, context_uuid: str, model_preference: str) -> bool:
+        return Client.terminate(self, entry_uuid, context_uuid, model_preference)
+
+    def delete_thread(self, entry_uuid: str, read_write_token: str) -> bool:
+        return Client.delete_thread(self, entry_uuid, read_write_token)
 
 
 @pytest.fixture
