@@ -40,6 +40,7 @@ from pplx_agent_tools.verbs.research import research
 from ._doubles import _TestClientBase
 from .test_stall_guard import (
     ENVELOPE,
+    HEARTBEAT,
     LONG_DEADLINE,
     Step,
     _chunk,
@@ -189,6 +190,35 @@ def test_a_deadline_before_content_says_which_retry_fits(
         steps, timeout = [(0, ENVELOPE), *_heartbeats(300)], "60"
     rc, out, err, _ = _cli_json(monkeypatch, capsys, verb, steps, clock, "--timeout", timeout)
     assert rc == EXIT_NETWORK
+    assert advice in out["error"]["message"]
+    assert advice in err
+
+
+@pytest.mark.parametrize("verb", _CLI)
+@pytest.mark.parametrize("ending", ["heartbeat", "silence"])
+def test_a_deadline_before_content_counts_the_gap_to_when_the_cut_is_seen(
+    clock: _Clock,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    verb: str,
+    ending: str,
+) -> None:
+    # The last progress comes 20 s before the 100 s deadline, but the cut is
+    # seen only at the next heartbeat or at the transport's silence abort.
+    steps: list[Step] = [(0, _non_content_progress(verb, 0)), (80, _non_content_progress(verb, 1))]
+    if ending == "heartbeat":
+        gap = 30.0
+        steps += [(15, HEARTBEAT), (15, HEARTBEAT)]
+    else:
+        gap = 90.0 if verb == "research" else 45.0
+        steps.append((gap, _curl_error(CurlECode.OPERATION_TIMEDOUT)))
+    rc, out, err, _ = _cli_json(monkeypatch, capsys, verb, steps, clock, "--timeout", "100")
+    advice = (
+        f"the last progress event came {gap:.1f}s before the cut, longer than a healthy run "
+        "goes without one: retry once"
+    )
+    assert rc == EXIT_NETWORK
+    assert out["error"]["type"] == "StreamDeadlineError"
     assert advice in out["error"]["message"]
     assert advice in err
 

@@ -475,9 +475,10 @@ class _StreamBounds:
         self._progressed = True
 
     def _deadline_error(self) -> StreamDeadlineError:
-        since = None
-        if self._progressed and self._deadline is not None:
-            since = max(0.0, self._deadline - self._last_progress)
+        # Counted to when the cut is seen, not to the deadline: the next
+        # heartbeat or curl's abort can land well past it, and the retry
+        # advice has to judge the whole gap without progress.
+        since = time.monotonic() - self._last_progress if self._progressed else None
         return StreamDeadlineError(
             f"SSE stream on {self._path} exceeded {self._max_total:.1f}s deadline", since
         )
