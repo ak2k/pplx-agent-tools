@@ -26,6 +26,7 @@ from typing import Any
 
 import pytest
 from curl_cffi import CurlECode
+from curl_cffi.requests import Response
 from curl_cffi.requests.exceptions import RequestException
 
 from pplx_agent_tools import wire
@@ -112,14 +113,28 @@ class _Plain:
         self.text = ""
 
 
+def _undecodable_error() -> Response:
+    """A 502 whose declared charset is unknown and whose body is not UTF-8."""
+    resp = Response()
+    resp.status_code = 502
+    resp.headers["Content-Type"] = "text/plain; charset=bogus-charset"
+    resp.content = b"\xff\xfe\xfa oops"
+    return resp
+
+
 class _Session:
     """Answers the SSE POST from a script and records terminate and delete."""
 
     def __init__(
-        self, sse: Callable[[], _SseResp | _Plain], *, cleanup_fails: bool = False
+        self,
+        sse: Callable[[], _SseResp | _Plain],
+        *,
+        cleanup_fails: bool = False,
+        cleanup_answer: Callable[[], Any] = lambda: _Plain(200),
     ) -> None:
         self._sse = sse
         self._cleanup_fails = cleanup_fails
+        self._cleanup_answer = cleanup_answer
         self.calls: list[tuple[str, dict[str, Any], dict[str, str], Any]] = []
 
     def post(self, url: str, **kw: Any) -> Any:
@@ -127,14 +142,14 @@ class _Session:
             self.calls.append(("terminate", kw["json"], kw.get("headers") or {}, kw["timeout"]))
             if self._cleanup_fails:
                 raise RuntimeError("terminate transport down")
-            return _Plain(200)
+            return self._cleanup_answer()
         return self._sse()
 
     def request(self, method: str, url: str, **kw: Any) -> Any:
         self.calls.append(("delete", kw["json"], kw.get("headers") or {}, kw["timeout"]))
         if self._cleanup_fails:
             raise RuntimeError("delete transport down")
-        return _Plain(200)
+        return self._cleanup_answer()
 
 
 class _CleanupClient(_TestClientBase):
@@ -223,6 +238,7 @@ def _run(
     keep: bool,
     *,
     cleanup_fails: bool = False,
+    cleanup_answer: Callable[[], Any] = lambda: _Plain(200),
 ) -> tuple[_Session, Any]:
     def sse() -> _SseResp | _Plain:
         if end == "rate_limit":
@@ -231,7 +247,7 @@ def _run(
             raise ConnectionError("connection refused")
         return _SseResp(_script(verb, end, text_completed, ids), clock)
 
-    session = _Session(sse, cleanup_fails=cleanup_fails)
+    session = _Session(sse, cleanup_fails=cleanup_fails, cleanup_answer=cleanup_answer)
     client = _CleanupClient(session)
     kwargs: dict[str, Any] = {
         "keep_thread": keep,
@@ -296,6 +312,7 @@ def _check_cell(
     if kinds == ["delete", "terminate"]:
         pytest.fail("delete sent before terminate")
     for kind, body, headers, timeout in session.calls:
+        assert timeout < wire.DEFAULT_TIMEOUT
         if kind == "terminate":
             assert body == {
                 "entry_uuid": "BU",
@@ -304,7 +321,6 @@ def _check_cell(
                 "terminate_requested_at_ms": 1_700_000_000_000,
             }
             assert headers == {"X-Perplexity-Request-Reason": "thread-floating-footer"}
-            assert timeout < wire.DEFAULT_TIMEOUT
         else:
             assert body == {"entry_uuid": "BU", "read_write_token": "RW"}
     return "terminate" in kinds, "delete" in kinds
@@ -381,3 +397,46 @@ def test_a_failed_terminate_still_deletes_and_returns_the_partial(clock: _Clock)
     assert isinstance(outcome, dict)
     assert outcome["cut_by"] == "stall"
     assert [c[0] for c in session.calls] == ["terminate", "delete"]
+
+
+def test_the_undecodable_answer_is_one_curl_cffi_cannot_read() -> None:
+    with pytest.raises(UnicodeDecodeError):
+        _ = _undecodable_error().text
+
+
+@pytest.mark.parametrize("verb", VERBS)
+def test_an_undecodable_cleanup_answer_never_replaces_the_interrupt(
+    clock: _Clock, verb: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    session, outcome = _run(
+        clock,
+        verb,
+        "keyboard_interrupt",
+        False,
+        "complete",
+        False,
+        cleanup_answer=_undecodable_error,
+    )
+    assert isinstance(outcome, KeyboardInterrupt), outcome
+    assert [c[0] for c in session.calls] == ["terminate", "delete"]
+    err = capsys.readouterr().err
+    assert "terminate failed: BU returned 502" in err
+    assert "cleanup failed: DELETE BU returned 502" in err
+
+
+@pytest.mark.parametrize("verb", VERBS)
+def test_an_undecodable_cleanup_answer_keeps_the_salvaged_partial(clock: _Clock, verb: str) -> None:
+    session, outcome = _run(
+        clock, verb, "drop", False, "complete", False, cleanup_answer=_undecodable_error
+    )
+    assert isinstance(outcome, dict), outcome
+    assert outcome["cut_by"] == "drop"
+    assert "partial" in json.dumps(outcome)
+    assert [c[0] for c in session.calls] == ["terminate", "delete"]
+
+
+def test_both_cleanup_requests_share_one_short_timeout(clock: _Clock) -> None:
+    session, _ = _run(clock, "ask", "keyboard_interrupt", False, "complete", False)
+    timeouts = {kind: timeout for kind, _, _, timeout in session.calls}
+    assert set(timeouts) == {"terminate", "delete"}
+    assert timeouts["delete"] == timeouts["terminate"] < wire.DEFAULT_TIMEOUT

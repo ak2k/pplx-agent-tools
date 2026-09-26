@@ -44,10 +44,10 @@ DEFAULT_IMPERSONATE = "chrome"
 # seconds), so this only catches total silence: heartbeat comments keep the
 # rate above 1 B/s. The progress-event stall check in `sse_post` covers that case.
 DEFAULT_SSE_READ_TIMEOUT = 60.0
-# The terminate request runs in cleanup, often right after a Ctrl-C, so it gets
-# a bound of its own rather than the client's 30 s default. It answered in
-# 0.17 s when probed live.
-TERMINATE_TIMEOUT_SECONDS = 5.0
+# Terminate and delete run in cleanup, often right after a Ctrl-C, so they get
+# a bound of their own rather than the client's 30 s default. Terminate
+# answered in 0.17 s when probed live.
+CLEANUP_TIMEOUT_SECONDS = 5.0
 # Hard cap on un-dispatched SSE buffer (a single event with no `\n\n` terminator).
 # Defends against a server that trickles bytes forever without a terminator.
 _MAX_SSE_BUFFER_BYTES = 16 * 1024 * 1024
@@ -195,26 +195,26 @@ class Client:
                 url,
                 cookies=self._cookies,
                 json={"entry_uuid": entry_uuid, "read_write_token": read_write_token},
-                timeout=self._timeout,
+                timeout=CLEANUP_TIMEOUT_SECONDS,
             )
+            if resp is None:
+                print(
+                    f"warning: thread cleanup failed: no response for {entry_uuid}",
+                    file=sys.stderr,
+                )
+                return False
+            status = resp.status_code
+            if status < 400:
+                return True
+            body = _body_excerpt(resp)
         except Exception as e:
             print(f"warning: thread cleanup failed: {e}", file=sys.stderr)
             return False
-        if resp is None:
-            print(
-                f"warning: thread cleanup failed: no response for {entry_uuid}",
-                file=sys.stderr,
-            )
-            return False
-        status = resp.status_code
-        if status >= 400:
-            body = (resp.text or "")[:200]
-            print(
-                f"warning: thread cleanup failed: DELETE {entry_uuid} returned {status}: {body}",
-                file=sys.stderr,
-            )
-            return False
-        return True
+        print(
+            f"warning: thread cleanup failed: DELETE {entry_uuid} returned {status}: {body}",
+            file=sys.stderr,
+        )
+        return False
 
     def terminate(self, entry_uuid: str, context_uuid: str, model_preference: str) -> bool:
         """Stop a run that may still be going on the server, as the web
@@ -237,20 +237,20 @@ class Client:
                     "terminate_requested_at_ms": int(time.time() * 1000),
                 },
                 headers={"X-Perplexity-Request-Reason": "thread-floating-footer"},
-                timeout=TERMINATE_TIMEOUT_SECONDS,
+                timeout=CLEANUP_TIMEOUT_SECONDS,
             )
+            status = resp.status_code
+            if status < 400:
+                return True
+            body = _body_excerpt(resp)
         except Exception as e:
             print(f"warning: run terminate failed: {e}", file=sys.stderr)
             return False
-        status = resp.status_code
-        if status >= 400:
-            body = (resp.text or "")[:200]
-            print(
-                f"warning: run terminate failed: {entry_uuid} returned {status}: {body}",
-                file=sys.stderr,
-            )
-            return False
-        return True
+        print(
+            f"warning: run terminate failed: {entry_uuid} returned {status}: {body}",
+            file=sys.stderr,
+        )
+        return False
 
     def sse_post(
         self,
@@ -566,6 +566,13 @@ class _SSEFramer:
         self._parts = [rest] if rest else []
         self.pending_chars = len(rest)
         return events
+
+
+def _body_excerpt(resp: Any) -> str:
+    """The start of an error body, for a warning. Decoded here because
+    `resp.text` raises when the declared charset is unknown and the body is
+    not UTF-8, and a cleanup request must never raise."""
+    return (resp.content or b"")[:200].decode("utf-8", "replace")
 
 
 def _json_body(resp: Any, path: str) -> JsonValue:
