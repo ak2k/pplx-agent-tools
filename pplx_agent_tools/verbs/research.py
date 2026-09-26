@@ -43,6 +43,7 @@ from ._ask_common import (
     cutoff_silence,
     cutoff_warnings,
     downgrade_verdict,
+    error_notes,
     no_content_error,
     release_on_exit,
     run_ask_stream,
@@ -252,7 +253,11 @@ def research(
         if last_raw["text"] is not None:
             # Text arrived but no frame ever parsed — the decode error is the
             # honest diagnosis, so re-raise it rather than reporting no content.
-            decode_research_text(last_raw["text"])
+            # Cleanup has already run, so a run it could not stop is named here.
+            try:
+                decode_research_text(last_raw["text"])
+            except SchemaError as e:
+                raise SchemaError(f"{e}{error_notes(state.cleanup_warnings)}") from e
         raise no_content_error(
             label="research",
             endpoint=ENDPOINT,

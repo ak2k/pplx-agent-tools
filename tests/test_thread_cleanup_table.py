@@ -514,3 +514,24 @@ def test_an_interrupted_run_that_cannot_be_stopped_says_so_on_stderr(
     assert isinstance(outcome, KeyboardInterrupt)
     err = capsys.readouterr().err
     assert _STILL_RUNNING in err and "no context uuid arrived" in err
+
+
+@pytest.mark.parametrize(
+    ("ids", "answer", "legs", "clause"),
+    [
+        ("no_context", lambda: _Plain(200), ["delete"], "no context uuid arrived"),
+        ("complete", lambda: _Plain(500), ["terminate", "delete"], "the request to stop it failed"),
+    ],
+    ids=["no context uuid", "terminate fails"],
+)
+def test_undecodable_research_text_still_says_the_run_may_be_live(
+    clock: _Clock, ids: str, answer: Callable[[], Any], legs: list[str], clause: str
+) -> None:
+    frame = _frame({**_ids("research", ids), "status": "PENDING", "text": "{"})
+    session = _Session(lambda: _SseResp([(0, frame)], clock), cleanup_answer=answer)
+    with pytest.raises(SchemaError) as exc:
+        research(_CleanupClient(session), "q")
+    assert type(exc.value) is SchemaError
+    assert "research text is not JSON" in str(exc.value)
+    assert _STILL_RUNNING in str(exc.value) and clause in str(exc.value)
+    assert [c[0] for c in session.calls] == legs

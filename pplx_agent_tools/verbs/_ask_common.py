@@ -519,7 +519,7 @@ def no_content_error(
     the text, since an error carries no warnings list and a retry would run
     alongside a run that may still be going.
     """
-    notes = "".join(f"; {w}" for w in cleanup_warnings)
+    notes = error_notes(cleanup_warnings)
     if isinstance(cutoff, StreamFirstContentError):
         return StreamFirstContentError(
             f"{label} stream on {endpoint} sent no first content within "
@@ -550,6 +550,12 @@ def no_content_error(
             cutoff.since_progress,
         )
     return SchemaError(f"{label} stream on {endpoint} closed with no content{notes}")
+
+
+def error_notes(warnings: Sequence[str]) -> str:
+    """The suffix that ends an error's text with the warnings a result would
+    have carried: an error has no warnings list."""
+    return "".join(f"; {w}" for w in warnings)
 
 
 def _deadline_advice(since_progress: float | None) -> str:
