@@ -153,6 +153,34 @@ def test_json_usage_error_prints_one_envelope(
 @pytest.mark.parametrize(
     "argv",
     [
+        ["ask", "--json=1", "q"],
+        ["search", "--js=yes", "q"],
+        ["research", "--json=", "--no-such-flag", "q"],
+    ],
+    ids=" ".join,
+)
+def test_json_equals_form_usage_error_prints_one_envelope(
+    argv: list[str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    with pytest.raises(SystemExit) as ei:
+        cli.main(argv)
+    assert ei.value.code == EXIT_GENERIC
+    out = json.loads(capsys.readouterr().out)
+    assert out["_verb"] == argv[0]
+    assert out["error"]["type"] == "UsageError"
+
+
+def test_an_equals_value_that_names_json_is_not_the_flag(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit):
+        cli.main(["search", "--limit=--json", "q"])
+    assert capsys.readouterr().out == ""
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
         ["search", "--limit", "0", "q"],
         ["search", "--limit", "0", "--", "--json"],
         ["auth", "--json"],

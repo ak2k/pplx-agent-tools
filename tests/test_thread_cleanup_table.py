@@ -68,25 +68,9 @@ def expected_legs(
     """(terminate, delete) from the rule in the module docstring."""
     delete = ids in ("complete", "no_context", "no_model") and not keep
     terminable = ids in ("complete", "no_token")
-    if end in ("completed", "failed", "rate_limit", "pre_first_byte"):
-        live = False
-    elif verb == "fetch" and text_completed:
-        live = False
-    elif (
-        verb == "ask"
-        and text_completed
-        and end
-        in (
-            "server_close",
-            "drop",
-            "deadline",
-            "stall",
-            "silence",
-        )
-    ):
-        live = False
-    else:
-        live = True
+    settled_ask = verb == "ask" and end in ("server_close", "drop", "deadline", "stall", "silence")
+    over = end in ("completed", "failed", "rate_limit", "pre_first_byte")
+    live = not (over or (text_completed and (verb == "fetch" or settled_ask)))
     return terminable and live, delete
 
 
@@ -363,7 +347,7 @@ def test_cleanup_table_over_every_end(clock: _Clock) -> None:
         ("ask", "rate_limit", False, "none", False, (False, False)),
         ("fetch", "drop", False, "no_token", False, (True, False)),
     ],
-    ids=lambda v: str(v),
+    ids=str,
 )
 def test_cleanup_anchor_rows(
     clock: _Clock, verb: str, end: str, tc: bool, ids: str, keep: bool, legs: tuple[bool, bool]
