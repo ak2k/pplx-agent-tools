@@ -12,7 +12,7 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from pplx_agent_tools.askstream import fsm
+from pplx_agent_tools.askstream import frames, fsm
 from pplx_agent_tools.askstream.fsm import (
     AUTH_NOTICE,
     AwaitingFirst,
@@ -679,7 +679,7 @@ def test_settle_never_due_before_text_complete(now: float, lp: float, last: floa
 # --- R(reason) guard and fallback enumerations (§3.8) --------------------------------------------
 
 GUARD_IDS = (NoIds(), UUID_ONLY, KNOWN)
-GUARD_FLAGS: tuple[fsm.Reconnectable, ...] = ("yes", "no", "absent")
+GUARD_FLAGS: tuple[frames.Reconnectable, ...] = ("yes", "no", "absent")
 GUARD_COUNTERS = ((0, 0), (3, 3), (1, 6))  # under both caps; consecutive at cap; total at cap
 GUARD_REMAINING = (5.0, 4.999)
 
@@ -695,7 +695,7 @@ GUARD_REMAINING = (5.0, 4.999)
 def test_reconnect_guard(
     rc: Off | Bounded,
     ids: fsm.Ids,
-    flag: fsm.Reconnectable,
+    flag: frames.Reconnectable,
     counters: tuple[int, int],
     left: float,
 ) -> None:

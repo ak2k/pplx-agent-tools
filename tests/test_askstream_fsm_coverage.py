@@ -22,7 +22,7 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from pplx_agent_tools.askstream import fsm, policy
+from pplx_agent_tools.askstream import blocks, frames, fsm, policy
 from pplx_agent_tools.askstream.fsm import (
     AUTH_NOTICE,
     AwaitingFirst,
@@ -311,7 +311,7 @@ def _failure(rng: random.Random, cls: object) -> fsm.Failure:
     return Fatal(rng.choice([AuthError("expired"), UnexpectedRedirect("302"), SchemaError("x")]))
 
 
-def _frame(rng: random.Random, stage: fsm.Stage, change: fsm.Change) -> FrameSummary:
+def _frame(rng: random.Random, stage: frames.Stage, change: blocks.Change) -> FrameSummary:
     return FrameSummary(
         stage=stage,
         change=change,

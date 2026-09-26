@@ -19,6 +19,8 @@ from typing import Generic, Literal, TypeAlias, TypeVar, final
 
 from typing_extensions import assert_never
 
+from pplx_agent_tools.askstream.blocks import Change
+from pplx_agent_tools.askstream.frames import Reconnectable, Stage
 from pplx_agent_tools.askstream.ids import (
     BackendUuid,
     ConnId,
@@ -65,12 +67,6 @@ from pplx_agent_tools.errors import (
 )
 
 # --- frame summary -------------------------------------------------------------------------------
-
-# Derived once per frame from (status, text_completed).
-Stage = Literal["pending", "text_complete", "completed", "failed", "other"]
-# Whether the frame changed content the progress rule counts.
-Change = Literal["idle", "progress"]
-Reconnectable = Literal["yes", "no", "absent"]
 
 
 @final
