@@ -56,7 +56,8 @@ COPILOT_STALL_SECONDS = 480.0
 COPILOT_SETTLE_SECONDS = 15.0
 # Total silence, heartbeats included, that ends an ask-family stream (curl's
 # low-speed abort), for all three verbs. At least 3x the largest inter-byte gap
-# measured on live streams (8.14 s); heartbeats are said to arrive ~15 s apart.
+# measured on live streams (8.14 s), and it must stay above the heartbeat
+# interval (~15 s) so an idle but live stream is not cut.
 SILENCE_SECONDS = 25.0
 # A stream whose first progress event has not arrived by then is cut. First
 # progress arrived within 0.49-4.54 s on every probed run.
