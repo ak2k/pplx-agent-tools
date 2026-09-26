@@ -352,7 +352,7 @@ def test_ask_deadline_and_closed_empty_texts_are_distinguishable() -> None:
 
     assert str(deadline.value) == (
         "ask stream on /rest/sse/perplexity_ask exceeded 30.0s deadline "
-        "before the first content arrived"
+        "before the first content arrived; no progress event arrived"
     )
     assert str(closed.value) == "ask stream on /rest/sse/perplexity_ask closed with no content"
     assert exit_code(deadline.value) == EXIT_NETWORK

@@ -55,12 +55,14 @@ COPILOT_STALL_SECONDS = 480.0
 # the check, so the worst-case wait is about 30 s instead of the stall window.
 COPILOT_SETTLE_SECONDS = 15.0
 # Total silence, heartbeats included, that ends an ask-family stream (curl's
-# low-speed abort), for all three verbs. At least 3x the largest inter-byte gap
-# measured on live streams (8.14 s), and it must stay above the heartbeat
-# interval (~15 s) so an idle but live stream is not cut.
-SILENCE_SECONDS = 25.0
-# A stream whose first progress event has not arrived by then is cut. First
-# progress arrived within 0.49-4.54 s on every probed run.
+# low-speed abort), for all three verbs: 3x the largest gap on a healthy
+# stream. Legacy streams send a heartbeat comment every 15.0 s, and on a quiet
+# healthy stream that heartbeat alone sets the gap, so 3 x 15 s.
+SILENCE_SECONDS = 45.0
+# A stream whose first progress event has not arrived by then is cut. On the
+# legacy body the first data frame, a query echo at 0.10-0.37 s, already counts
+# as progress, so this fires only when heartbeats keep the connection alive
+# but no data frame arrives.
 FIRST_CONTENT_SECONDS = 90.0
 
 
@@ -403,7 +405,8 @@ def run_ask_stream(
                 raise last_rate_limit
             # Budget already spent before this attempt — surface it as a tripped
             # deadline so a caller with no content raises StreamDeadlineError
-            # (exit 4), not the generic "no content" SchemaError.
+            # (exit 4), not the generic "no content" SchemaError. Only 429s came
+            # back, so no progress event arrived.
             state.cutoff = StreamDeadlineError(
                 f"{label} stream on {endpoint} exceeded {timeout:.1f}s deadline"
             )
@@ -433,7 +436,8 @@ def run_ask_stream(
             # caller's bound instead.
             state.cutoff = (
                 StreamDeadlineError(
-                    f"{label} stream on {endpoint} exceeded {timeout:.1f}s deadline"
+                    f"{label} stream on {endpoint} exceeded {timeout:.1f}s deadline",
+                    e.since_progress,
                 )
                 if timeout
                 else e
@@ -491,9 +495,17 @@ def no_content_error(
         # `timeout` is None only when the budget was spent by an earlier retry
         # rather than by a caller-supplied bound.
         budget = f"{timeout:.1f}s" if timeout is not None else "its"
+        # Which retry fits depends on whether the run was still working when cut.
+        since = cutoff.since_progress
+        progress = (
+            "no progress event arrived"
+            if since is None
+            else f"the last progress event came {since:.1f}s before the cut"
+        )
         return StreamDeadlineError(
             f"{label} stream on {endpoint} exceeded {budget} deadline "
-            f"before the first content arrived"
+            f"before the first content arrived; {progress}",
+            since,
         )
     return SchemaError(f"{label} stream on {endpoint} closed with no content")
 

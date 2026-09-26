@@ -475,8 +475,11 @@ class _StreamBounds:
         self._progressed = True
 
     def _deadline_error(self) -> StreamDeadlineError:
+        since = None
+        if self._progressed and self._deadline is not None:
+            since = max(0.0, self._deadline - self._last_progress)
         return StreamDeadlineError(
-            f"SSE stream on {self._path} exceeded {self._max_total:.1f}s deadline"
+            f"SSE stream on {self._path} exceeded {self._max_total:.1f}s deadline", since
         )
 
     def check_deadline(self) -> None:
@@ -519,7 +522,10 @@ class _StreamBounds:
         if cut is not None and now >= cut[0]:
             due.append(cut)
         due.append((self._last_byte + self._silence_after, self._silence_error))
-        return min(due, key=lambda d: d[0])[1]
+        first = min(due, key=lambda d: d[0])[1]
+        # A silence window capped by the deadline stands for the deadline; build
+        # it here so it carries the progress timing.
+        return self._deadline_error() if type(first) is StreamDeadlineError else first
 
 
 class _SSEFramer:

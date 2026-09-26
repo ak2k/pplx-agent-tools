@@ -345,7 +345,7 @@ def test_other_curl_errors_stay_network_errors(clock: _Clock) -> None:
 @pytest.mark.parametrize(
     ("silence", "deadline", "expected"),
     [
-        (SILENCE_SECONDS, 1800.0, (SILENCE_SECONDS, 0.0)),  # the ask-family window
+        (SILENCE_SECONDS, 1800.0, (30.0, SILENCE_SECONDS - 30.0)),  # the ask-family window
         (120.0, 1800.0, (30.0, 90.0)),  # low-speed abort after ~120 s of silence
         (120.0, 50.0, (30.0, 20.0)),  # capped by the remaining deadline
         (10.0, None, (10.0, 0.0)),  # window shorter than the connect leg shrinks it

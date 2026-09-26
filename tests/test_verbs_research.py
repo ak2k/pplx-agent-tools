@@ -326,7 +326,7 @@ def test_research_deadline_and_closed_empty_texts_are_distinguishable() -> None:
 
     assert str(deadline.value) == (
         "research stream on /rest/sse/perplexity_ask exceeded 30.0s deadline "
-        "before the first content arrived"
+        "before the first content arrived; no progress event arrived"
     )
     assert str(closed.value) == (
         "research stream on /rest/sse/perplexity_ask closed with no content"

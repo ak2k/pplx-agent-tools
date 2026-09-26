@@ -34,6 +34,7 @@ from .test_stall_guard import (
     _chunk,
     _Clock,
     _curl_error,
+    _frame,
     _heartbeats,
     _run_cli,
     _snapshot,
@@ -91,6 +92,51 @@ def test_no_first_content_is_cut_at_the_bound_with_its_own_message(
     assert "stall" not in err
     assert FIRST_CONTENT_S < clock.now - 1000.0 <= FIRST_CONTENT_S + 15
     assert client.deleted == [("BU", "RW")]
+
+
+# ---------- deadline before content ----------
+
+
+def _non_content_progress(verb: str, i: int) -> bytes:
+    """A frame the verb's progress rule counts that still carries no content."""
+    ids = {"backend_uuid": "BU", "read_write_token": "RW"}
+    if verb == "research":
+        step = {"step_type": "INITIAL_QUERY", "content": {"query": f"q{i}"}}
+        return _frame({**ids, "text": json.dumps([step])})
+    return _frame({**ids, "blocks": [{"plan": i}]})
+
+
+@pytest.mark.parametrize("verb", _CLI)
+@pytest.mark.parametrize(
+    ("scenario", "timeout", "expected"),
+    [
+        ("working", "100", "the last progress event came 20.0s before the cut"),
+        ("echo only", "60", "the last progress event came 60.0s before the cut"),
+        ("none", "60", "no progress event arrived"),
+    ],
+)
+def test_a_deadline_before_content_says_when_progress_last_came(
+    clock: _Clock,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    verb: str,
+    scenario: str,
+    timeout: str,
+    expected: str,
+) -> None:
+    if scenario == "working":
+        steps: list[Step] = [
+            (0 if i == 0 else 20, _non_content_progress(verb, i)) for i in range(10)
+        ]
+    elif scenario == "echo only":
+        steps = [(0, _non_content_progress(verb, 0)), *_heartbeats(300)]
+    else:
+        steps = [(0, ENVELOPE), *_heartbeats(300)]
+    rc, out, err, _ = _cli_json(monkeypatch, capsys, verb, steps, clock, "--timeout", timeout)
+    assert rc == EXIT_NETWORK
+    assert out["error"]["exit_code"] == EXIT_NETWORK
+    assert f"exceeded {float(timeout):.1f}s deadline before the first content arrived" in err
+    assert expected in err
 
 
 # ---------- silence ----------

@@ -247,7 +247,7 @@ def test_deadline_and_closed_empty_texts_are_distinguishable() -> None:
 
     assert str(deadline.value) == (
         "fetch --prompt stream on /rest/sse/perplexity_ask exceeded 30.0s deadline "
-        "before the first content arrived"
+        "before the first content arrived; no progress event arrived"
     )
     assert str(closed.value) == (
         "fetch --prompt stream on /rest/sse/perplexity_ask closed with no content"

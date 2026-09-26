@@ -63,7 +63,15 @@ class StreamDeadlineError(NetworkError):
     timeout (exit 4). Distinguished from NetworkError so verbs that can salvage
     a partial result (e.g. `pplx fetch --prompt` accumulating chunks) can catch
     it specifically without swallowing real network failures.
+
+    `since_progress` is how long before the deadline the last progress event
+    arrived, None when none did, so a cut before any content can say whether
+    the run was still working.
     """
+
+    def __init__(self, message: str, since_progress: float | None = None) -> None:
+        super().__init__(message)
+        self.since_progress = since_progress
 
 
 class StreamStallError(StreamDeadlineError):
