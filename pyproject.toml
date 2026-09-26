@@ -157,10 +157,8 @@ include = ["pplx_agent_tools", "tests"]
 exclude = ["re-fixtures", "**/__pycache__"]
 pythonVersion = "3.10"
 typeCheckingMode = "standard"
-# CodeQL's py/uninitialized-local-variable is excluded (see codeql-config.yml); this is the
-# check standing in for it. basedpyright's "standard" mode already defaults this to "error"
-# (unlike plain pyright, where it's a warning) — pinned explicitly so a future basedpyright
-# default change can't silently reopen the gap. Renamed from pyright's reportPossiblyUnbound.
+# This rule stands in for the excluded CodeQL query py/uninitialized-local-variable (see
+# codeql-config.yml). Pinned explicitly so a future default change can't weaken it.
 reportPossiblyUnboundVariable = "error"
 strict = [
     "pplx_agent_tools/cli_types.py",
