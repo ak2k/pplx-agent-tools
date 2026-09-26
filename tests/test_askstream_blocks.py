@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import json
 import random
+import sys
+import tracemalloc
 from pathlib import Path
 from typing import Any
 
@@ -326,6 +328,61 @@ def test_markdown_merge_work_is_charged_before_the_merge() -> None:
     assert s.budget.frame_work <= lim.work_per_frame
     assert s.get("ask_text") is None
     assert s.budget.total_weight == held_weight(s) == 0
+
+
+MD_KEY = ("ask_text", ("markdown_block",))
+LOOSE_WEIGHT = Limits(field_weight=2**70, total_weight=2**70)
+
+
+@pytest.mark.parametrize(
+    ("held", "offset", "lim", "cap"),
+    [
+        ([], 2**63, Limits(), "field_weight"),
+        (["HELLO"], sys.maxsize, LOOSE_WEIGHT, "work_per_frame"),
+    ],
+    ids=["past_index_range", "maxsize_under_loose_weight_caps"],
+)
+def test_absurd_chunk_offset_is_a_cap_not_an_exception(
+    held: list[str], offset: int, lim: Limits, cap: str
+) -> None:
+    """No list of that length could be built; the cap it would pass is
+    reported before one is tried."""
+    s = BlockStore("ask_text_or_workflow", lim)
+    feed(s, frame(md(held)))
+    r = s.apply_frame(frame(md(["TAIL"], offset)))
+    assert isinstance(r, CapExceeded)
+    assert (r.cap, r.field) == (cap, MD_KEY)
+    assert s.state(MD_KEY) is None
+    assert s.budget.total_weight == 0
+
+
+GAP = 1_000_000
+
+
+@pytest.mark.parametrize(
+    ("lim", "cap"),
+    [
+        (Limits(field_weight=1 << 30, total_weight=1 << 30, work_per_frame=1000), "work_per_frame"),
+        (Limits(field_weight=GAP), "field_weight"),
+        (Limits(field_weight=1 << 30, total_weight=GAP), "total_weight"),
+    ],
+    ids=["work", "field_weight", "total_weight"],
+)
+def test_chunk_gap_passes_its_cap_before_it_is_allocated(lim: Limits, cap: str) -> None:
+    """A padded list holds a pointer per slot, so a peak below one byte per
+    slot means the padding was never built."""
+    s = BlockStore("ask_text_or_workflow", lim)
+    feed(s, frame(md(["HELLO"])))
+    f = frame(md(["TAIL"], 1 + GAP))
+    tracemalloc.start()
+    try:
+        r = s.apply_frame(f)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert isinstance(r, CapExceeded)
+    assert (r.cap, r.field) == (cap, MD_KEY)
+    assert peak < GAP
 
 
 FIELDS = [

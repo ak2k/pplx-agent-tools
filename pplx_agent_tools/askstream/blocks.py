@@ -27,7 +27,13 @@ from pplx_agent_tools.askstream.frames import (
     BlockSnapshot,
     FieldKey,
 )
-from pplx_agent_tools.askstream.jsonval import JsonValue, measure, weight
+from pplx_agent_tools.askstream.jsonval import (
+    LIST_OVERHEAD,
+    JsonValue,
+    measure,
+    scalar_weight,
+    weight,
+)
 from pplx_agent_tools.askstream.patch import Budget, CapName, Limits, Probe, node_units
 from pplx_agent_tools.askstream.projections import (
     READ_FIELDS,
@@ -73,6 +79,9 @@ SEEN_CAP = 65_536
 # The weight of `{}`, the document a diff starts from on a field it has no
 # document for.
 EMPTY_OBJECT_WEIGHT = 2
+
+# The weight one null gap slot adds to a chunk list.
+GAP_SLOT_WEIGHT = scalar_weight(None) + LIST_OVERHEAD
 
 
 def classify_field(field: str) -> FieldClass:
@@ -331,6 +340,17 @@ class BlockStore:
             return self._snapshot(u, repaint, drift)
         return self._diff(u, drift)
 
+    def _admit(self, at_least: int, held: int, key: FieldKey) -> CapExceeded | None:
+        """Both weight caps for a value of weight `at_least` or more that
+        replaces one of weight `held`, checked before it exists."""
+        lim = self.budget.limits
+        if at_least > lim.field_weight:
+            return CapExceeded("field_weight", lim.field_weight, at_least, key)
+        total = self.budget.total_weight - held + at_least
+        if total > lim.total_weight:
+            return CapExceeded("total_weight", lim.total_weight, total, key)
+        return None
+
     def _spend(self, units: int, key: FieldKey) -> CapExceeded | None:
         b = self.budget
         if b.frame_work + units > b.limits.work_per_frame:
@@ -348,12 +368,18 @@ class BlockStore:
         if _field_name(u.key) == "markdown_block" and isinstance(u.value.get("chunks"), list):
             old = doc.get("chunks") if isinstance(doc, dict) else None
             old_chunks = old if isinstance(old, list) else []
-            # The merge copies and re-measures every held chunk.
-            cap = self._spend(sum(node_units(None, c) for c in old_chunks) + 1, u.key)
+            offset = _chunk_offset(u.value, len(old_chunks), repaint)
+            gap = max(0, offset - len(old_chunks))
+            # The gap's nulls alone are a lower bound on the new document's
+            # weight, and the merge copies and re-measures every held chunk
+            # and each null, so all of it is admitted before the list exists.
+            cap = self._admit(gap * GAP_SLOT_WEIGHT, w, u.key)
+            if cap is None:
+                cap = self._spend(sum(node_units(None, c) for c in old_chunks) + gap + 1, u.key)
             if cap is not None:
                 self._drop(u.key, w)
                 return cap
-            value = _merge_chunks(u.value, old_chunks, repaint)
+            value = _merge_chunks(u.value, old_chunks, offset, repaint)
         m = measure(value)
         if m is None:
             # Unreachable for a decoded frame, whose depth is already bounded.
@@ -414,14 +440,10 @@ class BlockStore:
         if held is self._sources:
             return None
         w = _sources_rows_weight(held)
-        lim = self.budget.limits
-        key = READS["web_results"]
-        if w > lim.field_weight:
-            return CapExceeded("field_weight", lim.field_weight, w, key)
-        total = self.budget.total_weight - self._sources_weight + w
-        if total > lim.total_weight:
-            return CapExceeded("total_weight", lim.total_weight, total, key)
-        self.budget.total_weight = total
+        cap = self._admit(w, self._sources_weight, READS["web_results"])
+        if cap is not None:
+            return cap
+        self.budget.total_weight += w - self._sources_weight
         self._sources, self._sources_weight = held, w
         return None
 
@@ -476,21 +498,24 @@ def _terminal_answer(before: Answer, after: Answer) -> Verdict:
     return "mismatch"
 
 
-def _merge_chunks(
-    value: dict[str, JsonValue], old: list[JsonValue], repaint: bool
-) -> dict[str, JsonValue]:
-    """A markdown snapshot placed over the held chunks, as a new document.
+def _chunk_offset(value: dict[str, JsonValue], held: int, repaint: bool) -> int:
+    """Where a markdown snapshot's run lands: `chunk_starting_offset`; with
+    none, after the `held` chunks, except on a repaint (terminal or reconnect
+    frame), which starts at 0."""
+    raw = value.get("chunk_starting_offset")
+    if isinstance(raw, int) and not isinstance(raw, bool) and raw >= 0:
+        return raw
+    return 0 if repaint else held
 
-    The run lands at `chunk_starting_offset`, padding a gap with null so
-    later diffs index the server's list. With no offset it appends, except on
-    a repaint (terminal or reconnect frame), which starts at 0 and drops any
-    chunk past a non-empty run."""
+
+def _merge_chunks(
+    value: dict[str, JsonValue], old: list[JsonValue], offset: int, repaint: bool
+) -> dict[str, JsonValue]:
+    """A markdown snapshot's run placed at `offset` over the held chunks, as
+    a new document. A gap is padded with null so later diffs index the
+    server's list; a repaint drops any chunk past a non-empty run."""
     run = value["chunks"]
     assert isinstance(run, list)
-    raw = value.get("chunk_starting_offset")
-    offset = raw if isinstance(raw, int) and not isinstance(raw, bool) and raw >= 0 else None
-    if offset is None:
-        offset = 0 if repaint else len(old)
     chunks: list[JsonValue] = list(old)
     if len(chunks) < offset:
         chunks.extend([None] * (offset - len(chunks)))
