@@ -317,55 +317,23 @@ class Client:
         # Headers / status validated before we start consuming the body.
         self._check_status(resp, path)
 
-        # Use monotonic so wall-clock jumps (NTP, sleep) don't trip the deadline.
-        started = time.monotonic()
-        deadline = (started + max_total_seconds) if max_total_seconds else None
-        last_progress = started
-        last_byte = started
-        progressed = False
-
-        def _deadline_error() -> StreamDeadlineError:
-            return StreamDeadlineError(
-                f"SSE stream on {path} exceeded {max_total_seconds:.1f}s deadline"
-            )
-
-        def _content_cut() -> tuple[float, StreamStallError] | None:
-            """When the first-content or stall bound comes due, whichever is
-            first, and the error it raises."""
-            window = stall_window() if stall_window else stall_seconds
-            stall_due = last_progress + window if window else None
-            if first_content_seconds and not progressed:
-                first_due = started + first_content_seconds
-                if stall_due is None or first_due <= stall_due:
-                    return first_due, StreamFirstContentError(
-                        f"SSE stream on {path} sent no content within {first_content_seconds:.1f}s",
-                        first_content_seconds,
-                    )
-            if stall_due is None or not window:
-                return None
-            return stall_due, StreamStallError(
-                f"SSE stream on {path} stalled: no new content for {window:.1f}s", window
-            )
-
-        def _check_bounds() -> None:
-            now = time.monotonic()
-            if deadline is not None and now > deadline:
-                raise _deadline_error()
-            cut = _content_cut()
-            if cut is not None and now > cut[0]:
-                raise cut[1]
-
+        bounds = _StreamBounds(
+            path,
+            max_total_seconds=max_total_seconds,
+            stall_seconds=stall_seconds,
+            stall_window=stall_window,
+            first_content_seconds=first_content_seconds,
+            silence_after=connect_timeout + read_timeout,
+            silence_error=silence_error,
+        )
         framer = _SSEFramer()
         try:
             try:
                 for chunk in resp.iter_content(chunk_size=4096):
-                    if deadline is not None and time.monotonic() > deadline:
-                        raise StreamDeadlineError(
-                            f"SSE stream on {path} exceeded {max_total_seconds:.1f}s deadline"
-                        )
+                    bounds.check_deadline()
                     if not chunk:
                         continue
-                    last_byte = time.monotonic()
+                    bounds.saw_byte()
                     raw_events = framer.feed(chunk)
                     # Bound memory against a server that trickles bytes without ever
                     # emitting an event terminator (`\n\n`): the per-chunk idle timeout
@@ -382,15 +350,14 @@ class Client:
                             if parsed["data"] is not None and (
                                 is_progress is None or is_progress(parsed)
                             ):
-                                last_progress = time.monotonic()
-                                progressed = True
+                                bounds.saw_progress()
                             yield parsed
                             # Re-check between yields so a generator consumer
                             # that processes events slowly can't outrun the bounds.
-                            _check_bounds()
+                            bounds.check()
                     # A chunk of heartbeats alone yields no progress event, so the
                     # stall check has to run per chunk as well.
-                    _check_bounds()
+                    bounds.check()
             except PplxError:
                 # Deadline and schema faults raised in the loop above already carry
                 # their own exit-code contract; only transport faults are reclassified.
@@ -400,23 +367,11 @@ class Client:
                 # carrying the curl code, not as its Timeout subclass, so the code
                 # is the only reliable signal of the low-speed abort.
                 if isinstance(e, CurlError) and e.code == CurlECode.OPERATION_TIMEDOUT:
-                    # The abort counts from the last byte, so it can land after
-                    # the deadline or the content bounds came due; name whichever
-                    # came due first (the deadline on a tie).
-                    now = time.monotonic()
-                    due: list[tuple[float, StreamDeadlineError]] = []
-                    if deadline is not None and now >= deadline:
-                        due.append((deadline, _deadline_error()))
-                    cut = _content_cut()
-                    if cut is not None and now >= cut[0]:
-                        due.append(cut)
-                    due.append((last_byte + connect_timeout + read_timeout, silence_error))
-                    raise min(due, key=lambda d: d[0])[1] from e
+                    raise bounds.abort_error() from e
                 # A read that dies mid-stream is the same class of failure as a POST
-                # that never connected, so it gets the same typed error and exit code.
-                # Events already yielded are not salvaged: a truncated stream has no
-                # completion signal, and salvage stays reserved for the deadline and
-                # stall paths, where the stream was cut on our side of the wire.
+                # that never connected, so it gets the same typed error and exit code;
+                # whether the events already yielded are worth keeping is the
+                # caller's call.
                 raise NetworkError(f"SSE stream on {path} failed mid-stream: {e!s}") from e
         finally:
             with contextlib.suppress(Exception):
@@ -481,6 +436,90 @@ class Client:
             return float(ra)
         except ValueError:
             return None
+
+
+class _StreamBounds:
+    """The deadline, stall and first-content bounds of one SSE read, on the
+    monotonic clock so wall-clock jumps (NTP, sleep) don't trip them."""
+
+    def __init__(
+        self,
+        path: str,
+        *,
+        max_total_seconds: float | None,
+        stall_seconds: float | None,
+        stall_window: Callable[[], float | None] | None,
+        first_content_seconds: float | None,
+        silence_after: float,
+        silence_error: StreamDeadlineError,
+    ) -> None:
+        self._path = path
+        self._max_total = max_total_seconds
+        self._stall_seconds = stall_seconds
+        self._stall_window = stall_window
+        self._first_content = first_content_seconds
+        self._silence_after = silence_after
+        self._silence_error = silence_error
+        now = time.monotonic()
+        self._started = now
+        self._deadline = now + max_total_seconds if max_total_seconds else None
+        self._last_progress = now
+        self._last_byte = now
+        self._progressed = False
+
+    def saw_byte(self) -> None:
+        self._last_byte = time.monotonic()
+
+    def saw_progress(self) -> None:
+        self._last_progress = time.monotonic()
+        self._progressed = True
+
+    def _deadline_error(self) -> StreamDeadlineError:
+        return StreamDeadlineError(
+            f"SSE stream on {self._path} exceeded {self._max_total:.1f}s deadline"
+        )
+
+    def check_deadline(self) -> None:
+        if self._deadline is not None and time.monotonic() > self._deadline:
+            raise self._deadline_error()
+
+    def _content_cut(self) -> tuple[float, StreamStallError] | None:
+        """When the first-content or stall bound comes due, whichever is first,
+        and the error it raises."""
+        window = self._stall_window() if self._stall_window else self._stall_seconds
+        stall_due = self._last_progress + window if window else None
+        if self._first_content and not self._progressed:
+            first_due = self._started + self._first_content
+            if stall_due is None or first_due <= stall_due:
+                return first_due, StreamFirstContentError(
+                    f"SSE stream on {self._path} sent no content within {self._first_content:.1f}s",
+                    self._first_content,
+                )
+        if stall_due is None or not window:
+            return None
+        return stall_due, StreamStallError(
+            f"SSE stream on {self._path} stalled: no new content for {window:.1f}s", window
+        )
+
+    def check(self) -> None:
+        self.check_deadline()
+        cut = self._content_cut()
+        if cut is not None and time.monotonic() > cut[0]:
+            raise cut[1]
+
+    def abort_error(self) -> StreamDeadlineError:
+        """The error for curl's low-speed abort. The abort counts from the last
+        byte, so the deadline or a content bound may have come due before it;
+        name whichever came due first (the deadline on a tie)."""
+        now = time.monotonic()
+        due: list[tuple[float, StreamDeadlineError]] = []
+        if self._deadline is not None and now >= self._deadline:
+            due.append((self._deadline, self._deadline_error()))
+        cut = self._content_cut()
+        if cut is not None and now >= cut[0]:
+            due.append(cut)
+        due.append((self._last_byte + self._silence_after, self._silence_error))
+        return min(due, key=lambda d: d[0])[1]
 
 
 class _SSEFramer:
