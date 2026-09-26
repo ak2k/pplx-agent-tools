@@ -67,8 +67,10 @@ class PplxArgumentParser(argparse.ArgumentParser):
         for tok in self._argv:
             if tok == "--":
                 break
-            # argparse accepts unambiguous long-option prefixes and short clusters.
-            if tok.startswith("--") and len(tok) > 2 and "--json".startswith(tok):
+            # argparse accepts unambiguous long-option prefixes, the
+            # `--opt=value` spelling and short clusters.
+            name = tok.split("=", 1)[0]
+            if name.startswith("--") and len(name) > 2 and "--json".startswith(name):
                 return True
             if tok.startswith("-j"):
                 return True

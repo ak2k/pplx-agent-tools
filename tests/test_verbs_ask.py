@@ -108,6 +108,8 @@ class _FakeClient(_TestClientBase):
         stall_seconds: float | None = None,
         is_progress: Callable[[dict[str, Any]], bool] | None = None,
         stall_window: Callable[[], float | None] | None = None,
+        silence_seconds: float | None = None,
+        first_content_seconds: float | None = None,
     ) -> Iterator[dict[str, Any]]:
         yield from self._events
         if self._raise_deadline:
@@ -311,10 +313,23 @@ def test_ask_deadline_before_any_content_raises() -> None:
         ask(client, "hi", timeout=30)
 
 
-def test_ask_midstream_network_error_reaps_thread_then_raises() -> None:
+def test_ask_midstream_network_error_reaps_thread_and_returns_the_partial() -> None:
     """The thread ids arrived before the transport died, so the incognito thread
-    exists and only this process knows how to delete it."""
+    exists and only this process knows how to delete it; the content that
+    arrived is returned as a drop cut."""
     client = _FakeClient([_chunk_event("partial")], raise_network=True)
+
+    result = ask(client, "hi")
+
+    assert result.answer == "partial"
+    assert result.completion == Cut("drop")
+    assert client.deleted == [("BU", "RW")]
+
+
+def test_ask_network_error_before_any_content_raises() -> None:
+    client = _FakeClient(
+        [{"data": {"backend_uuid": "BU", "read_write_token": "RW"}}], raise_network=True
+    )
 
     with pytest.raises(NetworkError) as excinfo:
         ask(client, "hi")
@@ -571,6 +586,8 @@ class _RateLimitClient(_TestClientBase):
         stall_seconds: float | None = None,
         is_progress: Callable[[dict[str, Any]], bool] | None = None,
         stall_window: Callable[[], float | None] | None = None,
+        silence_seconds: float | None = None,
+        first_content_seconds: float | None = None,
     ) -> Iterator[dict[str, Any]]:
         self._calls += 1
         if self._calls <= self._fail_times:

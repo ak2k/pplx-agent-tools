@@ -182,11 +182,13 @@ def ask_status(end: stream_end.AskEnd) -> tuple[bool, CutBy | None, bool]:
 def _incomplete_marker(cut_by: str | None) -> str:
     """The stdout marker for a cut stream. The `stream: incomplete` prefix is
     stable for callers that grep it; the cause follows because the right retry
-    differs (a larger --timeout cannot help a stall)."""
+    differs (a larger --timeout cannot help a stall; a retry may help a drop)."""
     if cut_by == "stall":
         return "stream: incomplete (stall: no new content)"
     if cut_by == "deadline":
         return "stream: incomplete (deadline)"
+    if cut_by == "drop":
+        return "stream: incomplete (connection dropped)"
     return "stream: incomplete (server cut)"
 
 
@@ -218,6 +220,7 @@ def render_fetch_json(result: FetchResult) -> dict[str, Any]:
         "truncated": result.truncated,
         "stream_complete": result.stream_complete,
         "cut_by": result.cut_by,
+        "downgraded": result.downgraded,
         "content": result.content,
     }
     if result.title is not None:
@@ -474,6 +477,7 @@ def render_ask_json(result: AskResult) -> dict[str, Any]:
             ],
             **_completion_json(result.completion),
             **_grounding_json(result.grounding),
+            "downgraded": result.downgraded,
         },
         warnings=result.warnings,
     )
@@ -518,6 +522,8 @@ def render_research_json(result: ResearchResult) -> dict[str, Any]:
             "stream_complete": result.stream_complete,
             "cut_by": result.cut_by,
             "content_shortfall": result.content_shortfall,
+            "clarifying_questions": list(result.clarifying_questions),
+            "downgraded": result.downgraded,
         },
         warnings=result.warnings,
     )

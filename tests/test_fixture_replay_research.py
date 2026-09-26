@@ -99,6 +99,8 @@ class FixtureClient(_TestClientBase):
         max_total_seconds: float | None = None,
         stall_seconds: float | None = None,
         is_progress: Callable[[dict[str, Any]], bool] | None = None,
+        silence_seconds: float | None = None,
+        first_content_seconds: float | None = None,
     ) -> Iterator[dict[str, Any]]:
         for payload in self._events:
             self.consumed += 1
@@ -458,7 +460,7 @@ def test_sanitizer_measure_matches_the_verb(weather_fixture: Path, ocio_fixture:
         if not isinstance(payload, dict) or not isinstance(payload.get("text"), str):
             assert san._measure(payload) == (0, 0)
             continue
-        cover, reports, _ = _decode_parts(payload["text"])
+        cover, reports, _, _ = _decode_parts(payload["text"])
         expected = (len("\n\n".join(reports).strip()), len(_join_answer(cover, reports)))
         assert san._measure(payload) == expected
         measured += expected != (0, 0)
@@ -714,6 +716,8 @@ class _StubResearchClient:
         max_total_seconds: float | None = None,
         stall_seconds: float | None = None,
         is_progress: Callable[[dict[str, Any]], bool] | None = None,
+        silence_seconds: float | None = None,
+        first_content_seconds: float | None = None,
     ) -> Iterator[dict[str, Any]]:
         yield {"event": "message", "data": {"backend_uuid": "BU", "read_write_token": "RW"}}
 

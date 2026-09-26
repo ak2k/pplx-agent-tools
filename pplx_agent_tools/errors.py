@@ -79,6 +79,22 @@ class StreamStallError(StreamDeadlineError):
         self.seconds = seconds
 
 
+class StreamSilenceError(StreamStallError):
+    """SSE stream carried no bytes at all, heartbeats included, for `seconds`.
+
+    Reported as a stall (`cut_by: "stall"`), but its text says "no bytes" so a
+    reader can tell a dead connection from a backend that is alive but idle.
+    """
+
+
+class StreamFirstContentError(StreamStallError):
+    """SSE stream produced no first content within `seconds` of the response.
+
+    A stall subclass so the salvage paths treat it alike; it always ends a
+    stream with nothing to salvage, so it surfaces only as its own exit-4 error.
+    """
+
+
 class AntiBotError(PplxError):
     """Cloudflare challenge or similar bot block. Agent retry: investigate, don't auto-retry. Exit 5."""
 

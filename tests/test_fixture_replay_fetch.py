@@ -108,6 +108,8 @@ class FixtureClient(_TestClientBase):
         max_total_seconds: float | None = None,
         stall_seconds: float | None = None,
         is_progress: Callable[[dict[str, Any]], bool] | None = None,
+        silence_seconds: float | None = None,
+        first_content_seconds: float | None = None,
     ) -> Iterator[dict[str, Any]]:
         for payload in self._events:
             yield {"event": "message", "data": payload}
@@ -211,6 +213,8 @@ class StarvedStreamClient(_TestClientBase):
         max_total_seconds: float | None = None,
         stall_seconds: float | None = None,
         is_progress: Callable[[dict[str, Any]], bool] | None = None,
+        silence_seconds: float | None = None,
+        first_content_seconds: float | None = None,
     ) -> Iterator[dict[str, Any]]:
         raise StreamDeadlineError(f"SSE stream on {path} exceeded its deadline")
 
@@ -904,6 +908,8 @@ class MidStreamFailureClient(_TestClientBase):
         max_total_seconds: float | None = None,
         stall_seconds: float | None = None,
         is_progress: Callable[[dict[str, Any]], bool] | None = None,
+        silence_seconds: float | None = None,
+        first_content_seconds: float | None = None,
     ) -> Iterator[dict[str, Any]]:
         for payload in self._events[: self._fail_after]:
             yield {"event": "message", "data": payload}

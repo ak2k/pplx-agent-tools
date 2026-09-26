@@ -107,7 +107,7 @@ def build_parser() -> PplxArgumentParser:
 def _finalize(result: ResearchResult) -> int:
     if not result.stream_complete:
         print(
-            "warning: research stream did not reach COMPLETED (deadline, stall or cut); "
+            "warning: research stream did not reach COMPLETED (deadline, stall, drop or cut); "
             "partial answer returned (exit 6)",
             file=sys.stderr,
         )

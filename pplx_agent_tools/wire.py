@@ -30,6 +30,8 @@ from .errors import (
     RateLimitError,
     SchemaError,
     StreamDeadlineError,
+    StreamFirstContentError,
+    StreamSilenceError,
     StreamStallError,
 )
 from .jsonval import JsonValue, from_parser
@@ -37,11 +39,15 @@ from .jsonval import JsonValue, from_parser
 BASE_URL = "https://www.perplexity.ai"
 DEFAULT_TIMEOUT = 30.0
 DEFAULT_IMPERSONATE = "chrome"
-# SSE-only read leg when no stall window is given. curl_cffi turns a streaming
+# SSE-only read leg when no silence window is given. curl_cffi turns a streaming
 # (connect, read) timeout into a low-speed abort (< 1 B/s for connect + read
 # seconds), so this only catches total silence: heartbeat comments keep the
 # rate above 1 B/s. The progress-event stall check in `sse_post` covers that case.
 DEFAULT_SSE_READ_TIMEOUT = 60.0
+# The terminate request runs in cleanup, often right after a Ctrl-C, so it gets
+# a bound of its own rather than the client's 30 s default. It answered in
+# 0.17 s when probed live.
+TERMINATE_TIMEOUT_SECONDS = 5.0
 # Hard cap on un-dispatched SSE buffer (a single event with no `\n\n` terminator).
 # Defends against a server that trickles bytes forever without a terminator.
 _MAX_SSE_BUFFER_BYTES = 16 * 1024 * 1024
@@ -210,6 +216,42 @@ class Client:
             return False
         return True
 
+    def terminate(self, entry_uuid: str, context_uuid: str, model_preference: str) -> bool:
+        """Stop a run that may still be going on the server, as the web
+        client's stop button does. `model_preference` is the `display_model`
+        the stream carried. No read_write_token is needed.
+
+        Best-effort like `delete_thread`: any failure is logged to stderr and
+        returns False, so cleanup can send it while another exception is in
+        flight.
+        """
+        url = self._base_url + "/rest/sse/perplexity_terminate"
+        try:
+            resp = self._session.post(
+                url,
+                cookies=self._cookies,
+                json={
+                    "entry_uuid": entry_uuid,
+                    "context_uuid": context_uuid,
+                    "model_preference": model_preference,
+                    "terminate_requested_at_ms": int(time.time() * 1000),
+                },
+                headers={"X-Perplexity-Request-Reason": "thread-floating-footer"},
+                timeout=TERMINATE_TIMEOUT_SECONDS,
+            )
+        except Exception as e:
+            print(f"warning: run terminate failed: {e}", file=sys.stderr)
+            return False
+        status = resp.status_code
+        if status >= 400:
+            body = (resp.text or "")[:200]
+            print(
+                f"warning: run terminate failed: {entry_uuid} returned {status}: {body}",
+                file=sys.stderr,
+            )
+            return False
+        return True
+
     def sse_post(
         self,
         path: str,
@@ -219,6 +261,8 @@ class Client:
         stall_seconds: float | None = None,
         is_progress: Callable[[dict[str, Any]], bool] | None = None,
         stall_window: Callable[[], float | None] | None = None,
+        silence_seconds: float | None = None,
+        first_content_seconds: float | None = None,
     ) -> Iterator[dict[str, Any]]:
         """POST a JSON body, stream the SSE response, yield parsed events.
 
@@ -236,23 +280,28 @@ class Client:
         `stall_seconds` raises `StreamStallError` once no progress event has
         arrived for that long. `is_progress(event)` decides what counts as
         progress; None counts any event carrying data. Comment-only heartbeat
-        frames never reset the clock, whatever the predicate. The transport's
-        low-speed abort is sized to the same window (capped by
-        `max_total_seconds`) so total silence trips it too, and is reported as a
-        stall unless the overall deadline ran out first. None keeps only the
-        default low-speed backstop.
+        frames never reset the clock, whatever the predicate.
+        `first_content_seconds` raises `StreamFirstContentError` when no
+        progress event has arrived that long after the response began.
+
+        `silence_seconds` sizes the transport's low-speed abort (capped by
+        `max_total_seconds`): no bytes at all, heartbeats included, for that
+        long raises `StreamSilenceError`. The stall and first-content checks run
+        only when bytes arrive, so this abort is what ends a stream gone fully
+        silent. None keeps the default low-speed backstop. The abort counts
+        from the last byte, so another bound may have come due before it; the
+        error names whichever came due first.
 
         `stall_window()`, when given, is read at every stall check and replaces
         `stall_seconds` there, so a consumer can tighten the window mid-stream.
-        The transport's low-speed abort keeps the `stall_seconds` sizing, so the
-        tightened window is enforced when the next frame or heartbeat arrives.
+        The tightened window is enforced when the next frame or heartbeat arrives.
 
         Raises the same typed errors as the GET path (auth/rate-limit/etc.) on
         connection or status-code failure.
         """
         url = self._base_url + path
         connect_timeout, read_timeout, silence_error = _silence_bounds(
-            path, self._timeout, max_total_seconds, stall_seconds
+            path, self._timeout, max_total_seconds, silence_seconds
         )
         try:
             resp = self._session.post(
@@ -269,22 +318,42 @@ class Client:
         self._check_status(resp, path)
 
         # Use monotonic so wall-clock jumps (NTP, sleep) don't trip the deadline.
-        deadline = (time.monotonic() + max_total_seconds) if max_total_seconds else None
-        last_progress = time.monotonic()
+        started = time.monotonic()
+        deadline = (started + max_total_seconds) if max_total_seconds else None
+        last_progress = started
+        last_byte = started
+        progressed = False
+
+        def _deadline_error() -> StreamDeadlineError:
+            return StreamDeadlineError(
+                f"SSE stream on {path} exceeded {max_total_seconds:.1f}s deadline"
+            )
+
+        def _content_cut() -> tuple[float, StreamStallError] | None:
+            """When the first-content or stall bound comes due, whichever is
+            first, and the error it raises."""
+            window = stall_window() if stall_window else stall_seconds
+            stall_due = last_progress + window if window else None
+            if first_content_seconds and not progressed:
+                first_due = started + first_content_seconds
+                if stall_due is None or first_due <= stall_due:
+                    return first_due, StreamFirstContentError(
+                        f"SSE stream on {path} sent no content within {first_content_seconds:.1f}s",
+                        first_content_seconds,
+                    )
+            if stall_due is None or not window:
+                return None
+            return stall_due, StreamStallError(
+                f"SSE stream on {path} stalled: no new content for {window:.1f}s", window
+            )
 
         def _check_bounds() -> None:
             now = time.monotonic()
             if deadline is not None and now > deadline:
-                raise StreamDeadlineError(
-                    f"SSE stream on {path} exceeded {max_total_seconds:.1f}s deadline"
-                )
-            if (
-                window := stall_window() if stall_window else stall_seconds
-            ) and now - last_progress > window:
-                raise StreamStallError(
-                    f"SSE stream on {path} stalled: no new content for {window:.1f}s",
-                    window,
-                )
+                raise _deadline_error()
+            cut = _content_cut()
+            if cut is not None and now > cut[0]:
+                raise cut[1]
 
         framer = _SSEFramer()
         try:
@@ -296,6 +365,7 @@ class Client:
                         )
                     if not chunk:
                         continue
+                    last_byte = time.monotonic()
                     raw_events = framer.feed(chunk)
                     # Bound memory against a server that trickles bytes without ever
                     # emitting an event terminator (`\n\n`): the per-chunk idle timeout
@@ -313,6 +383,7 @@ class Client:
                                 is_progress is None or is_progress(parsed)
                             ):
                                 last_progress = time.monotonic()
+                                progressed = True
                             yield parsed
                             # Re-check between yields so a generator consumer
                             # that processes events slowly can't outrun the bounds.
@@ -329,18 +400,18 @@ class Client:
                 # carrying the curl code, not as its Timeout subclass, so the code
                 # is the only reliable signal of the low-speed abort.
                 if isinstance(e, CurlError) and e.code == CurlECode.OPERATION_TIMEDOUT:
-                    # The abort counts from the last byte, so it can land after the
-                    # overall deadline; name whichever bound came due first.
-                    stall_due = last_progress + stall_seconds if stall_seconds else None
-                    if (
-                        deadline is not None
-                        and time.monotonic() >= deadline
-                        and (stall_due is None or stall_due >= deadline)
-                    ):
-                        raise StreamDeadlineError(
-                            f"SSE stream on {path} exceeded {max_total_seconds:.1f}s deadline"
-                        ) from e
-                    raise silence_error from e
+                    # The abort counts from the last byte, so it can land after
+                    # the deadline or the content bounds came due; name whichever
+                    # came due first (the deadline on a tie).
+                    now = time.monotonic()
+                    due: list[tuple[float, StreamDeadlineError]] = []
+                    if deadline is not None and now >= deadline:
+                        due.append((deadline, _deadline_error()))
+                    cut = _content_cut()
+                    if cut is not None and now >= cut[0]:
+                        due.append(cut)
+                    due.append((last_byte + connect_timeout + read_timeout, silence_error))
+                    raise min(due, key=lambda d: d[0])[1] from e
                 # A read that dies mid-stream is the same class of failure as a POST
                 # that never connected, so it gets the same typed error and exit code.
                 # Events already yielded are not salvaged: a truncated stream has no
@@ -460,29 +531,31 @@ def _json_body(resp: Any, path: str) -> JsonValue:
 
 
 def _silence_bounds(
-    path: str, connect_timeout: float, max_total_seconds: float | None, stall_seconds: float | None
+    path: str,
+    connect_timeout: float,
+    max_total_seconds: float | None,
+    silence_seconds: float | None,
 ) -> tuple[float, float, StreamDeadlineError]:
     """The SSE (connect, read) legs, and the error their low-speed abort stands for.
 
     curl aborts after connect + read seconds below 1 B/s, so the two legs must
     sum to the silence window; a window shorter than the connect timeout
-    shrinks the connect leg too. The window is the
-    stall bound capped by the overall deadline; when the deadline is the one
-    that runs out first, the abort is reported as the deadline. The stall check
-    in `sse_post` only runs when bytes arrive, so this abort is what ends a
-    stream gone fully silent; it counts from the last byte, not the last
-    progress event.
+    shrinks the connect leg to the window and the read leg to 0, and curl
+    still aborts at the sum. The window is `silence_seconds` capped by the
+    overall deadline; when the deadline is the one that runs out first, the
+    abort is reported as the deadline. The abort counts from the last byte,
+    not the last progress event.
     """
-    if stall_seconds:
-        window = stall_seconds
-        if max_total_seconds and max_total_seconds < stall_seconds:
+    if silence_seconds:
+        window = silence_seconds
+        if max_total_seconds and max_total_seconds < silence_seconds:
             window = max_total_seconds
         connect_timeout = min(connect_timeout, window)
         read_timeout = window - connect_timeout
     else:
         read_timeout = DEFAULT_SSE_READ_TIMEOUT
-    silence_seconds = connect_timeout + read_timeout
-    if max_total_seconds and max_total_seconds <= silence_seconds:
+    abort_after = connect_timeout + read_timeout
+    if max_total_seconds and max_total_seconds <= abort_after:
         return (
             connect_timeout,
             read_timeout,
@@ -491,9 +564,8 @@ def _silence_bounds(
     return (
         connect_timeout,
         read_timeout,
-        StreamStallError(
-            f"SSE stream on {path} stalled: no new content for {silence_seconds:.1f}s",
-            silence_seconds,
+        StreamSilenceError(
+            f"SSE stream on {path} went silent: no bytes for {abort_after:.1f}s", abort_after
         ),
     )
 

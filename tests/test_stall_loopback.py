@@ -75,19 +75,21 @@ def heartbeat_server() -> Iterator[str]:
     yield from _serve(0.3)
 
 
-def _drain(base_url: str) -> float:
+def _drain(base_url: str, **bounds: float) -> float:
     client = Client({"x": "y"}, base_url=base_url)
     start = time.monotonic()
     with pytest.raises(StreamStallError):
-        for _ in client.sse_post("/x", {}, max_total_seconds=120, stall_seconds=_STALL):
+        for _ in client.sse_post("/x", {}, max_total_seconds=120, **bounds):
             pass
     return time.monotonic() - start
 
 
 def test_total_silence_is_cut_by_curls_low_speed_abort(silent_server: str) -> None:
-    assert _drain(silent_server) < _STALL + _CURL_SLACK
+    assert _drain(silent_server, stall_seconds=_STALL, silence_seconds=_STALL) < (
+        _STALL + _CURL_SLACK
+    )
 
 
 def test_heartbeats_alone_are_cut_by_the_stall_check(heartbeat_server: str) -> None:
-    elapsed = _drain(heartbeat_server)
+    elapsed = _drain(heartbeat_server, stall_seconds=_STALL)
     assert _STALL <= elapsed < _STALL + 2.0

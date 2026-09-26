@@ -26,3 +26,10 @@ class _TestClientBase(Client):
         # Allocates a curl_cffi Session we never use — subclasses override
         # every method that would read `_session`.
         super().__init__({"x": "y"})
+        self.terminated: list[tuple[str, str, str]] = []
+
+    def terminate(self, entry_uuid: str, context_uuid: str, model_preference: str) -> bool:
+        # Overridden here rather than per double: a double that forgets it
+        # would send a real request to Perplexity from cleanup.
+        self.terminated.append((entry_uuid, context_uuid, model_preference))
+        return True
