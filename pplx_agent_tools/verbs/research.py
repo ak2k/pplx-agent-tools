@@ -113,10 +113,14 @@ class ResearchResult:
     # Questions the run asked the user; pplx cannot answer them, so the server
     # went on with its default answers.
     clarifying_questions: list[str] = field(default_factory=list)
+    # The run asked clarifying questions but none of them could be read.
+    clarifying_unreadable: bool = False
     # True when the server ran a model other than the one requested; None when
     # no frame named one, and always None for Model Council, whose reported
     # model has never been observed.
     downgraded: bool | None = None
+    # The last model the frames named; None when none did.
+    served_model: str | None = None
 
 
 def _text_changed() -> Callable[[dict[str, Any]], bool]:
@@ -190,7 +194,7 @@ def research(
         "answer": "",
         "sources": [],
         "body_len": 0,
-        "questions": [],
+        "questions": None,
     }
     best: dict[str, int] = {"body": 0, "total": 0}
     saw: dict[str, bool] = {"body": False, "last_frame_decoded": False}
@@ -264,12 +268,8 @@ def research(
     content_shortfall, warnings = _shortfall_verdict(
         answer_len=len(answer), body_len=latest["body_len"], best=best, saw=saw
     )
-    questions: list[str] = latest["questions"]
-    if questions:
-        warnings.append(
-            "research asked clarifying questions and proceeded on the server's default "
-            "answers: " + "; ".join(questions)
-        )
+    questions: list[str] | None = latest["questions"]
+    warnings += _clarifying_warnings(questions)
     downgraded: bool | None = None
     if model_preference != _COUNCIL_MODEL:
         downgraded, downgrade_warnings = downgrade_verdict(state, model_preference)
@@ -285,9 +285,27 @@ def research(
         silent_for=cutoff_silence(state),
         content_shortfall=content_shortfall,
         warnings=cutoff_warnings(state) + warnings,
-        clarifying_questions=questions,
+        clarifying_questions=questions or [],
+        clarifying_unreadable=questions is not None and not questions,
         downgraded=downgraded,
+        served_model=state.display_model,
     )
+
+
+def _clarifying_warnings(questions: list[str] | None) -> list[str]:
+    """The warning for clarifying questions the run asked (None: it asked
+    none); pplx cannot answer them, so the server used its defaults."""
+    if questions:
+        return [
+            "research asked clarifying questions and proceeded on the server's default "
+            "answers: " + "; ".join(questions)
+        ]
+    if questions is not None:
+        return [
+            "research asked clarifying questions pplx could not read and proceeded on "
+            "the server's default answers"
+        ]
+    return []
 
 
 def _shortfall_verdict(
@@ -352,9 +370,12 @@ def _join_answer(cover_parts: list[str], report_parts: list[str]) -> str:
     return "\n\n".join(cover_parts + kept_reports).strip()
 
 
-def _decode_parts(text: str) -> tuple[list[str], list[str], list[ResearchSource], list[str]]:
+def _decode_parts(
+    text: str,
+) -> tuple[list[str], list[str], list[ResearchSource], list[str] | None]:
     """`decode_research_text` before the join: (cover parts, report body parts,
-    sources, clarifying question texts).
+    sources, clarifying question texts). The question texts are None when the
+    snapshot asked none, and empty when it asked some that could not be read.
 
     Split out so a caller can measure the report BODY on its own — the joined
     answer mixes cover note and body, and a snapshot that grows the cover while
@@ -370,7 +391,7 @@ def _decode_parts(text: str) -> tuple[list[str], list[str], list[ResearchSource]
 
     cover_parts: list[str] = []
     report_parts: list[str] = []
-    questions: list[str] = []
+    questions: list[str] | None = None
     final_web: list[Any] | None = None
     search_web: list[Any] = []
     for blk in blocks:
@@ -382,6 +403,11 @@ def _decode_parts(text: str) -> tuple[list[str], list[str], list[ResearchSource]
         # `content` and a perfectly good report asset drops the whole report.
         if step == "RESEARCH_ANSWER":
             report_parts.extend(_report_bodies(blk))
+            continue
+        # Dispatched ahead of the guard for the same reason: a clarifying step
+        # with an unreadable `content` still means the run went on without answers.
+        if step == "RESEARCH_CLARIFYING_QUESTIONS":
+            questions = (questions or []) + _question_texts(blk.get("content"))
             continue
         content = blk.get("content")
         if not isinstance(content, dict):
@@ -396,8 +422,6 @@ def _decode_parts(text: str) -> tuple[list[str], list[str], list[ResearchSource]
             wr = content.get("web_results")
             if isinstance(wr, list):
                 search_web.extend(wr)
-        elif step == "RESEARCH_CLARIFYING_QUESTIONS":
-            questions.extend(_question_texts(content))
 
     chosen = final_web if final_web else search_web
     sources: list[Source] = []
@@ -410,10 +434,10 @@ def _decode_parts(text: str) -> tuple[list[str], list[str], list[ResearchSource]
     return cover_parts, report_parts, sources, questions
 
 
-def _question_texts(content: dict[str, Any]) -> list[str]:
+def _question_texts(content: Any) -> list[str]:
     """A RESEARCH_CLARIFYING_QUESTIONS block's `content` → its question texts.
     Total over JSON shape, like `_report_bodies`."""
-    raw = content.get("questions")
+    raw = content.get("questions") if isinstance(content, dict) else None
     out: list[str] = []
     for q in raw if isinstance(raw, list) else []:
         text = q.get("question_text") if isinstance(q, dict) else None

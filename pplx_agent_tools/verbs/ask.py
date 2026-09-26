@@ -94,6 +94,8 @@ class AskResult:
     # True when the server ran a model other than `model`; None when no frame
     # named the model it ran.
     downgraded: bool | None = None
+    # The last model the frames named; None when none did.
+    served_model: str | None = None
 
 
 def ask(
@@ -195,6 +197,7 @@ def ask(
             check_grounding(content, query, sources) if grounded_check else Unchecked("disabled")
         ),
         downgraded=downgraded,
+        served_model=state.display_model,
     )
 
 

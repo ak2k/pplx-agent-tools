@@ -195,6 +195,12 @@ def _incomplete_marker(cut_by: str | None, silent_for: float | None = None) -> s
     return "stream: incomplete (server cut)"
 
 
+def _downgrade_marker(served_model: str | None) -> str:
+    """The stdout line for a run the server answered with another model; the
+    requested model is the caller's own, and the warning names both."""
+    return f"model: downgraded (the server ran {served_model!r})"
+
+
 def render_fetch_text(result: FetchResult) -> str:
     """Header (title / URL / domain / extracted flag) followed by content."""
     header_lines: list[str] = []
@@ -211,6 +217,8 @@ def render_fetch_text(result: FetchResult) -> str:
         # mistake a deadline-clipped partial answer for a complete one.
         # `cli_fetch` also emits a stderr warning for machine-parseable runs.
         extra.append(_incomplete_marker(result.cut_by, result.silent_for))
+    if result.downgraded:
+        extra.append(_downgrade_marker(result.served_model))
     header_lines.append(" · ".join(extra))
     return "\n".join(header_lines) + "\n\n" + result.content
 
@@ -388,7 +396,9 @@ def grounding_summary(g: Ungrounded) -> str:
 def render_ask_text(result: AskResult) -> str:
     """The synthesized answer (with inline [n] citations) then the numbered
     sources. The incomplete marker is appended (and `cli_ask` also warns on
-    stderr + exits 6), as is a `grounded: no` marker for an ungrounded answer."""
+    stderr + exits 6), as are a `grounded: no` marker for an ungrounded answer
+    and a `model: downgraded` marker. Agents often discard stderr, so these
+    signals go to stdout too."""
     parts: list[str] = [result.answer if result.answer else "(no answer)"]
     if result.sources:
         parts.append("")
@@ -406,6 +416,9 @@ def render_ask_text(result: AskResult) -> str:
             pass
         case _:
             assert_never(g)
+    if result.downgraded:
+        parts.append("")
+        parts.append(_downgrade_marker(result.served_model))
     c = result.completion
     match c:
         case Cut():
@@ -489,7 +502,8 @@ def render_ask_json(result: AskResult) -> dict[str, Any]:
 def render_research_text(result: ResearchResult) -> str:
     """The cited report, then a numbered sources list. A stream-incomplete
     marker is appended (and `cli_research` also emits a stderr warning + exit 6)
-    so a human doesn't mistake a deadline-clipped partial for a full report."""
+    so a human doesn't mistake a deadline-clipped partial for a full report, as
+    are markers for unanswered clarifying questions and a downgraded model."""
     parts: list[str] = [result.answer if result.answer else "(no answer)"]
     if result.sources:
         parts.append("")
@@ -504,6 +518,19 @@ def render_research_text(result: ResearchResult) -> str:
     if result.content_shortfall:
         parts.append("")
         parts.append("content: may be incomplete (see warnings)")
+    if result.clarifying_questions:
+        parts.append("")
+        parts.append("clarifying questions: unanswered; the server used its default answers to:")
+        parts.extend(f"  - {q}" for q in result.clarifying_questions)
+    elif result.clarifying_unreadable:
+        parts.append("")
+        parts.append(
+            "clarifying questions: unanswered; the server used its default answers "
+            "(pplx could not read the questions)"
+        )
+    if result.downgraded:
+        parts.append("")
+        parts.append(_downgrade_marker(result.served_model))
     return "\n".join(parts)
 
 

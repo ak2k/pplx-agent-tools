@@ -20,7 +20,14 @@ from curl_cffi import CurlECode
 
 from pplx_agent_tools import cli_ask, cli_fetch, cli_research, wire
 from pplx_agent_tools.errors import EXIT_NETWORK, EXIT_PARTIAL
-from pplx_agent_tools.render import render_ask_json, render_fetch_json, render_research_json
+from pplx_agent_tools.render import (
+    render_ask_json,
+    render_ask_text,
+    render_fetch_json,
+    render_fetch_text,
+    render_research_json,
+    render_research_text,
+)
 from pplx_agent_tools.verbs._ask_common import COPILOT_STALL_SECONDS, DEFAULT_STALL_SECONDS
 from pplx_agent_tools.verbs.ask import ask
 from pplx_agent_tools.verbs.fetch import fetch
@@ -291,6 +298,15 @@ def _run_json(verb: str, client: _Replay, **kw: Any) -> dict[str, Any]:
     return render_fetch_json(fetch(client, "https://example.com", prompt="p", **kw))
 
 
+def _run_text(verb: str, client: _Replay) -> str:
+    """What a text-mode caller that discards stderr sees."""
+    if verb == "ask":
+        return render_ask_text(ask(client, "q"))
+    if verb == "research":
+        return render_research_text(research(client, "q"))
+    return render_fetch_text(fetch(client, "https://example.com", prompt="p"))
+
+
 _FIXTURE_DOWNGRADE = [
     ("ask", "ask/multi-step-sources.events.jsonl", None),
     ("fetch", "fetch-url/example-com-prompt.events.jsonl", False),
@@ -355,6 +371,19 @@ def test_a_swapped_model_is_flagged_with_both_names(verb: str) -> None:
 
 
 @pytest.mark.parametrize("verb", _CLI)
+def test_a_swapped_model_is_named_on_stdout(verb: str) -> None:
+    requested = _REQUESTED[verb]
+    text = _run_text(verb, _Replay(_served_by(verb, [requested, "sonar", None])))
+    assert "model: downgraded (the server ran 'sonar')" in text
+
+
+@pytest.mark.parametrize("verb", _CLI)
+def test_the_requested_model_puts_no_model_line_on_stdout(verb: str) -> None:
+    text = _run_text(verb, _Replay(_served_by(verb, [_REQUESTED[verb]])))
+    assert "model: downgraded" not in text
+
+
+@pytest.mark.parametrize("verb", _CLI)
 def test_the_last_named_model_decides(verb: str) -> None:
     requested = _REQUESTED[verb]
     out = _run_json(verb, _Replay(_served_by(verb, ["sonar", requested, None])))
@@ -396,11 +425,44 @@ def test_the_captured_clarifying_questions_are_surfaced() -> None:
     assert any("default answers" in w and expected[0] in w for w in out.get("warnings", []))
 
 
+def test_the_captured_clarifying_questions_reach_stdout() -> None:
+    path = FIXTURES / "research/ocio-fees-final-only.events.jsonl"
+    expected = _fixture_questions(path)
+    text = _run_text("research", _Replay(_fixture_events(path)))
+    assert "clarifying questions: unanswered" in text
+    for question in expected:
+        assert f"  - {question}" in text
+
+
 def test_a_run_without_clarifying_questions_says_nothing_about_them() -> None:
     path = FIXTURES / "research/weather-nowcasting-apis.events.jsonl"
     out = _run_json("research", _Replay(_fixture_events(path)))
     assert out.get("clarifying_questions", "absent") == []
     assert not any("default answers" in w for w in out.get("warnings", []))
+    assert "clarifying questions" not in _run_text("research", _Replay(_fixture_events(path)))
+
+
+def _clarifying_run(content: Any) -> list[dict[str, Any]]:
+    step = {"step_type": "RESEARCH_CLARIFYING_QUESTIONS", "content": content}
+    final = {"step_type": "FINAL", "content": {"answer": json.dumps({"answer": "report"})}}
+    ids = {"backend_uuid": "BU", "read_write_token": "RW"}
+    return [
+        {"data": {**ids, "text": json.dumps([step, final])}},
+        {"data": {"status": "COMPLETED"}},
+    ]
+
+
+@pytest.mark.parametrize(
+    "content",
+    [{"questions": [{"text": "Which region?"}], "auto_skip_seconds": 60}, {"questions": "?"}, None],
+    ids=["no question_text", "questions not a list", "no content"],
+)
+def test_a_clarifying_step_whose_questions_cannot_be_read_still_warns(content: Any) -> None:
+    out = _run_json("research", _Replay(_clarifying_run(content)))
+    assert out.get("clarifying_questions") == []
+    assert any("could not read" in w and "default answers" in w for w in out.get("warnings", []))
+    text = _run_text("research", _Replay(_clarifying_run(content)))
+    assert "clarifying questions: unanswered" in text
 
 
 def test_malformed_clarifying_entries_are_skipped() -> None:

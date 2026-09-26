@@ -114,6 +114,8 @@ class FetchResult:
     # --prompt only: True when the server ran a model other than the one
     # requested; None when no frame named one, and in plain mode.
     downgraded: bool | None = None
+    # --prompt only: the last model the frames named; None when none did.
+    served_model: str | None = None
 
 
 def fetch(
@@ -353,6 +355,7 @@ def _fetch_with_prompt(
         silent_for=cutoff_silence(state),
         warnings=cutoff_warnings(state) + downgrade_warnings,
         downgraded=downgraded,
+        served_model=state.display_model,
     )
 
 
