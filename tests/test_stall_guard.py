@@ -25,6 +25,7 @@ from pplx_agent_tools.errors import (
     NetworkError,
     RateLimitError,
     StreamDeadlineError,
+    StreamFirstContentError,
     StreamSilenceError,
     StreamStallError,
 )
@@ -325,6 +326,30 @@ def test_curl_timeout_after_the_deadline_is_a_stall_when_the_stall_came_due_firs
             client.sse_post("/x", {}, max_total_seconds=300, stall_seconds=240, silence_seconds=240)
         )
     assert type(exc.value) is StreamStallError
+
+
+@pytest.mark.parametrize(
+    ("steps", "expected"),
+    [
+        ([(90, _curl_error(CurlECode.OPERATION_TIMEDOUT))], StreamSilenceError),
+        (
+            [*_heartbeats(75), (90, _curl_error(CurlECode.OPERATION_TIMEDOUT))],
+            StreamFirstContentError,
+        ),
+    ],
+    ids=["no bytes at all", "heartbeats then silence"],
+)
+def test_a_silence_window_as_long_as_the_first_content_bound_names_a_socket_that_sent_nothing(
+    clock: _Clock, steps: list[Step], expected: type[StreamStallError]
+) -> None:
+    client = _StreamClient(steps, clock)
+    with pytest.raises(StreamStallError) as exc:
+        list(
+            client.sse_post(
+                "/x", {}, max_total_seconds=1800, silence_seconds=90, first_content_seconds=90
+            )
+        )
+    assert type(exc.value) is expected
 
 
 def test_research_alternating_replayed_snapshots_still_stalls(clock: _Clock) -> None:

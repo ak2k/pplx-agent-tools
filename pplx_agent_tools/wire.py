@@ -513,15 +513,19 @@ class _StreamBounds:
     def abort_error(self) -> StreamDeadlineError:
         """The error for curl's low-speed abort. The abort counts from the last
         byte, so the deadline or a content bound may have come due before it;
-        name whichever came due first (the deadline on a tie)."""
+        name whichever came due first. On a tie the deadline wins, then the
+        silence: a first-content bound as long as the silence window comes due
+        with it on a socket that never sent a byte, and only "no bytes" tells
+        that apart from a stream kept open by heartbeats."""
         now = time.monotonic()
+        # `min` keeps the first of equal items, so this order is the tie order.
         due: list[tuple[float, StreamDeadlineError]] = []
         if self._deadline is not None and now >= self._deadline:
             due.append((self._deadline, self._deadline_error()))
+        due.append((self._last_byte + self._silence_after, self._silence_error))
         cut = self._content_cut()
         if cut is not None and now >= cut[0]:
             due.append(cut)
-        due.append((self._last_byte + self._silence_after, self._silence_error))
         first = min(due, key=lambda d: d[0])[1]
         # A silence window capped by the deadline stands for the deadline; build
         # it here so it carries the progress timing.

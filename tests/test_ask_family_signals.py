@@ -285,6 +285,18 @@ def test_silence_before_content_exits_network_saying_no_bytes(
     assert "before the first content arrived" in err
 
 
+def test_research_that_sends_no_bytes_is_a_silence_cut_not_a_first_content_cut(
+    clock: _Clock, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Research's silence window equals the first-content bound, so both come due at once.
+    steps: list[Step] = [(90, _curl_error(CurlECode.OPERATION_TIMEDOUT))]
+    rc, out, err, _ = _cli_json(monkeypatch, capsys, "research", steps, clock)
+    assert rc == EXIT_NETWORK
+    assert out["error"]["type"] == "StreamSilenceError"
+    assert "no bytes for 90.0s before the first content arrived" in out["error"]["message"]
+    assert "no first content" not in err
+
+
 # ---------- drop salvage ----------
 
 
