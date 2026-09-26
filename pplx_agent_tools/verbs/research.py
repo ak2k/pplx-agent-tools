@@ -28,7 +28,7 @@ retry.
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -253,11 +253,7 @@ def research(
         if last_raw["text"] is not None:
             # Text arrived but no frame ever parsed — the decode error is the
             # honest diagnosis, so re-raise it rather than reporting no content.
-            # Cleanup has already run, so a run it could not stop is named here.
-            try:
-                decode_research_text(last_raw["text"])
-            except SchemaError as e:
-                raise SchemaError(f"{e}{error_notes(state.cleanup_warnings)}") from e
+            _raise_undecodable(last_raw["text"], state.cleanup_warnings)
         raise no_content_error(
             label="research",
             endpoint=ENDPOINT,
@@ -348,6 +344,15 @@ def _shortfall_verdict(
             f"parseable snapshot ({answer_len} chars), which may be truncated"
         )
     return bool(warnings), warnings
+
+
+def _raise_undecodable(text: str, warnings: Sequence[str]) -> None:
+    """Raise the decode error for `text`, ending with `warnings`: cleanup has
+    already run by then, so a run it could not stop is named here."""
+    try:
+        decode_research_text(text)
+    except SchemaError as e:
+        raise SchemaError(f"{e}{error_notes(warnings)}") from e
 
 
 def decode_research_text(text: str) -> tuple[str, list[ResearchSource]]:
