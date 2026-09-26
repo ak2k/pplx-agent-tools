@@ -1,0 +1,10 @@
+# py/uninitialized-local-variable false-positives on `match` class-pattern keyword captures
+# and on `assert_never` calls it doesn't recognize as NoReturn. basedpyright's
+# reportPossiblyUnboundVariable (pyproject.toml) stands in, but only over pplx_agent_tools/
+# and tests/ (flake.nix's typecheck check) — scripts/ (maintainer capture tools, not shipped)
+# loses this check with the query excluded.
+name: "pplx-agent-tools CodeQL config"
+
+query-filters:
+  - exclude:
+      id: py/uninitialized-local-variable

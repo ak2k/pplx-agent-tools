@@ -157,6 +157,9 @@ include = ["pplx_agent_tools", "tests"]
 exclude = ["re-fixtures", "**/__pycache__"]
 pythonVersion = "3.10"
 typeCheckingMode = "standard"
+# This rule stands in for the excluded CodeQL query py/uninitialized-local-variable (see
+# codeql-config.yml). Pinned explicitly so a future default change can't weaken it.
+reportPossiblyUnboundVariable = "error"
 strict = [
     "pplx_agent_tools/cli_types.py",
     "pplx_agent_tools/cli_runner.py",
