@@ -179,10 +179,13 @@ def ask_status(end: stream_end.AskEnd) -> tuple[bool, CutBy | None, bool]:
     return complete, cut_by, isinstance(end, stream_end.Completed)
 
 
-def _incomplete_marker(cut_by: str | None) -> str:
+def _incomplete_marker(cut_by: str | None, silent_for: float | None = None) -> str:
     """The stdout marker for a cut stream. The `stream: incomplete` prefix is
     stable for callers that grep it; the cause follows because the right retry
-    differs (a larger --timeout cannot help a stall; a retry may help a drop)."""
+    differs (a larger --timeout cannot help a stall; a larger --stall-timeout
+    cannot help a connection gone silent; a retry may help a drop or silence)."""
+    if cut_by == "stall" and silent_for is not None:
+        return f"stream: incomplete (stall: no bytes for {silent_for:.1f}s)"
     if cut_by == "stall":
         return "stream: incomplete (stall: no new content)"
     if cut_by == "deadline":
@@ -207,7 +210,7 @@ def render_fetch_text(result: FetchResult) -> str:
         # Surfaced on the header line so a human eyeballing stdout doesn't
         # mistake a deadline-clipped partial answer for a complete one.
         # `cli_fetch` also emits a stderr warning for machine-parseable runs.
-        extra.append(_incomplete_marker(result.cut_by))
+        extra.append(_incomplete_marker(result.cut_by, result.silent_for))
     header_lines.append(" · ".join(extra))
     return "\n".join(header_lines) + "\n\n" + result.content
 
@@ -407,7 +410,7 @@ def render_ask_text(result: AskResult) -> str:
     match c:
         case Cut():
             parts.append("")
-            parts.append(_incomplete_marker(_cut_by(c)))
+            parts.append(_incomplete_marker(_cut_by(c), c.silent_for))
         case Finished() | FinishedWithoutSources():
             pass
         case _:
@@ -497,7 +500,7 @@ def render_research_text(result: ResearchResult) -> str:
                 parts.append(f"    {s.url}")
     if not result.stream_complete:
         parts.append("")
-        parts.append(_incomplete_marker(result.cut_by))
+        parts.append(_incomplete_marker(result.cut_by, result.silent_for))
     if result.content_shortfall:
         parts.append("")
         parts.append("content: may be incomplete (see warnings)")

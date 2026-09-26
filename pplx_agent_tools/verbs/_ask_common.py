@@ -54,11 +54,17 @@ COPILOT_STALL_SECONDS = 480.0
 # captures; 15 s is ~50x that, and heartbeats (~15 s apart) are what trigger
 # the check, so the worst-case wait is about 30 s instead of the stall window.
 COPILOT_SETTLE_SECONDS = 15.0
-# Total silence, heartbeats included, that ends an ask-family stream (curl's
-# low-speed abort), for all three verbs: 3x the largest gap on a healthy
-# stream. Legacy streams send a heartbeat comment every 15.0 s, and on a quiet
-# healthy stream that heartbeat alone sets the gap, so 3 x 15 s.
+# Total silence, heartbeats included, that ends an `ask` or `fetch --prompt`
+# stream (curl's low-speed abort): 3x the largest gap on a healthy stream.
+# Legacy streams send a heartbeat comment every 15.0 s, and on a quiet healthy
+# stream that heartbeat alone sets the gap, so 3 x 15 s.
 SILENCE_SECONDS = 45.0
+# The same bound for `research`. A research run can wait out a clarifying
+# question for its `auto_skip_seconds` (60 s in the captured run), and whether
+# heartbeats keep flowing during that wait has not been measured. The window
+# is fixed when the request starts, so it has to cover that wait: 60 s plus
+# 30 s (two heartbeat intervals), or the window above if that is larger.
+RESEARCH_SILENCE_SECONDS = max(SILENCE_SECONDS, 60.0 + 30.0)
 # A stream whose first progress event has not arrived by then is cut. On the
 # legacy body the first data frame, a query echo at 0.10-0.37 s, already counts
 # as progress, so this fires only when heartbeats keep the connection alive
@@ -125,6 +131,13 @@ def cutoff_warnings(state: AskStreamState) -> list[str]:
     if state.cutoff is None:
         return []
     return [f"stream cut before COMPLETED, returning partial content: {state.cutoff}"]
+
+
+def cutoff_silence(state: AskStreamState) -> float | None:
+    """How long the stream carried no bytes at all when that cut it (a "stall"
+    to `cutoff_cause`); None for any other end. A larger --stall-timeout
+    cannot help this cut, so results name it apart from a progress stall."""
+    return state.cutoff.seconds if isinstance(state.cutoff, StreamSilenceError) else None
 
 
 def cutoff_cause(state: AskStreamState) -> Literal["stall", "deadline", "drop"] | None:
@@ -359,8 +372,7 @@ def run_ask_stream(
     is_complete: Callable[[dict[str, Any]], bool] = event_marks_completed,
     is_progress: Callable[[dict[str, Any]], bool] | None = None,
     settle_seconds: float | None = None,
-    silence_seconds: float | None = SILENCE_SECONDS,
-    first_content_seconds: float | None = FIRST_CONTENT_SECONDS,
+    silence_seconds: float = SILENCE_SECONDS,
 ) -> None:
     """Drive the SSE call with retry/deadline/stall guard, filling in `state`.
 
@@ -387,8 +399,9 @@ def run_ask_stream(
     frame is outstanding. The
     resulting stall cutoff lands in `state.cutoff` like any other.
 
-    `silence_seconds` and `first_content_seconds` are passed to
-    `Client.sse_post`; the defaults apply to every ask-family verb.
+    `silence_seconds` sizes the transport's abort on a stream that sends no
+    bytes at all (see `Client.sse_post`); the first-content bound is
+    `FIRST_CONTENT_SECONDS` for every verb.
     """
     overall_deadline = (time.monotonic() + timeout) if timeout else None
 
@@ -425,7 +438,6 @@ def run_ask_stream(
                 is_progress=is_progress,
                 settle_seconds=settle_seconds,
                 silence_seconds=silence_seconds,
-                first_content_seconds=first_content_seconds,
             )
             break
         except StreamStallError as e:
@@ -523,8 +535,7 @@ def _drive_one(
     is_complete: Callable[[dict[str, Any]], bool],
     is_progress: Callable[[dict[str, Any]], bool] | None,
     settle_seconds: float | None,
-    silence_seconds: float | None,
-    first_content_seconds: float | None,
+    silence_seconds: float,
 ) -> None:
     event_count = 0
     window = stall_seconds
@@ -556,7 +567,7 @@ def _drive_one(
             stall_seconds=stall_seconds,
             is_progress=is_progress,
             silence_seconds=silence_seconds,
-            first_content_seconds=first_content_seconds,
+            first_content_seconds=FIRST_CONTENT_SECONDS,
             **extra,
         ):
             event_count += 1

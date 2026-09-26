@@ -31,6 +31,7 @@ from ._ask_common import (
     base_ask_params,
     blocks_changed,
     cutoff_cause,
+    cutoff_silence,
     cutoff_warnings,
     downgrade_verdict,
     event_marks_completed,
@@ -70,9 +71,11 @@ class FinishedWithoutSources:
 
 @dataclass(frozen=True)
 class Cut:
-    """The stream ended before the answer was whole."""
+    """The stream ended before the answer was whole. `silent_for` is set when
+    the stall was the connection carrying no bytes at all for that long."""
 
     by: Literal["stall", "deadline", "drop", "server"]
+    silent_for: float | None = None
     tag: Literal["cut"] = field(default="cut", init=False)
 
 
@@ -174,7 +177,7 @@ def ask(
         # partial answer.
         completion = FinishedWithoutSources()
     else:
-        completion = Cut(cutoff_cause(state) or "server")
+        completion = Cut(cutoff_cause(state) or "server", cutoff_silence(state))
     downgraded, downgrade_warnings = downgrade_verdict(state, model)
     return AskResult(
         query=query,

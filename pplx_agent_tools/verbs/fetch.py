@@ -46,6 +46,7 @@ from ._ask_common import (
     base_ask_params,
     blocks_changed,
     cutoff_cause,
+    cutoff_silence,
     cutoff_warnings,
     downgrade_verdict,
     extract_chunks_from_event,
@@ -107,6 +108,9 @@ class FetchResult:
     # "stall" | "deadline" when that bound cut the --prompt stream, "drop" when
     # its connection died mid-stream; None otherwise.
     cut_by: str | None = None
+    # Set with a "stall" cut_by when the connection carried no bytes at all
+    # for that many seconds.
+    silent_for: float | None = None
     # --prompt only: True when the server ran a model other than the one
     # requested; None when no frame named one, and in plain mode.
     downgraded: bool | None = None
@@ -346,6 +350,7 @@ def _fetch_with_prompt(
         truncated=truncated,
         stream_complete=state.saw_completed,
         cut_by=cutoff_cause(state),
+        silent_for=cutoff_silence(state),
         warnings=cutoff_warnings(state) + downgrade_warnings,
         downgraded=downgraded,
     )

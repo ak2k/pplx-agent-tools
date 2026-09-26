@@ -35,10 +35,12 @@ from typing import Any
 from ..errors import SchemaError
 from ..wire import Client
 from ._ask_common import (
+    RESEARCH_SILENCE_SECONDS,
     AskStreamState,
     Source,
     base_ask_params,
     cutoff_cause,
+    cutoff_silence,
     cutoff_warnings,
     downgrade_verdict,
     no_content_error,
@@ -105,6 +107,9 @@ class ResearchResult:
     # "stall" | "deadline" when that bound cut the stream, "drop" when the
     # connection died mid-stream; None otherwise.
     cut_by: str | None = None
+    # Set with a "stall" cut_by when the connection carried no bytes at all
+    # for that many seconds.
+    silent_for: float | None = None
     # Questions the run asked the user; pplx cannot answer them, so the server
     # went on with its default answers.
     clarifying_questions: list[str] = field(default_factory=list)
@@ -230,6 +235,7 @@ def research(
             label="research",
             is_complete=status_completed,
             is_progress=_text_changed(),
+            silence_seconds=RESEARCH_SILENCE_SECONDS,
         )
 
     if state.failed:
@@ -276,6 +282,7 @@ def research(
         mode=mode,
         stream_complete=state.saw_completed,
         cut_by=cutoff_cause(state),
+        silent_for=cutoff_silence(state),
         content_shortfall=content_shortfall,
         warnings=cutoff_warnings(state) + warnings,
         clarifying_questions=questions,

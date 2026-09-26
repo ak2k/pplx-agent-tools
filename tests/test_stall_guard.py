@@ -616,7 +616,7 @@ def test_curl_timeout_after_content_keeps_the_partial(
     cap = capsys.readouterr()
     assert rc == EXIT_PARTIAL
     assert "kept" in cap.out
-    assert "stream: incomplete (stall: no new content)" in cap.out
+    assert f"stream: incomplete (stall: no bytes for {SILENCE_SECONDS:.1f}s)" in cap.out
     assert "went silent: no bytes for" in cap.err
 
 

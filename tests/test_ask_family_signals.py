@@ -158,7 +158,44 @@ def test_silence_after_content_is_a_stall_cut_that_says_no_bytes(
     assert any(f"no bytes for {connect + read:.1f}s" in w for w in out["warnings"])
     assert "no bytes for" in err
     # The transport's silence abort is its own window, far inside the stall window.
-    assert connect + read < stall / 3
+    assert connect + read <= stall / 2
+
+
+@pytest.mark.parametrize("verb", _CLI)
+def test_a_silence_cut_names_itself_on_stdout(
+    clock: _Clock, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], verb: str
+) -> None:
+    main, argv = _CLI[verb]
+    steps: list[Step] = [
+        (0, _content(verb, "kept")),
+        (40, _curl_error(CurlECode.OPERATION_TIMEDOUT)),
+    ]
+    client = _StreamClient(steps, clock)
+    rc = _run_cli(monkeypatch, main, [*argv, *LONG_DEADLINE], client)
+    out = capsys.readouterr().out
+    connect, read = client.session.timeout
+    assert rc == EXIT_PARTIAL
+    assert f"stream: incomplete (stall: no bytes for {connect + read:.1f}s)" in out
+    assert "no new content" not in out
+
+
+# Pinned, not imported: SKILL.md documents these windows.
+@pytest.mark.parametrize(("verb", "window"), [("ask", 45.0), ("fetch", 45.0), ("research", 90.0)])
+def test_research_alone_gets_a_silence_window_past_a_clarifying_wait(
+    clock: _Clock,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    verb: str,
+    window: float,
+) -> None:
+    steps: list[Step] = [
+        (0, _content(verb, "kept")),
+        (40, _curl_error(CurlECode.OPERATION_TIMEDOUT)),
+    ]
+    _, out, _, client = _cli_json(monkeypatch, capsys, verb, steps, clock)
+    connect, read = client.session.timeout
+    assert connect + read == window
+    assert any(f"no bytes for {window:.1f}s" in w for w in out["warnings"])
 
 
 @pytest.mark.parametrize("verb", _CLI)
