@@ -334,6 +334,7 @@ def _fetch_with_prompt(
             endpoint=_PROMPT_ENDPOINT,
             timeout=timeout,
             cutoff=state.cutoff,
+            cleanup_warnings=state.cleanup_warnings,
         )
 
     truncated = False
@@ -353,7 +354,7 @@ def _fetch_with_prompt(
         stream_complete=state.saw_completed,
         cut_by=cutoff_cause(state),
         silent_for=cutoff_silence(state),
-        warnings=cutoff_warnings(state) + downgrade_warnings,
+        warnings=cutoff_warnings(state) + downgrade_warnings + state.cleanup_warnings,
         downgraded=downgraded,
         served_model=state.display_model,
     )

@@ -340,8 +340,8 @@ def test_ask_network_error_before_any_content_raises() -> None:
 
 
 def test_ask_deadline_and_closed_empty_texts_are_distinguishable() -> None:
-    """Both end with no answer, but only the deadline is worth retrying with a
-    larger --timeout, so the text and the exit code have to say which it was."""
+    """Both end with no answer, but only the deadline is worth retrying, so the
+    text and the exit code have to say which it was."""
     starved = _FakeClient([], raise_deadline=True)
     with pytest.raises(StreamDeadlineError) as deadline:
         ask(starved, "hi", timeout=30)
@@ -352,7 +352,7 @@ def test_ask_deadline_and_closed_empty_texts_are_distinguishable() -> None:
 
     assert str(deadline.value) == (
         "ask stream on /rest/sse/perplexity_ask exceeded 30.0s deadline "
-        "before the first content arrived; no progress event arrived"
+        "before the first content arrived; no progress event arrived: retry once"
     )
     assert str(closed.value) == "ask stream on /rest/sse/perplexity_ask closed with no content"
     assert exit_code(deadline.value) == EXIT_NETWORK

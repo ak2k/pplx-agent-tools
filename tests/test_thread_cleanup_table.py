@@ -10,6 +10,9 @@ The rule, restated here rather than taken from production code:
   deadline, stall, silence or server close. Every other end after the first
   byte is live, KeyboardInterrupt included. keep_thread never suppresses
   terminate; with no ids neither leg is sent.
+- A run that needed a terminate pplx could not send (no context_uuid or
+  display_model) is reported as possibly still running: in the result's
+  warnings, the error's message, or on stderr when an exception is in flight.
 
 Each cell runs a verb over the real `Client.sse_post`, `Client.terminate` and
 `Client.delete_thread` on a scripted session with a fake clock, and reads the
@@ -63,16 +66,27 @@ _OVERSIZE_CAP = 512
 Step = tuple[float, "bytes | BaseException"]
 
 
+def _live(verb: str, end: str, text_completed: bool) -> bool:
+    settled_ask = verb == "ask" and end in ("server_close", "drop", "deadline", "stall", "silence")
+    over = end in ("completed", "failed", "rate_limit", "pre_first_byte")
+    return not (over or (text_completed and (verb == "fetch" or settled_ask)))
+
+
 def expected_legs(
     verb: str, end: str, text_completed: bool, ids: str, keep: bool
 ) -> tuple[bool, bool]:
     """(terminate, delete) from the rule in the module docstring."""
     delete = ids in ("complete", "no_context", "no_model") and not keep
     terminable = ids in ("complete", "no_token")
-    settled_ask = verb == "ask" and end in ("server_close", "drop", "deadline", "stall", "silence")
-    over = end in ("completed", "failed", "rate_limit", "pre_first_byte")
-    live = not (over or (text_completed and (verb == "fetch" or settled_ask)))
-    return terminable and live, delete
+    return terminable and _live(verb, end, text_completed), delete
+
+
+def expected_note(verb: str, end: str, text_completed: bool, ids: str) -> bool:
+    """Whether the run is reported as possibly still running."""
+    return ids in ("no_context", "no_model") and _live(verb, end, text_completed)
+
+
+_STILL_RUNNING = "may still be running on the server"
 
 
 # ---------- scripted transport ----------
@@ -294,8 +308,12 @@ def _expected_outcome(verb: str, end: str, text_completed: bool) -> Any:
 
 
 def _check_cell(
-    session: _Session, outcome: Any, verb: str, end: str, text_completed: bool, ids: str, keep: bool
+    session: _Session,
+    outcome: Any,
+    err: str,
+    cell: tuple[str, str, bool, str, bool],
 ) -> tuple[bool, bool]:
+    verb, end, text_completed, ids, _ = cell
     expected_end = _expected_outcome(verb, end, text_completed)
     if isinstance(expected_end, type):
         assert isinstance(outcome, expected_end), outcome
@@ -323,6 +341,11 @@ def _check_cell(
             assert headers == {"X-Perplexity-Request-Reason": "thread-floating-footer"}
         else:
             assert body == {"entry_uuid": "BU", "read_write_token": "RW"}
+    told = json.dumps(outcome) if isinstance(outcome, dict) else str(outcome)
+    assert (_STILL_RUNNING in told + err) == expected_note(verb, end, text_completed, ids), (
+        told,
+        err,
+    )
     return "terminate" in kinds, "delete" in kinds
 
 
@@ -336,14 +359,15 @@ def _cells() -> Iterator[tuple[str, str, bool, str, bool]]:
             yield verb, end, False, "none", keep  # no frame, so no ids
 
 
-def test_cleanup_table_over_every_end(clock: _Clock) -> None:
+def test_cleanup_table_over_every_end(clock: _Clock, capsys: pytest.CaptureFixture[str]) -> None:
     failures: list[str] = []
     cells = list(_cells())
     for verb, end, tc, ids, keep in cells:
         clock.now = 1000.0
         session, outcome = _run(clock, verb, end, tc, ids, keep)
+        err = capsys.readouterr().err
         try:
-            legs = _check_cell(session, outcome, verb, end, tc, ids, keep)
+            legs = _check_cell(session, outcome, err, (verb, end, tc, ids, keep))
             assert legs == expected_legs(verb, end, tc, ids, keep), legs
         except AssertionError as e:
             failures.append(f"{verb} {end} tc={tc} ids={ids} keep={keep}: {e}")
@@ -370,11 +394,19 @@ def test_cleanup_table_over_every_end(clock: _Clock) -> None:
     ids=str,
 )
 def test_cleanup_anchor_rows(
-    clock: _Clock, verb: str, end: str, tc: bool, ids: str, keep: bool, legs: tuple[bool, bool]
+    clock: _Clock,
+    capsys: pytest.CaptureFixture[str],
+    verb: str,
+    end: str,
+    tc: bool,
+    ids: str,
+    keep: bool,
+    legs: tuple[bool, bool],
 ) -> None:
     assert expected_legs(verb, end, tc, ids, keep) == legs
     session, outcome = _run(clock, verb, end, tc, ids, keep)
-    assert _check_cell(session, outcome, verb, end, tc, ids, keep) == legs
+    err = capsys.readouterr().err
+    assert _check_cell(session, outcome, err, (verb, end, tc, ids, keep)) == legs
 
 
 @pytest.mark.parametrize("verb", VERBS)
@@ -440,3 +472,45 @@ def test_both_cleanup_requests_share_one_short_timeout(clock: _Clock) -> None:
     timeouts = {kind: timeout for kind, _, _, timeout in session.calls}
     assert set(timeouts) == {"terminate", "delete"}
     assert timeouts["delete"] == timeouts["terminate"] < wire.DEFAULT_TIMEOUT
+
+
+@pytest.mark.parametrize("verb", VERBS)
+def test_a_failed_terminate_is_a_result_warning(clock: _Clock, verb: str) -> None:
+    _, outcome = _run(clock, verb, "drop", False, "complete", False, cleanup_fails=True)
+    assert isinstance(outcome, dict), outcome
+    assert any(
+        _STILL_RUNNING in w and "the request to stop it failed" in w for w in outcome["warnings"]
+    ), outcome["warnings"]
+
+
+@pytest.mark.parametrize(
+    ("ids", "missing"), [("no_model", "display model"), ("no_context", "context uuid")]
+)
+@pytest.mark.parametrize("verb", VERBS)
+def test_a_terminate_that_cannot_be_sent_is_a_result_warning(
+    clock: _Clock, verb: str, ids: str, missing: str
+) -> None:
+    session, outcome = _run(clock, verb, "stall", False, ids, False)
+    assert isinstance(outcome, dict), outcome
+    assert [c[0] for c in session.calls] == ["delete"]
+    assert any(_STILL_RUNNING in w and f"no {missing} arrived" in w for w in outcome["warnings"]), (
+        outcome["warnings"]
+    )
+
+
+@pytest.mark.parametrize("verb", VERBS)
+def test_a_failed_terminate_before_any_content_is_in_the_error(clock: _Clock, verb: str) -> None:
+    _, outcome = _run(clock, verb, "first_content", False, "complete", False, cleanup_fails=True)
+    assert isinstance(outcome, NetworkError), outcome
+    assert "no first content" in str(outcome)
+    assert _STILL_RUNNING in str(outcome) and "the request to stop it failed" in str(outcome)
+
+
+@pytest.mark.parametrize("verb", VERBS)
+def test_an_interrupted_run_that_cannot_be_stopped_says_so_on_stderr(
+    clock: _Clock, verb: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _, outcome = _run(clock, verb, "keyboard_interrupt", False, "no_context", False)
+    assert isinstance(outcome, KeyboardInterrupt)
+    err = capsys.readouterr().err
+    assert _STILL_RUNNING in err and "no context uuid arrived" in err

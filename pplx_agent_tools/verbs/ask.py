@@ -34,7 +34,6 @@ from ._ask_common import (
     cutoff_silence,
     cutoff_warnings,
     downgrade_verdict,
-    event_marks_completed,
     extract_chunk_patches,
     extract_web_results,
     no_content_error,
@@ -121,10 +120,8 @@ def ask(
     body = _build_ask_body(query, model)
     chunks: dict[int, str] = {}
     sources: list[Source] = []
-    text_done = False
 
     def on_event(event: dict[str, Any]) -> None:
-        nonlocal text_done
         terminal = status_completed(event)
         for offset, run in extract_chunk_patches(event):
             apply_chunk_patch(chunks, offset, run, terminal=terminal)
@@ -141,7 +138,6 @@ def ask(
                     seen.add(src.url)
                     collected.append(src)
             sources[:] = collected
-        text_done = text_done or event_marks_completed(event)
 
     state = AskStreamState()
     with release_on_exit(client, state, keep_thread=keep_thread, settles_after_text=True):
@@ -168,12 +164,18 @@ def ask(
 
     content = "".join(chunks[i] for i in sorted(chunks)).strip()
     if not content and not state.saw_completed:
-        raise no_content_error(label="ask", endpoint=ENDPOINT, timeout=timeout, cutoff=state.cutoff)
+        raise no_content_error(
+            label="ask",
+            endpoint=ENDPOINT,
+            timeout=timeout,
+            cutoff=state.cutoff,
+            cleanup_warnings=state.cleanup_warnings,
+        )
 
     completion: AskCompletion
     if state.saw_completed:
         completion = Finished()
-    elif text_done:
+    elif state.text_completed:
         # The answer is whole at `text_completed`; only the sources frame after
         # it was lost (a settle expiry, a cut or a drop), so this is not a
         # partial answer.
@@ -192,7 +194,8 @@ def ask(
             if isinstance(completion, FinishedWithoutSources)
             else cutoff_warnings(state)
         )
-        + downgrade_warnings,
+        + downgrade_warnings
+        + state.cleanup_warnings,
         grounding=(
             check_grounding(content, query, sources) if grounded_check else Unchecked("disabled")
         ),

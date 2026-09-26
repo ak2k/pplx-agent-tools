@@ -254,7 +254,11 @@ def research(
             # honest diagnosis, so re-raise it rather than reporting no content.
             decode_research_text(last_raw["text"])
         raise no_content_error(
-            label="research", endpoint=ENDPOINT, timeout=timeout, cutoff=state.cutoff
+            label="research",
+            endpoint=ENDPOINT,
+            timeout=timeout,
+            cutoff=state.cutoff,
+            cleanup_warnings=state.cleanup_warnings,
         )
 
     answer: str = latest["answer"]
@@ -263,7 +267,11 @@ def research(
         # A cut stream whose only snapshot is the empty INITIAL_QUERY step has
         # nothing to salvage; report it as a retryable cutoff, as `ask` does.
         raise no_content_error(
-            label="research", endpoint=ENDPOINT, timeout=timeout, cutoff=state.cutoff
+            label="research",
+            endpoint=ENDPOINT,
+            timeout=timeout,
+            cutoff=state.cutoff,
+            cleanup_warnings=state.cleanup_warnings,
         )
     content_shortfall, warnings = _shortfall_verdict(
         answer_len=len(answer), body_len=latest["body_len"], best=best, saw=saw
@@ -284,7 +292,7 @@ def research(
         cut_by=cutoff_cause(state),
         silent_for=cutoff_silence(state),
         content_shortfall=content_shortfall,
-        warnings=cutoff_warnings(state) + warnings,
+        warnings=cutoff_warnings(state) + warnings + state.cleanup_warnings,
         clarifying_questions=questions or [],
         clarifying_unreadable=questions is not None and not questions,
         downgraded=downgraded,

@@ -19,7 +19,7 @@ import pytest
 from curl_cffi import CurlECode
 
 from pplx_agent_tools import cli_ask, cli_fetch, cli_research, wire
-from pplx_agent_tools.errors import EXIT_NETWORK, EXIT_PARTIAL
+from pplx_agent_tools.errors import EXIT_NETWORK, EXIT_PARTIAL, StreamDeadlineError
 from pplx_agent_tools.render import (
     render_ask_json,
     render_ask_text,
@@ -28,7 +28,11 @@ from pplx_agent_tools.render import (
     render_research_json,
     render_research_text,
 )
-from pplx_agent_tools.verbs._ask_common import COPILOT_STALL_SECONDS, DEFAULT_STALL_SECONDS
+from pplx_agent_tools.verbs._ask_common import (
+    COPILOT_STALL_SECONDS,
+    DEFAULT_STALL_SECONDS,
+    no_content_error,
+)
 from pplx_agent_tools.verbs.ask import ask
 from pplx_agent_tools.verbs.fetch import fetch
 from pplx_agent_tools.verbs.research import research
@@ -49,7 +53,8 @@ from .test_stall_guard import (
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"
-FIRST_CONTENT_S = 90.0  # the bound the brief fixes; heartbeats every 15 s drive the check
+# Pinned, not imported: SKILL.md documents 90 s. Heartbeats every 15 s drive the check.
+FIRST_CONTENT_S = 90.0
 
 _CLI: dict[str, tuple[Callable[[list[str]], int], list[str]]] = {
     "ask": (cli_ask.main, ["q"]),
@@ -144,6 +149,69 @@ def test_a_deadline_before_content_says_when_progress_last_came(
     assert out["error"]["exit_code"] == EXIT_NETWORK
     assert f"exceeded {float(timeout):.1f}s deadline before the first content arrived" in err
     assert expected in err
+
+
+@pytest.mark.parametrize("verb", _CLI)
+@pytest.mark.parametrize(
+    ("scenario", "advice"),
+    [
+        (
+            "working",
+            "the last progress event came 4.0s before the cut, so the run was still working: "
+            "raise --timeout",
+        ),
+        (
+            "stuck",
+            "the last progress event came 60.0s before the cut, longer than a healthy run "
+            "goes without one: retry once",
+        ),
+        ("none", "no progress event arrived: retry once"),
+    ],
+)
+def test_a_deadline_before_content_says_which_retry_fits(
+    clock: _Clock,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    verb: str,
+    scenario: str,
+    advice: str,
+) -> None:
+    # Progress every 4 s, like a healthy thinking ask; "stuck" stops at 40 s.
+    steps: list[Step] = [(0, _non_content_progress(verb, 0))]
+    timeout = "100"
+    if scenario == "working":
+        steps += [(4, _non_content_progress(verb, i)) for i in range(1, 40)]
+    elif scenario == "stuck":
+        steps += [(4, _non_content_progress(verb, i)) for i in range(1, 11)]
+        steps += _heartbeats(300)
+    else:
+        # Under the 90 s first-content bound, so the deadline is what cuts.
+        steps, timeout = [(0, ENVELOPE), *_heartbeats(300)], "60"
+    rc, out, err, _ = _cli_json(monkeypatch, capsys, verb, steps, clock, "--timeout", timeout)
+    assert rc == EXIT_NETWORK
+    assert advice in out["error"]["message"]
+    assert advice in err
+
+
+# Pinned, not imported: SKILL.md documents the 20 s turn.
+@pytest.mark.parametrize(
+    ("since", "advice"),
+    [
+        (None, "retry once"),
+        (0.0, "raise --timeout"),
+        (20.0, "raise --timeout"),
+        (20.1, "retry once"),
+        (300.0, "retry once"),
+    ],
+)
+def test_the_deadline_advice_turns_past_twenty_seconds_without_progress(
+    since: float | None, advice: str
+) -> None:
+    err = no_content_error(
+        label="ask", endpoint="/e", timeout=100.0, cutoff=StreamDeadlineError("cut", since)
+    )
+    assert type(err) is StreamDeadlineError
+    assert str(err).endswith(advice)
 
 
 # ---------- silence ----------

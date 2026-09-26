@@ -18,9 +18,9 @@ import json
 import random
 import sys
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal
 from uuid import uuid4
 
@@ -70,6 +70,12 @@ RESEARCH_SILENCE_SECONDS = max(SILENCE_SECONDS, 60.0 + 30.0)
 # as progress, so this fires only when heartbeats keep the connection alive
 # but no data frame arrives.
 FIRST_CONTENT_SECONDS = 90.0
+# A deadline before content whose last progress event came longer ago than
+# this reads as a stuck run rather than a slow one: 3x the longest gap between
+# progress events measured on a healthy legacy stream (6.4 s, on research; a
+# thinking-model ask's longest was 4.0 s).
+STUCK_GAP_SECONDS = 20.0
+_RUN_MAY_BE_LIVE = "the run may still be running on the server and using quota"
 
 
 @dataclass
@@ -86,6 +92,9 @@ class AskStreamState:
     # than raised so the caller can salvage what it accumulated. Its type says
     # which one; `cutoff_warnings` and `no_content_error` report from it.
     cutoff: NetworkError | None = None
+    # Set by `release_on_exit` when the run may outlive pplx: the terminate it
+    # needed could not be sent, or failed. A retry would run alongside it.
+    cleanup_warnings: list[str] = field(default_factory=list)
 
 
 def run_may_be_live(state: AskStreamState, *, raised: bool, settles_after_text: bool) -> bool:
@@ -112,18 +121,37 @@ def release_on_exit(
 
     Terminate needs the context uuid and the display model as well as the
     backend uuid; delete needs the read_write_token. Both are best-effort and
-    never raise, so cleanup cannot mask the exception already in flight.
+    never raise, so cleanup cannot mask the exception already in flight. A
+    terminate that was needed but could not be sent, or failed, is recorded in
+    `state.cleanup_warnings` for the result or error to report; with an
+    exception in flight there is neither, so they go to stderr.
     """
     raised = True
     try:
         yield
         raised = False
     finally:
-        live = run_may_be_live(state, raised=raised, settles_after_text=settles_after_text)
-        if live and state.backend_uuid and state.context_uuid and state.display_model:
-            client.terminate(state.backend_uuid, state.context_uuid, state.display_model)
+        if run_may_be_live(state, raised=raised, settles_after_text=settles_after_text):
+            _stop_run(client, state)
         if not keep_thread and state.backend_uuid and state.read_write_token:
             client.delete_thread(state.backend_uuid, state.read_write_token)
+        if raised:
+            for warning in state.cleanup_warnings:
+                print(f"warning: {warning}", file=sys.stderr)
+
+
+def _stop_run(client: Client, state: AskStreamState) -> None:
+    """Terminate a run that may still be going, noting in `state` when that
+    cannot be done. Without a backend uuid no run is known to exist."""
+    if not state.backend_uuid:
+        return
+    if not state.context_uuid or not state.display_model:
+        missing = "display model" if state.context_uuid else "context uuid"
+        state.cleanup_warnings.append(
+            f"{_RUN_MAY_BE_LIVE}: no {missing} arrived, so pplx could not ask it to stop"
+        )
+    elif not client.terminate(state.backend_uuid, state.context_uuid, state.display_model):
+        state.cleanup_warnings.append(f"{_RUN_MAY_BE_LIVE}: the request to stop it failed")
 
 
 def cutoff_warnings(state: AskStreamState) -> list[str]:
@@ -475,51 +503,64 @@ def run_ask_stream(
 
 
 def no_content_error(
-    *, label: str, endpoint: str, timeout: float | None, cutoff: NetworkError | None
+    *,
+    label: str,
+    endpoint: str,
+    timeout: float | None,
+    cutoff: NetworkError | None,
+    cleanup_warnings: Sequence[str] = (),
 ) -> PplxError:
     """The error for an ask-family stream that produced no usable content.
 
     The texts live here so the three verbs cannot drift apart on the one
     distinction an agent acts on: a bound that tripped, or a connection that
     dropped, before the first content is worth retrying (exit 4), whereas a
-    stream the server closed empty is not (exit 1).
+    stream the server closed empty is not (exit 1). `cleanup_warnings` end
+    the text, since an error carries no warnings list and a retry would run
+    alongside a run that may still be going.
     """
+    notes = "".join(f"; {w}" for w in cleanup_warnings)
     if isinstance(cutoff, StreamFirstContentError):
         return StreamFirstContentError(
-            f"{label} stream on {endpoint} sent no first content within {cutoff.seconds:.1f}s",
+            f"{label} stream on {endpoint} sent no first content within "
+            f"{cutoff.seconds:.1f}s{notes}",
             cutoff.seconds,
         )
     if isinstance(cutoff, StreamSilenceError):
         return StreamSilenceError(
             f"{label} stream on {endpoint} went silent: no bytes for {cutoff.seconds:.1f}s "
-            f"before the first content arrived",
+            f"before the first content arrived{notes}",
             cutoff.seconds,
         )
     if isinstance(cutoff, StreamStallError):
         return StreamStallError(
             f"{label} stream on {endpoint} stalled: no new content for {cutoff.seconds:.1f}s "
-            f"before the first content arrived",
+            f"before the first content arrived{notes}",
             cutoff.seconds,
         )
     if cutoff is not None and not isinstance(cutoff, StreamDeadlineError):
-        return cutoff
+        return NetworkError(f"{cutoff}{notes}") if notes else cutoff
     if cutoff is not None:
         # `timeout` is None only when the budget was spent by an earlier retry
         # rather than by a caller-supplied bound.
         budget = f"{timeout:.1f}s" if timeout is not None else "its"
-        # Which retry fits depends on whether the run was still working when cut.
-        since = cutoff.since_progress
-        progress = (
-            "no progress event arrived"
-            if since is None
-            else f"the last progress event came {since:.1f}s before the cut"
-        )
         return StreamDeadlineError(
             f"{label} stream on {endpoint} exceeded {budget} deadline "
-            f"before the first content arrived; {progress}",
-            since,
+            f"before the first content arrived; {_deadline_advice(cutoff.since_progress)}{notes}",
+            cutoff.since_progress,
         )
-    return SchemaError(f"{label} stream on {endpoint} closed with no content")
+    return SchemaError(f"{label} stream on {endpoint} closed with no content{notes}")
+
+
+def _deadline_advice(since_progress: float | None) -> str:
+    """Which retry fits a deadline before content: a run still making progress
+    needs more time, one gone quiet for longer than a healthy run does is stuck."""
+    if since_progress is None:
+        return "no progress event arrived: retry once"
+    came = f"the last progress event came {since_progress:.1f}s before the cut"
+    if since_progress <= STUCK_GAP_SECONDS:
+        return f"{came}, so the run was still working: raise --timeout"
+    return f"{came}, longer than a healthy run goes without one: retry once"
 
 
 def _drive_one(

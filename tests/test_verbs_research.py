@@ -314,8 +314,8 @@ def test_research_network_error_before_any_content_raises() -> None:
 
 
 def test_research_deadline_and_closed_empty_texts_are_distinguishable() -> None:
-    """Same wording as ask and fetch --prompt: the deadline says retry longer,
-    the closed-empty stream says do not."""
+    """Same wording as ask and fetch --prompt: the deadline says retry, the
+    closed-empty stream says do not."""
     starved = _FakeClient([], raise_deadline=True)
     with pytest.raises(StreamDeadlineError) as deadline:
         research(starved, "q", timeout=30)
@@ -326,7 +326,7 @@ def test_research_deadline_and_closed_empty_texts_are_distinguishable() -> None:
 
     assert str(deadline.value) == (
         "research stream on /rest/sse/perplexity_ask exceeded 30.0s deadline "
-        "before the first content arrived; no progress event arrived"
+        "before the first content arrived; no progress event arrived: retry once"
     )
     assert str(closed.value) == (
         "research stream on /rest/sse/perplexity_ask closed with no content"
