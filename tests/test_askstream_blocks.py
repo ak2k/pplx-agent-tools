@@ -29,7 +29,14 @@ from pplx_agent_tools.askstream.drift import Drift, name_of
 from pplx_agent_tools.askstream.frames import AskFrame, MalformedReason, decode_frame
 from pplx_agent_tools.askstream.jsonval import JsonValue, weight
 from pplx_agent_tools.askstream.patch import Limits
-from pplx_agent_tools.askstream.projections import AnswerPaths, answer, answer_text, sources
+from pplx_agent_tools.askstream.projections import (
+    AnswerPaths,
+    answer,
+    answer_text,
+    report_body,
+    sources,
+)
+from pplx_agent_tools.errors import ResourceLimitError
 from pplx_agent_tools.verbs._ask_common import extract_web_results, to_source
 from tests._askframes import (
     add,
@@ -110,11 +117,15 @@ def text_of(s: BlockStore, completed: bool = True) -> str:
     return answer_text(answer(s, "ask_text_or_workflow")[0], completed).text
 
 
+def docs_weight(s: BlockStore) -> int:
+    """The held documents; unlike the sources list, readable after a cap."""
+    return sum(st.weight for st in s.fields.values() if isinstance(st, Synced))
+
+
 def held_weight(s: BlockStore) -> int:
     """The held documents plus the retained sources list, as JSON rows."""
-    docs = sum(st.weight for st in s.fields.values() if isinstance(st, Synced))
     rows: list[JsonValue] = [[x.url, x.title, x.snippet] for x in s.run_sources]
-    return docs + (weight(rows) if rows else 0)
+    return docs_weight(s) + (weight(rows) if rows else 0)
 
 
 def mismatches(results: list[FrameApplied]) -> list[Drift]:
@@ -326,12 +337,13 @@ def test_ops_per_frame_cap_applies_nothing_and_ends_the_store() -> None:
 def test_field_weight_cap_drops_the_field_and_keeps_the_count_exact() -> None:
     s = BlockStore("ask_text_or_workflow", SMALL)
     feed(s, frame(web("https://a.example/")))
+    before = held_weight(s)
     big = "x" * SMALL.field_weight
     r = s.apply_frame(frame(md([big])))
     assert isinstance(r, CapExceeded)
-    assert (r.cap, r.field) == ("field_weight", ("ask_text", ("markdown_block",)))
-    assert s.get("ask_text") is None
-    assert s.budget.total_weight == held_weight(s) > 0
+    assert (r.cap, r.field) == ("field_weight", MD_KEY)
+    assert s.state(MD_KEY) is None
+    assert s.budget.total_weight == before > 0
 
 
 def test_retained_sources_are_charged_after_their_document_empties() -> None:
@@ -349,8 +361,8 @@ def test_retained_sources_pass_the_total_weight_cap_before_they_are_kept() -> No
     assert isinstance(r, CapExceeded)
     assert (r.cap, r.field) == ("total_weight", ("web_results", ("web_result_block",)))
     assert r.observed > SMALL.total_weight
-    assert s.run_sources == ()
-    assert s.budget.total_weight == held_weight(s) <= SMALL.total_weight
+    # Only the document is charged: the list was never kept.
+    assert s.budget.total_weight == docs_weight(s) <= SMALL.total_weight
 
 
 def test_markdown_merge_work_is_charged_before_the_merge() -> None:
@@ -364,10 +376,10 @@ def test_markdown_merge_work_is_charged_before_the_merge() -> None:
             break
     else:
         pytest.fail("no cap hit")
-    assert (r.cap, r.field) == ("work_per_frame", ("ask_text", ("markdown_block",)))
+    assert (r.cap, r.field) == ("work_per_frame", MD_KEY)
     assert s.budget.frame_work <= lim.work_per_frame
-    assert s.get("ask_text") is None
-    assert s.budget.total_weight == held_weight(s) == 0
+    assert s.state(MD_KEY) is None
+    assert s.budget.total_weight == docs_weight(s) == 0
 
 
 LOOSE_WEIGHT = Limits(field_weight=2**70, total_weight=2**70)
@@ -422,6 +434,33 @@ def test_chunk_gap_passes_its_cap_before_it_is_allocated(lim: Limits, cap: str) 
     assert isinstance(r, CapExceeded)
     assert (r.cap, r.field) == (cap, MD_KEY)
     assert peak < GAP
+
+
+def test_a_store_past_a_cap_answers_no_read() -> None:
+    """The frame that hit the cap is part applied: its answer chunk landed
+    before its sources passed total_weight. Nothing reads that answer."""
+    lim = Limits(
+        field_weight=500,
+        total_weight=600,
+        work_per_frame=10_000,
+        run_work_factor=0,
+        run_work_base=10_000,
+    )
+    s = BlockStore("ask_text_or_workflow", lim)
+    feed(s, frame(md(["OLD ANSWER"])))
+    r = s.apply_frame(frame(md(["NEW ANSWER"]), web("u" * 400)))
+    assert isinstance(r, CapExceeded)
+    reads = (
+        lambda: s.get("ask_text"),
+        lambda: s.run_sources,
+        lambda: answer(s, "ask_text_or_workflow"),
+        lambda: sources(s),
+        lambda: report_body(s),
+    )
+    for read in reads:
+        with pytest.raises(ResourceLimitError, match="total_weight"):
+            read()
+    assert isinstance(s.state(MD_KEY), Synced)
 
 
 FIELDS = [
@@ -492,13 +531,17 @@ def test_weight_rule_and_caps_hold_across_fields_after_every_result(
             s.begin_reconnect()
         r = s.apply_frame(data.draw(frames_for(s)))
         b = s.budget
-        assert b.total_weight == held_weight(s)
+        if isinstance(r, CapExceeded):
+            # The sources list is no longer readable; only its share is unchecked.
+            assert docs_weight(s) <= b.total_weight
+        else:
+            assert b.total_weight == held_weight(s)
+            if s.run_sources:
+                event("sources retained")
         for st_ in s.fields.values():
             if isinstance(st_, Synced):
                 assert st_.weight == weight(st_.doc) <= lim.field_weight
         assert b.total_weight <= lim.total_weight
-        if s.run_sources:
-            event("sources retained")
         assert b.frame_work <= lim.work_per_frame
         assert b.run_work <= b.run_work_limit
         assert probe.steps <= b.run_work
@@ -506,6 +549,8 @@ def test_weight_rule_and_caps_hold_across_fields_after_every_result(
         if isinstance(r, CapExceeded):
             event(r.cap)
             assert s.apply_frame(frame()) is r
+            with pytest.raises(ResourceLimitError):
+                s.get("ask_text")
             break
 
 
@@ -703,8 +748,7 @@ def test_retained_sources_pass_the_field_weight_cap_before_they_are_kept() -> No
     assert isinstance(r, CapExceeded)
     assert (r.cap, r.limit, r.observed) == ("field_weight", doc_w, rows_w)
     assert r.field == ("web_results", ("web_result_block",))
-    assert s.run_sources == ()
-    assert s.budget.total_weight == held_weight(s)
+    assert s.budget.total_weight == docs_weight(s)
 
 
 def test_workflow_final_may_not_renumber_citations() -> None:

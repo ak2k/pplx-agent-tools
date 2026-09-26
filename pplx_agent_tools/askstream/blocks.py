@@ -5,7 +5,9 @@ under one `Budget`: after any `apply_frame`, `budget.total_weight` equals the
 weight of the documents the store holds plus the retained sources list
 (`run_sources`), and no cap is passed, even for a
 moment, because every charge is checked before the work it pays for.
-A cap hit ends the store: it returns the same `CapExceeded` from then on.
+A cap hit ends the store: it returns the same `CapExceeded` from then on,
+and `get` and `run_sources` raise `ResourceLimitError`. The field states stay
+readable for diagnostics.
 
 Fields a projection reads, and `content` and `report_asset` fields, are
 tracked. Other fields keep no document, only a byte count.
@@ -50,6 +52,7 @@ from pplx_agent_tools.askstream.projections import (
     projection_missing,
     report_body,
 )
+from pplx_agent_tools.errors import ResourceLimitError
 
 # Whether the frame changed content the progress rule counts.
 Change = Literal["idle", "progress"]
@@ -228,6 +231,7 @@ class BlockStore:
     # --- read side ------------------------------------------------------------
 
     def get(self, key: ReadKey) -> JsonValue | None:
+        self._readable()
         state = self._fields.get(READS[key])
         return state.doc if isinstance(state, Synced) else None
 
@@ -241,6 +245,7 @@ class BlockStore:
     @property
     def run_sources(self) -> tuple[WebSource, ...]:
         """The run's sources: the latest non-empty `web_results` list."""
+        self._readable()
         return self._sources
 
     def seen_sizes(self) -> tuple[int, ...]:
@@ -316,6 +321,14 @@ class BlockStore:
     def _die(self, cap: CapExceeded) -> CapExceeded:
         self._dead = cap
         return cap
+
+    def _readable(self) -> None:
+        # The frame that hit the cap may be part applied.
+        c = self._dead
+        if c is not None:
+            raise ResourceLimitError(
+                f"block store read after its {c.cap} cap: {c.observed} > {c.limit}"
+            )
 
     def _once(self, items: tuple[Drift, ...]) -> list[Drift]:
         out = [d for d in items if d not in self._drift_once]
