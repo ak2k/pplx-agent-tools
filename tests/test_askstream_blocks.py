@@ -26,7 +26,7 @@ from pplx_agent_tools.askstream.blocks import (
     Untracked,
 )
 from pplx_agent_tools.askstream.drift import Drift, name_of
-from pplx_agent_tools.askstream.frames import AskFrame, decode_frame
+from pplx_agent_tools.askstream.frames import AskFrame, MalformedReason, decode_frame
 from pplx_agent_tools.askstream.jsonval import JsonValue, weight
 from pplx_agent_tools.askstream.patch import Limits
 from pplx_agent_tools.askstream.projections import AnswerPaths, answer, answer_text, sources
@@ -47,6 +47,7 @@ from tests._askframes import (
 from tests._patch_strategies import DOCS, op_for
 
 FIXTURES = Path(__file__).parent / "fixtures"
+MD_KEY = ("ask_text", ("markdown_block",))
 EVENT_FIXTURES = sorted(FIXTURES.rglob("*.events.jsonl"))
 
 SMALL = Limits(
@@ -270,6 +271,45 @@ def test_rejected_patch_desyncs_drops_later_ops_and_a_snapshot_resyncs() -> None
     assert s.budget.total_weight == held_weight(s)
 
 
+def undecodable(block: dict[str, Any]) -> AskFrame:
+    f, drift = decode_frame(json.dumps({"status": "PENDING", "blocks": [block]}))
+    assert isinstance(f, AskFrame)
+    assert [d.kind for d in drift] == ["malformed_block"]
+    return f
+
+
+def md_diff(field: str, patches: JsonValue) -> dict[str, Any]:
+    return {"intended_usage": "ask_text", "diff_block": {"field": field, "patches": patches}}
+
+
+MALFORMED_ROWS: list[tuple[MalformedReason, dict[str, Any]]] = [
+    ("bad_op", diff("ask_text", "markdown_block", add("/chunks/1", " world"), add("x", 1))),
+    ("pointer_too_deep", md_diff("markdown_block" + ".a" * 127, [add("/b/c", 1)])),
+    ("patches_not_list", md_diff("markdown_block", {})),
+    ("field_too_deep", md_diff("markdown_block" + ".a" * 200, [])),
+    ("snapshot_not_object", {"intended_usage": "ask_text", "markdown_block": ["x"]}),
+]
+
+
+@pytest.mark.parametrize(("reason", "block"), MALFORMED_ROWS, ids=[r[0] for r in MALFORMED_ROWS])
+def test_malformed_block_desyncs_its_field_like_a_rejected_patch(
+    reason: MalformedReason, block: dict[str, Any]
+) -> None:
+    """The server applied a change here that pplx could not read, so a later
+    diff must not land on the document without it."""
+    s = store()
+    feed(s, frame(web("https://a.example/")), frame(md(["Hello"])))
+    (r,) = feed(s, undecodable(block))
+    assert r.drift == ()
+    assert s.state(MD_KEY) == Desynced(reason, 0)
+    assert s.budget.total_weight == held_weight(s) > 0
+    feed(s, frame(diff("ask_text", "markdown_block", add("/chunks/-", "!"))))
+    assert s.state(MD_KEY) == Desynced(reason, 1)
+    assert text_of(s, completed=False) == ""
+    feed(s, frame(md(["Hello", " world", "!"], 0)))
+    assert text_of(s, completed=False) == "Hello world!"
+
+
 # --- caps, checked before the work (§2.4.1) -------------------------------------------
 
 
@@ -330,7 +370,6 @@ def test_markdown_merge_work_is_charged_before_the_merge() -> None:
     assert s.budget.total_weight == held_weight(s) == 0
 
 
-MD_KEY = ("ask_text", ("markdown_block",))
 LOOSE_WEIGHT = Limits(field_weight=2**70, total_weight=2**70)
 
 

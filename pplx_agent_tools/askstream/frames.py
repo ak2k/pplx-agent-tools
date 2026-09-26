@@ -49,6 +49,7 @@ __all__ = [
     "FieldKey",
     "Frame",
     "Heartbeat",
+    "MalformedReason",
     "Reconnectable",
     "Stage",
     "Unparseable",
@@ -189,7 +190,8 @@ class BlockDiff:
 @dataclass(frozen=True, slots=True)
 class BlockMalformed:
     usage: str
-    # Empty when the field name itself could not be read.
+    # The dotted field split, cut to its first part when it has too many
+    # parts; empty when the field name itself could not be read.
     field: tuple[str, ...]
     reason: MalformedReason
 
@@ -315,7 +317,7 @@ def _diff(usage: str, raw: JsonValue, drift: list[Drift]) -> BlockUpdate:
         return _malformed(usage, (), "field_not_string", drift)
     field = tuple(field_raw.split("."))
     if len(field) > MAX_POINTER_SEGMENTS:
-        return _malformed(usage, (), "field_too_deep", drift)
+        return _malformed(usage, field[:1], "field_too_deep", drift)
     if not isinstance(patches, list):
         return _malformed(usage, field, "patches_not_list", drift)
     ops: list[PatchOp] = []

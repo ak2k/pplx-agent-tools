@@ -352,8 +352,11 @@ def test_dotted_field_prefixes_every_op_path() -> None:
             BlockMalformed("plan", (), "field_not_string"),
         ),
         (
-            {"intended_usage": "plan", "diff_block": {"field": "." * 200, "patches": []}},
-            BlockMalformed("plan", (), "field_too_deep"),
+            {
+                "intended_usage": "plan",
+                "diff_block": {"field": "plan_block" + "." * 200, "patches": []},
+            },
+            BlockMalformed("plan", ("plan_block",), "field_too_deep"),
         ),
         (
             # 127 dotted segments below the field plus a 128-segment op path.

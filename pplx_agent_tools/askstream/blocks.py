@@ -26,6 +26,7 @@ from pplx_agent_tools.askstream.frames import (
     BlockMalformed,
     BlockSnapshot,
     FieldKey,
+    MalformedReason,
 )
 from pplx_agent_tools.askstream.jsonval import (
     LIST_OVERHEAD,
@@ -98,7 +99,7 @@ class Synced:
 @final
 @dataclass(frozen=True, slots=True)
 class Desynced:
-    reason: patch.RejectReason
+    reason: patch.RejectReason | MalformedReason
     dropped_ops: int
 
 
@@ -280,6 +281,7 @@ class BlockStore:
         report_touched = False
         for u in frame.blocks:
             if isinstance(u, BlockMalformed):
+                self._malformed(u)
                 continue
             r = self._update(u, terminal or reconnect, drift)
             if isinstance(r, CapExceeded):
@@ -324,6 +326,20 @@ class BlockStore:
         if self._track_all or key in READ_FIELDS:
             return True
         return classify_field(_field_name(key)) in ("content", "report_asset")
+
+    def _malformed(self, u: BlockMalformed) -> None:
+        """A block the server sent for a field and the decoder could not read
+        desyncs that field as a rejected patch does: the server's document
+        now holds a change this one lacks. The decoder records the drift."""
+        if not u.field:
+            return
+        key = (u.usage, u.field[:1])
+        state = self._fields.get(key)
+        if not self._tracked(key) or isinstance(state, Desynced):
+            return
+        if isinstance(state, Synced):
+            self._drop(key, state.weight)
+        self._fields[key] = Desynced(u.reason, 0)
 
     def _update(
         self, u: BlockSnapshot | BlockDiff, repaint: bool, drift: list[Drift]
