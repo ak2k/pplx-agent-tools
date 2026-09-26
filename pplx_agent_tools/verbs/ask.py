@@ -169,7 +169,7 @@ def ask(
             endpoint=ENDPOINT,
             timeout=timeout,
             cutoff=state.cutoff,
-            cleanup_warnings=state.cleanup_warnings,
+            warnings=state.cleanup_warnings,
         )
 
     completion: AskCompletion

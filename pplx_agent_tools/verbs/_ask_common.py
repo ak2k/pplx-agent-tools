@@ -508,18 +508,18 @@ def no_content_error(
     endpoint: str,
     timeout: float | None,
     cutoff: NetworkError | None,
-    cleanup_warnings: Sequence[str] = (),
+    warnings: Sequence[str] = (),
 ) -> PplxError:
     """The error for an ask-family stream that produced no usable content.
 
     The texts live here so the three verbs cannot drift apart on the one
     distinction an agent acts on: a bound that tripped, or a connection that
     dropped, before the first content is worth retrying (exit 4), whereas a
-    stream the server closed empty is not (exit 1). `cleanup_warnings` end
-    the text, since an error carries no warnings list and a retry would run
-    alongside a run that may still be going.
+    stream the server closed empty is not (exit 1). `warnings` end the text,
+    since an error carries no warnings list: a run that may still be going,
+    which a retry would run alongside, or questions a retry can answer.
     """
-    notes = error_notes(cleanup_warnings)
+    notes = error_notes(warnings)
     if isinstance(cutoff, StreamFirstContentError):
         return StreamFirstContentError(
             f"{label} stream on {endpoint} sent no first content within "

@@ -334,7 +334,7 @@ def _fetch_with_prompt(
             endpoint=_PROMPT_ENDPOINT,
             timeout=timeout,
             cutoff=state.cutoff,
-            cleanup_warnings=state.cleanup_warnings,
+            warnings=state.cleanup_warnings,
         )
 
     truncated = False

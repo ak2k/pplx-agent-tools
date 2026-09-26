@@ -259,7 +259,7 @@ def research(
             endpoint=ENDPOINT,
             timeout=timeout,
             cutoff=state.cutoff,
-            cleanup_warnings=state.cleanup_warnings,
+            warnings=state.cleanup_warnings,
         )
 
     answer: str = latest["answer"]
@@ -267,12 +267,15 @@ def research(
     if not state.saw_completed and not answer and not sources:
         # A cut stream whose only snapshot is the empty INITIAL_QUERY step has
         # nothing to salvage; report it as a retryable cutoff, as `ask` does.
+        # Questions the run asked before the cut go in the error, so the retry
+        # can answer them.
         raise no_content_error(
             label="research",
             endpoint=ENDPOINT,
             timeout=timeout,
             cutoff=state.cutoff,
-            cleanup_warnings=state.cleanup_warnings,
+            warnings=_clarifying_warnings(latest["questions"], no_answer=True)
+            + state.cleanup_warnings,
         )
     content_shortfall, warnings = _shortfall_verdict(
         answer_len=len(answer), body_len=latest["body_len"], best=best, saw=saw
@@ -301,19 +304,15 @@ def research(
     )
 
 
-def _clarifying_warnings(questions: list[str] | None) -> list[str]:
+def _clarifying_warnings(questions: list[str] | None, *, no_answer: bool = False) -> list[str]:
     """The warning for clarifying questions the run asked (None: it asked
-    none); pplx cannot answer them, so the server used its defaults."""
+    none). pplx cannot answer them: a run that went on used the server's
+    defaults; with `no_answer` the run ended before any answer arrived."""
+    outcome = "no answer arrived" if no_answer else "proceeded on the server's default answers"
     if questions:
-        return [
-            "research asked clarifying questions and proceeded on the server's default "
-            "answers: " + "; ".join(questions)
-        ]
+        return [f"research asked clarifying questions and {outcome}: " + "; ".join(questions)]
     if questions is not None:
-        return [
-            "research asked clarifying questions pplx could not read and proceeded on "
-            "the server's default answers"
-        ]
+        return [f"research asked clarifying questions pplx could not read and {outcome}"]
     return []
 
 

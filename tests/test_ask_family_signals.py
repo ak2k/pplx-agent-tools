@@ -41,6 +41,7 @@ from ._doubles import _TestClientBase
 from .test_stall_guard import (
     ENVELOPE,
     HEARTBEAT,
+    INITIAL_QUERY,
     LONG_DEADLINE,
     Step,
     _chunk,
@@ -602,6 +603,52 @@ def test_malformed_clarifying_entries_are_skipped() -> None:
     ]
     out = _run_json("research", _Replay(events))
     assert out.get("clarifying_questions") == ["Which region?", "Which year?"]
+
+
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    [
+        (
+            {
+                "questions": [{"question_text": "Which region?"}, {"question_text": "Which year?"}],
+                "auto_skip_seconds": 60,
+            },
+            ["asked clarifying questions", "Which region?", "Which year?"],
+        ),
+        (None, ["asked clarifying questions pplx could not read"]),
+    ],
+    ids=["readable", "unreadable"],
+)
+def test_a_run_cut_while_asking_clarifying_questions_names_them_in_the_error(
+    clock: _Clock,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    content: Any,
+    expected: list[str],
+) -> None:
+    step = {"step_type": "RESEARCH_CLARIFYING_QUESTIONS", "content": content}
+    ids = {
+        "backend_uuid": "BU",
+        "read_write_token": "RW",
+        "context_uuid": "CTX",
+        "display_model": "pplx_alpha",
+    }
+    steps: list[Step] = [
+        (0, _frame({**ids, "text": json.dumps([INITIAL_QUERY, step])})),
+        *_heartbeats(300),
+    ]
+    rc, out, err, client = _cli_json(
+        monkeypatch, capsys, "research", steps, clock, "--timeout", "45"
+    )
+    message = out["error"]["message"]
+    assert rc == EXIT_NETWORK
+    assert out["error"]["type"] == "StreamDeadlineError"
+    for fragment in expected:
+        assert fragment in message
+        assert fragment in err
+    # pplx cut the run and stopped it, so it did not go on with default answers.
+    assert "default answers" not in message
+    assert client.terminated == [("BU", "CTX", "pplx_alpha")]
 
 
 # ---------- UI-wait flags ----------
