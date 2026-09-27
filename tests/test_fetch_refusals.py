@@ -411,6 +411,9 @@ EXPECTED_EXIT = {
     "ResourceLimitError": 1,
     "BlockedUrlError": 1,
     "TargetHttpError": 1,
+    "ThreadGoneError": 1,
+    "ThreadRecordsError": 1,
+    "SessionCheckError": 4,
 }
 
 
