@@ -339,13 +339,20 @@ class Driver:
                 if self._on_data is not None and obj is not None:
                     self._on_data(obj)
                 applied = self._store.apply_frame(frame)
-                if isinstance(applied, CapExceeded):
-                    detail = f"{applied.cap} {applied.observed} over {applied.limit}"
-                    self._step(StreamBroke(conn, now, "cap", detail))
-                    return
-                self.drift.update(applied.drift)
                 if frame.display_model is not None:
                     self.display_model = frame.display_model
+                if isinstance(applied, CapExceeded):
+                    detail = f"{applied.cap} {applied.observed} over {applied.limit}"
+                    ids = FrameSummary(
+                        stage=frame.stage,
+                        change="idle",
+                        uuid=frame.backend_uuid,
+                        token=frame.token,
+                        context=frame.context_uuid,
+                    )
+                    self._step(StreamBroke(conn, now, "cap", detail, ids))
+                    return
+                self.drift.update(applied.drift)
                 if frame.stage == "completed":
                     self.terminal_text = frame.text
                 if self._on_frame is not None:

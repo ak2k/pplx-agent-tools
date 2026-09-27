@@ -25,6 +25,7 @@ from pplx_agent_tools.errors import (
     AuthError,
     NetworkError,
     PplxError,
+    ResourceLimitError,
     SchemaError,
     StreamDeadlineError,
     StreamFirstContentError,
@@ -434,6 +435,39 @@ def test_a_rejection_mid_stream_cleans_up_and_warns_on_stderr(stopped: bool) -> 
     else:
         assert (client.terminated, client.deleted) == (STOPPED, [])
         assert err.getvalue() == f"warning: {MAY_BE_LIVE}: the request to stop it failed\n"
+
+
+@pytest.mark.parametrize("stopped", [True, False])
+def test_a_cap_on_the_first_frame_that_names_the_thread_goes_through_the_cleanup_rules(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, stopped: bool
+) -> None:
+    """The capped frame is the only one to name the thread: its ids still
+    reach cleanup, and a run pplx could not stop keeps its record."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    ops = [replace("/chunks/0", "x") for _ in range(Limits().ops_per_frame + 1)]
+    data = {
+        **P3_INITIAL[0]["data"],
+        "read_write_token": FIXTURE_TOKEN,
+        "blocks": [diff("ask_text", "markdown_block", *ops)],
+    }
+    client = FakeClient(FakeClock(), initials=[[(1.0, message(data))]])
+    client.terminate_ok = stopped
+    store = ThreadStore()
+    with pytest.raises(ResourceLimitError):
+        research_stream(
+            client,
+            client.open_initial,
+            DECODER,
+            endpoint=ENDPOINT,
+            handle=ThreadHandle(store, prompt="q"),
+            clock=client.clock,
+            sleep=client.clock.sleep,
+            rand=lambda: 0.5,
+            err=io.StringIO(),
+        )
+    assert (client.terminated, client.deleted) == (STOPPED, DELETED if stopped else [])
+    record = store.load(FIXTURE_UUID)
+    assert (record.status if record is not None else None) == (None if stopped else "kept")
 
 
 def _auth_refused_before_first_content(trigger: str) -> FakeClient:

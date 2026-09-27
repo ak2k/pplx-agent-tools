@@ -361,6 +361,9 @@ class StreamBroke:
     now: float
     kind: BrokeKind
     msg: str
+    # A cap's frame, read for its ids only: it may be the first to name the
+    # thread, and cleanup needs them to stop the run.
+    capped: FrameSummary | None = None
 
 
 @final
@@ -913,7 +916,8 @@ def _broke(policy: Policy, live: Live, e: StreamBroke, u: float) -> LiveStep:
         case "oversize":
             return Done(Rejected(SchemaError(e.msg)), live.ids), (Close(e.conn),)
         case "cap":
-            return Done(Rejected(ResourceLimitError(e.msg)), live.ids), (Close(e.conn),)
+            ids = live.ids if e.capped is None else merge_ids(live.ids, e.capped)
+            return Done(Rejected(ResourceLimitError(e.msg)), ids), (Close(e.conn),)
         case _:
             assert_never(e.kind)
 
