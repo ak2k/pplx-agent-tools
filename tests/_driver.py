@@ -13,13 +13,8 @@ from typing import Any
 
 from pplx_agent_tools.askstream.driver import ConnBounds
 from pplx_agent_tools.errors import PplxError
-from pplx_agent_tools.verbs._research_stream import Decoder, ResearchRun, research_stream
-from pplx_agent_tools.verbs.research import (
-    ENDPOINT,
-    _clarifying_warnings,
-    _decode_parts,
-    _join_answer,
-)
+from pplx_agent_tools.verbs._research_stream import ResearchRun, raise_if_empty, research_stream
+from pplx_agent_tools.verbs.research import DECODER, ENDPOINT
 
 DIFF = Path(__file__).parent / "fixtures" / "ask-diff"
 LEGACY = Path(__file__).parent / "fixtures" / "research"
@@ -116,9 +111,6 @@ class FakeClient:
         return True
 
 
-DECODER = Decoder(_decode_parts, _join_answer, lambda q: _clarifying_warnings(q, no_answer=True))
-
-
 def run_research(
     client: FakeClient,
     *,
@@ -130,8 +122,9 @@ def run_research(
     on_data: Callable[[dict[str, object]], None] | None = None,
     observe: Callable[[ResearchRun], None] | None = None,
 ) -> ResearchRun:
-    """`research_stream` over the fake client, on its clock, with no jitter."""
-    return research_stream(
+    """`research_stream` over the fake client, on its clock, with no jitter,
+    raising for a run with nothing usable as research does."""
+    run = research_stream(
         client,
         client.open_initial,
         DECODER,
@@ -146,3 +139,13 @@ def run_research(
         rand=lambda: 0.5,
         err=io.StringIO() if err is None else err,
     )
+    if not run.state.failed:
+        raise_if_empty(
+            run,
+            DECODER,
+            label="research",
+            endpoint=ENDPOINT,
+            timeout=timeout,
+            notes=run.state.cleanup_warnings,
+        )
+    return run
