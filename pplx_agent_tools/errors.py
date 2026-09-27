@@ -109,6 +109,15 @@ class AntiBotError(PplxError):
     exit_code = EXIT_ANTI_BOT
 
 
+class ThreadGoneError(PplxError):
+    """The thread no longer exists for this account: deleted, expired, or not this account's.
+
+    A retry cannot bring it back. Exit 1.
+    """
+
+    exit_code = EXIT_GENERIC
+
+
 class SchemaError(PplxError):
     """Required field missing or unparseable response.
 

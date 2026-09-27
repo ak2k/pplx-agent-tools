@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import codecs
 import contextlib
+import hashlib
 import json
 import sys
 import time
@@ -33,6 +34,7 @@ from .errors import (
     StreamFirstContentError,
     StreamSilenceError,
     StreamStallError,
+    ThreadGoneError,
 )
 from .jsonval import JsonValue, from_parser
 
@@ -48,6 +50,8 @@ DEFAULT_SSE_READ_TIMEOUT = 60.0
 # a bound of their own rather than the client's 30 s default. Terminate
 # answered in 0.17 s when probed live.
 CLEANUP_TIMEOUT_SECONDS = 5.0
+# A thread's stream, reattached; the thread's backend uuid follows.
+_RECONNECT_PATH = "/rest/sse/perplexity_ask/reconnect/"
 # Hard cap on un-dispatched SSE buffer (a single event with no `\n\n` terminator).
 # Defends against a server that trickles bytes forever without a terminator.
 _MAX_SSE_BUFFER_BYTES = 16 * 1024 * 1024
@@ -299,9 +303,70 @@ class Client:
         Raises the same typed errors as the GET path (auth/rate-limit/etc.) on
         connection or status-code failure.
         """
+        yield from self._sse(
+            path,
+            body,
+            where=path,
+            check_status=self._check_status,
+            max_total_seconds=max_total_seconds,
+            stall_seconds=stall_seconds,
+            is_progress=is_progress,
+            stall_window=stall_window,
+            silence_seconds=silence_seconds,
+            first_content_seconds=first_content_seconds,
+        )
+
+    def sse_reconnect(
+        self,
+        backend_uuid: str,
+        *,
+        max_total_seconds: float | None = None,
+        stall_seconds: float | None = None,
+        is_progress: Callable[[dict[str, Any]], bool] | None = None,
+        stall_window: Callable[[], float | None] | None = None,
+        silence_seconds: float | None = None,
+        first_content_seconds: float | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        """Reattach to the stream of the thread `backend_uuid`, asking for a
+        snapshot of its current state first. Creates no thread.
+
+        Bounds, errors and the yielded event shape are `sse_post`'s, except
+        how a 403 reads (`_check_reconnect_status`). Messages name the thread
+        by `thread_ref` rather than its id.
+        """
+        yield from self._sse(
+            _RECONNECT_PATH + backend_uuid,
+            {"reconnectInitialSnapshot": True},
+            where=_RECONNECT_PATH + thread_ref(backend_uuid),
+            check_status=self._check_reconnect_status,
+            max_total_seconds=max_total_seconds,
+            stall_seconds=stall_seconds,
+            is_progress=is_progress,
+            stall_window=stall_window,
+            silence_seconds=silence_seconds,
+            first_content_seconds=first_content_seconds,
+        )
+
+    def _sse(
+        self,
+        path: str,
+        body: dict[str, Any],
+        *,
+        where: str,
+        check_status: Callable[[Any, str], None],
+        max_total_seconds: float | None,
+        stall_seconds: float | None,
+        is_progress: Callable[[dict[str, Any]], bool] | None,
+        stall_window: Callable[[], float | None] | None,
+        silence_seconds: float | None,
+        first_content_seconds: float | None,
+    ) -> Iterator[dict[str, Any]]:
+        """The SSE read behind `sse_post` and `sse_reconnect`. `where` names
+        the request in every message; `check_status` judges the response
+        before its body is read."""
         url = self._base_url + path
         connect_timeout, read_timeout, silence_error = _silence_bounds(
-            path, self._timeout, max_total_seconds, silence_seconds
+            where, self._timeout, max_total_seconds, silence_seconds
         )
         try:
             resp = self._session.post(
@@ -313,21 +378,20 @@ class Client:
                 timeout=(connect_timeout, read_timeout),
             )
         except Exception as e:
-            raise NetworkError(f"POST {path} failed: {e!s}") from e
-        # Headers / status validated before we start consuming the body.
-        self._check_status(resp, path)
-
-        bounds = _StreamBounds(
-            path,
-            max_total_seconds=max_total_seconds,
-            stall_seconds=stall_seconds,
-            stall_window=stall_window,
-            first_content_seconds=first_content_seconds,
-            silence_after=connect_timeout + read_timeout,
-            silence_error=silence_error,
-        )
-        framer = _SSEFramer()
+            raise NetworkError(f"POST {where} failed: {e!s}") from e
         try:
+            # Headers / status validated before we start consuming the body.
+            check_status(resp, where)
+            bounds = _StreamBounds(
+                where,
+                max_total_seconds=max_total_seconds,
+                stall_seconds=stall_seconds,
+                stall_window=stall_window,
+                first_content_seconds=first_content_seconds,
+                silence_after=connect_timeout + read_timeout,
+                silence_error=silence_error,
+            )
+            framer = _SSEFramer()
             try:
                 for chunk in resp.iter_content(chunk_size=4096):
                     bounds.check_deadline()
@@ -341,7 +405,7 @@ class Client:
                     # buffer. A single SSE event over 16 MiB is pathological.
                     if not raw_events and framer.pending_chars > _MAX_SSE_BUFFER_BYTES:
                         raise SchemaError(
-                            f"SSE stream on {path} exceeded {_MAX_SSE_BUFFER_BYTES} bytes "
+                            f"SSE stream on {where} exceeded {_MAX_SSE_BUFFER_BYTES} bytes "
                             "without an event terminator"
                         )
                     for raw_event in raw_events:
@@ -372,7 +436,7 @@ class Client:
                 # that never connected, so it gets the same typed error and exit code;
                 # whether the events already yielded are worth keeping is the
                 # caller's call.
-                raise NetworkError(f"SSE stream on {path} failed mid-stream: {e!s}") from e
+                raise NetworkError(f"SSE stream on {where} failed mid-stream: {e!s}") from e
         finally:
             with contextlib.suppress(Exception):
                 resp.close()
@@ -401,6 +465,27 @@ class Client:
         if status >= 500:
             raise NetworkError(f"server error {status} on {path}")
         raise SchemaError(f"unexpected status {status} on {path}")
+
+    def _check_reconnect_status(self, resp: Any, where: str) -> None:
+        """`_check_status`, but a 403 reads by its media type: `text/html` is
+        the Cloudflare edge block whether or not the page carries the markers
+        `_looks_like_cloudflare` looks for, and `application/json` is a thread
+        that is gone, unless the session itself is dead."""
+        if resp.status_code == 403:
+            media = _media_type(resp)
+            if media == "text/html":
+                raise AntiBotError(f"Cloudflare block on {where} (status 403)")
+            if media == "application/json":
+                with contextlib.suppress(Exception):
+                    resp.close()
+                # An expired session may be refused the same way; the session
+                # endpoint is what tells the two apart, raising AuthError.
+                self.auth_session()
+                raise ThreadGoneError(
+                    f"thread gone on {where} (status 403): deleted, expired "
+                    "(about 24 h after it started), or not this account's"
+                )
+        self._check_status(resp, where)
 
     @staticmethod
     def _looks_like_cloudflare(resp: Any) -> bool:
@@ -571,6 +656,17 @@ class _SSEFramer:
         self._parts = [rest] if rest else []
         self.pending_chars = len(rest)
         return events
+
+
+def thread_ref(entry_uuid: str) -> str:
+    """A short stable stand-in for a thread id in messages, so warnings and
+    errors can be matched to a thread without printing the id itself."""
+    return "#" + hashlib.sha256(entry_uuid.encode()).hexdigest()[:12]
+
+
+def _media_type(resp: Any) -> str:
+    """The response's media type, lowercased and without parameters."""
+    return str(resp.headers.get("content-type", "")).split(";", 1)[0].strip().lower()
 
 
 def _body_excerpt(resp: Any) -> str:

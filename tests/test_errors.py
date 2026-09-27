@@ -18,6 +18,7 @@ from pplx_agent_tools.errors import (
     RateLimitError,
     SchemaError,
     TargetHttpError,
+    ThreadGoneError,
     exit_code,
 )
 
@@ -65,6 +66,7 @@ def test_unknown_exception_maps_to_generic() -> None:
         (SchemaError, 1),
         (BlockedUrlError, 1),
         (TargetHttpError, 1),
+        (ThreadGoneError, 1),
     ],
 )
 def test_exit_code_table(err_cls: type[PplxError], expected_code: int) -> None:
