@@ -98,8 +98,8 @@ class AskStreamState:
     cleanup_warnings: list[str] = field(default_factory=list)
     # Set by `release_on_exit` when the thread's delete succeeded.
     deleted: bool = False
-    # Set by `release_on_exit` when it left the run and its thread alone
-    # because the run goes on server-side; the one place that decides it.
+    # Set by research's cleanup when it left the run and its thread alone
+    # because the run goes on server-side, for `pplx resume` to collect.
     kept: bool = False
 
 
@@ -117,16 +117,6 @@ def run_may_be_live(state: AskStreamState, *, raised: bool, settles_after_text: 
     return not (settles_after_text and state.text_completed and not raised)
 
 
-def ended_by_drop(state: AskStreamState) -> bool:
-    """Whether a dropped connection or total silence cut the stream. Both
-    leave the run going on the server, where a deadline or a stall is pplx
-    deciding to stop."""
-    cut = state.cutoff
-    if isinstance(cut, StreamSilenceError):
-        return True
-    return cut is not None and not isinstance(cut, StreamDeadlineError)
-
-
 @contextmanager
 def release_on_exit(
     client: Client,
@@ -134,8 +124,6 @@ def release_on_exit(
     *,
     keep_thread: bool,
     settles_after_text: bool = False,
-    keep_live: bool = False,
-    keep_on_raise: bool = False,
 ) -> Iterator[None]:
     """Wrap `run_ask_stream`: on every exit, KeyboardInterrupt included,
     terminate the run if it may still be going, then delete its thread unless
@@ -147,51 +135,34 @@ def release_on_exit(
     terminate that was needed but could not be sent, or failed, is recorded in
     `state.cleanup_warnings` for the result or error to report; with an
     exception in flight there is neither, so they go to stderr.
-
-    `keep_live` leaves the thread in place, and sets `state.kept`, whenever
-    the run may go on server-side once the read ends with no exception in
-    flight: after `ended_by_drop` it sends neither request, and after a
-    terminate that could not be sent or failed it sends no delete. The run
-    then finishes without a listener, and its thread is how the caller gets
-    the result. `keep_on_raise` sends neither request, and sets `state.kept`,
-    when an exception ends the read.
     """
     raised = True
     try:
         yield
         raised = False
     finally:
-        if (raised and keep_on_raise) or (keep_live and not raised and ended_by_drop(state)):
-            state.kept = True
-        else:
-            stopped = True
-            if run_may_be_live(state, raised=raised, settles_after_text=settles_after_text):
-                stopped = _stop_run(client, state)
-            if keep_live and not raised and not stopped:
-                state.kept = True
-            elif not keep_thread and state.backend_uuid and state.read_write_token:
-                state.deleted = client.delete_thread(state.backend_uuid, state.read_write_token)
+        if run_may_be_live(state, raised=raised, settles_after_text=settles_after_text):
+            _stop_run(client, state)
+        if not keep_thread and state.backend_uuid and state.read_write_token:
+            state.deleted = client.delete_thread(state.backend_uuid, state.read_write_token)
         if raised:
             for warning in state.cleanup_warnings:
                 print(f"warning: {warning}", file=sys.stderr)
 
 
-def _stop_run(client: Client, state: AskStreamState) -> bool:
+def _stop_run(client: Client, state: AskStreamState) -> None:
     """Terminate a run that may still be going, noting in `state` when that
-    cannot be done; False then, since the run may go on. Without a backend
-    uuid no run is known to exist."""
+    cannot be done. Without a backend uuid no run is known to exist."""
     if not state.backend_uuid:
-        return True
+        return
     if not state.context_uuid or not state.display_model:
         missing = "display model" if state.context_uuid else "context uuid"
         state.cleanup_warnings.append(
             f"{_RUN_MAY_BE_LIVE}: no {missing} arrived, so pplx could not ask it to stop"
         )
-        return False
+        return
     if not client.terminate(state.backend_uuid, state.context_uuid, state.display_model):
         state.cleanup_warnings.append(f"{_RUN_MAY_BE_LIVE}: the request to stop it failed")
-        return False
-    return True
 
 
 def cutoff_warnings(state: AskStreamState) -> list[str]:
