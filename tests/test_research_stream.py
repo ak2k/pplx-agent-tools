@@ -7,6 +7,7 @@ from __future__ import annotations
 import io
 import json
 from collections import Counter
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,7 @@ import pytest
 
 from pplx_agent_tools.askstream.blocks import BlockStore, FrameApplied
 from pplx_agent_tools.askstream.drift import Drift, name_of
+from pplx_agent_tools.askstream.driver import ConnBounds
 from pplx_agent_tools.askstream.frames import AskFrame
 from pplx_agent_tools.askstream.fsm import Done, Known, NoIds, ReconnectReason, UuidOnly
 from pplx_agent_tools.askstream.outcome import Completed, Cut, EndedEarly
@@ -30,15 +32,19 @@ from pplx_agent_tools.errors import (
     StreamStallError,
 )
 from pplx_agent_tools.handles import ThreadHandle, ThreadStore
-from pplx_agent_tools.verbs._ask_common import Source, cutoff_cause, cutoff_silence
-from pplx_agent_tools.verbs._research_stream import ResearchRun, _unread, release
+from pplx_agent_tools.verbs import _research_stream
+from pplx_agent_tools.verbs._ask_common import AskStreamState, Source, cutoff_cause, cutoff_silence
+from pplx_agent_tools.verbs._research_stream import ResearchRun, _unread, release, research_stream
 from pplx_agent_tools.verbs.research import (
+    DECODER,
     ENDPOINT,
     _shortfall_verdict,
     decode_research_text,
     finish_report,
+    research,
 )
 from tests._askframes import diff, frame, replace, report, snap
+from tests._doubles import FakeTime
 from tests._driver import (
     HEARTBEAT,
     FakeClient,
@@ -410,16 +416,108 @@ def test_an_initial_rejection_raises_the_original_error() -> None:
     assert caught.value is e
 
 
-def test_a_rejection_mid_stream_cleans_up_and_warns_on_stderr() -> None:
+@pytest.mark.parametrize("stopped", [True, False])
+def test_a_rejection_mid_stream_cleans_up_and_warns_on_stderr(stopped: bool) -> None:
+    """A run pplx could not stop keeps its thread: no exception is in flight,
+    only a rejection."""
     e = SchemaError("16 MiB")
     client = FakeClient(FakeClock(), initials=[[*paced(P3_INITIAL[:5]), (6.0, e)]])
-    client.terminate_ok = False
+    client.terminate_ok = stopped
     err = io.StringIO()
     with pytest.raises(SchemaError, match=r"^16 MiB$") as caught:
         run_research(client, err=err)
     assert type(caught.value) is SchemaError
-    assert (client.terminated, client.deleted) == (STOPPED, DELETED)
-    assert err.getvalue() == f"warning: {MAY_BE_LIVE}: the request to stop it failed\n"
+    if stopped:
+        assert (client.terminated, client.deleted) == (STOPPED, DELETED)
+        assert err.getvalue() == ""
+    else:
+        assert (client.terminated, client.deleted) == (STOPPED, [])
+        assert err.getvalue() == f"warning: {MAY_BE_LIVE}: the request to stop it failed\n"
+
+
+def _auth_refused_before_first_content(trigger: str) -> FakeClient:
+    """The first frame names the thread and carries no content; then a drop,
+    or no content until the first-content bound, and the reconnect is
+    refused for expired cookies."""
+    first = paced(P3_INITIAL[:1])
+    if trigger == "drop":
+        initial = [*first, (5.0, NetworkError("reset"))]
+    else:
+        initial = [*first, *((15.0 * i, HEARTBEAT) for i in range(1, 11))]
+    return FakeClient(FakeClock(), initials=[initial], reconnects=[[(0.0, AuthError("expired"))]])
+
+
+@pytest.mark.parametrize(
+    ("trigger", "stopped", "legs", "kept"),
+    [
+        ("drop", False, ([], []), True),
+        ("first_content", False, (STOPPED, []), True),
+        # The first frame carries no read_write_token, so there is no delete.
+        ("first_content", True, (STOPPED, []), False),
+    ],
+)
+def test_a_reconnect_refused_for_auth_before_first_content_goes_through_the_keep_rules(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    trigger: str,
+    stopped: bool,
+    legs: tuple[list[Any], list[Any]],
+    kept: bool,
+) -> None:
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    client = _auth_refused_before_first_content(trigger)
+    client.terminate_ok = stopped
+    store = ThreadStore()
+    state = AskStreamState()
+    with pytest.raises(AuthError):
+        research_stream(
+            client,
+            client.open_initial,
+            DECODER,
+            endpoint=ENDPOINT,
+            timeout=3600.0,
+            stall_seconds=240.0,
+            state=state,
+            handle=ThreadHandle(store, prompt="q"),
+            clock=client.clock,
+            sleep=client.clock.sleep,
+            rand=lambda: 0.5,
+            err=io.StringIO(),
+        )
+    assert (client.terminated, client.deleted) == legs
+    assert state.kept is kept
+    record = store.load(FIXTURE_UUID)
+    assert (record.status if record is not None else None) == ("kept" if kept else None)
+
+
+class _Posting(FakeClient):
+    def sse_post(
+        self,
+        endpoint: str,
+        body: dict[str, Any],
+        *,
+        max_total_seconds: float | None = None,
+        stall_seconds: float | None = None,
+        silence_seconds: float,
+    ) -> Iterator[Item]:
+        return self.open_initial(ConnBounds(max_total_seconds, stall_seconds, silence_seconds))
+
+
+def test_research_names_the_resume_command_on_the_error_of_a_kept_rejected_run(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    monkeypatch.delenv("PPLX_PROFILE", raising=False)
+    monkeypatch.setattr(_research_stream, "time", FakeTime())
+    drop = _auth_refused_before_first_content("drop")
+    client = _Posting(drop.clock, initials=drop.initials, reconnects=drop.reconnects)
+    with pytest.raises(AuthError) as caught:
+        research(client, "q")  # pyright: ignore[reportArgumentType]
+    command = f"pplx resume --profile default {FIXTURE_UUID}"
+    assert caught.value.resume == command
+    assert f"`{command}`" in capsys.readouterr().err
+    record = ThreadStore().load(FIXTURE_UUID)
+    assert record is not None and record.status == "kept"
 
 
 def test_a_failed_run_returns_for_research_to_raise() -> None:

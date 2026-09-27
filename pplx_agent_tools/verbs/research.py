@@ -37,6 +37,7 @@ retry.
 from __future__ import annotations
 
 import json
+import sys
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -46,6 +47,7 @@ from ..errors import PplxError, SchemaError
 from ..handles import ThreadHandle, ThreadStore, resume_command
 from ..wire import Client
 from ._ask_common import (
+    AskStreamState,
     Source,
     base_ask_params,
     cutoff_cause,
@@ -221,18 +223,27 @@ def research(
             silence_seconds=b.silence_seconds,
         )
 
-    run = research_stream(
-        client,
-        post,
-        DECODER,
-        endpoint=ENDPOINT,
-        keep_thread=keep_thread,
-        timeout=timeout,
-        stall_seconds=stall_seconds,
-        progress=progress,
-        handle=handle,
-        observe=observe,
-    )
+    state = AskStreamState()
+    try:
+        run = research_stream(
+            client,
+            post,
+            DECODER,
+            endpoint=ENDPOINT,
+            keep_thread=keep_thread,
+            timeout=timeout,
+            stall_seconds=stall_seconds,
+            progress=progress,
+            state=state,
+            handle=handle,
+            observe=observe,
+        )
+    except PplxError as e:
+        # A rejection with nothing to salvage, of a run cleanup kept.
+        if state.kept and state.backend_uuid:
+            e.resume = resume_command(state.backend_uuid, profile)
+            print(f"warning: {kept_warning(e.resume)}", file=sys.stderr)
+        raise
     kept = run.state.backend_uuid if run.state.kept else None
     return finish_report(
         run,

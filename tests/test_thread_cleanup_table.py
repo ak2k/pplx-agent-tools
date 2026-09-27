@@ -15,9 +15,10 @@ The rule, restated here rather than taken from production code:
   warnings, the error's message, or on stderr when an exception is in flight.
 - KEEP: research sends neither leg once its backend_uuid arrived, and says
   how to resume instead, when a drop or total silence cut its stream, or when
-  it ended with no exception in flight and needed a terminate pplx could not
-  send or that failed: either way the run may go on server-side without a
-  listener, and its thread holds the report.
+  it ended with no exception in flight (a rejection such as an oversized
+  event is not one) and needed a terminate pplx could not send or that
+  failed: either way the run may go on server-side without a listener, and
+  its thread holds the report.
 
 Each cell runs a verb over the real `Client.sse_post`, `Client.terminate` and
 `Client.delete_thread` on a scripted session with a fake clock, and reads the
@@ -88,7 +89,7 @@ def _dropped(verb: str, end: str, ids: str) -> bool:
 def _kept(verb: str, end: str, text_completed: bool, ids: str) -> bool:
     unstoppable = (
         ids in ("no_context", "no_model")
-        and end not in ("oversize", "keyboard_interrupt")
+        and end != "keyboard_interrupt"
         and _live(verb, end, text_completed)
     )
     return _dropped(verb, end, ids) or (verb == "research" and unstoppable)
@@ -378,7 +379,14 @@ def _check_cell(
         told,
         err,
     )
-    assert (_RESUME in told) == _kept(verb, end, text_completed, ids), told
+    kept = _kept(verb, end, text_completed, ids)
+    # An error raised before the result is built names the command on
+    # stderr only; the error document carries `resume` either way.
+    assert (_RESUME in told + err) == kept, (told, err)
+    resume = (
+        outcome.get("resume") if isinstance(outcome, dict) else getattr(outcome, "resume", None)
+    )
+    assert (resume == _RESUME) == kept, resume
     return "terminate" in kinds, "delete" in kinds
 
 
@@ -423,6 +431,7 @@ def test_cleanup_table_over_every_end(clock: _Clock, capsys: pytest.CaptureFixtu
         ("research", "stall", False, "complete", True, (True, False)),
         ("research", "stall", False, "no_model", False, (False, False)),
         ("research", "keyboard_interrupt", False, "no_model", False, (False, True)),
+        ("research", "oversize", False, "no_model", False, (False, False)),
         ("ask", "rate_limit", False, "none", False, (False, False)),
         ("fetch", "drop", False, "no_token", False, (True, False)),
     ],

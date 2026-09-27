@@ -40,7 +40,7 @@ from ..askstream.cleanup import (
 from ..askstream.drift import Drift
 from ..askstream.driver import Driver, Opener, StreamClient, delete
 from ..askstream.frames import AskFrame
-from ..askstream.fsm import AUTH_NOTICE, ReconnectReason, State
+from ..askstream.fsm import AUTH_NOTICE, Done, ReconnectReason, State
 from ..askstream.outcome import (
     Completed,
     Cut,
@@ -215,12 +215,12 @@ def research_stream(
 
     Cleanup (`release`) keeps the thread of a run that may go on server-side
     once the read ends. `keep_on_raise` keeps it, sending nothing, when the
-    read ends in an exception, which otherwise terminates and deletes. `hold`
+    read raises, which otherwise terminates and deletes. `hold`
     sends no delete and leaves the record of a thread the read is done with,
     for a caller that deletes it only once the report is out.
 
     `state` is filled in, when given, instead of a fresh one; the thread
-    ids, `kept` and `deleted` are set even when the read raises. `handle`
+    ids, `kept`, `deleted` and `gone` are set even when the read raises. `handle`
     records the thread before the frame that first names it is applied, and
     is settled from what cleanup did.
     """
@@ -261,10 +261,10 @@ def research_stream(
         rand=rand,
         err=err,
     )
-    raised = True
+    raised, rejected = True, False
     try:
         done = driver.run()
-        raised = _unsalvageable(done.outcome) is not None
+        raised, rejected = False, _unsalvageable(done.outcome) is not None
     finally:
         thread, warnings = release(
             client,
@@ -281,7 +281,7 @@ def research_stream(
         state.cleanup_warnings += warnings
         if handle is not None:
             _settle(handle, thread, hold=hold)
-        if raised:
+        if raised or rejected:
             _warn([*warnings, *(handle.warnings if handle is not None else [])], err)
     outcome = done.outcome
     unsalvageable = _unsalvageable(outcome)
@@ -336,17 +336,21 @@ def release(
 
     Nothing is sent for a thread the server reports gone, nor for one kept
     for resume: a run lost to a drop or silence, or with `keep_on_raise` any
-    read that raised. Otherwise the plan's legs, except that a run pplx could
-    not stop (its terminate could not be sent, or failed) keeps its thread
-    unless an exception is in flight: the run goes on without a listener,
-    and its thread is then how its report is got. Returns the thread's
-    status and the warnings for a run that may still be going.
+    read that raised, a rejection with nothing to salvage included.
+    Otherwise the plan's legs, except that a run pplx could not stop (its
+    terminate could not be sent, or failed) keeps its thread unless an
+    exception is in flight: the run goes on without a listener, and its
+    thread is then how its report is got. Returns the thread's status and
+    the warnings for a run that may still be going.
     """
     if last is None:
         return "none", []
     if gone:
         return "gone", []
-    if (raised and keep_on_raise) or (not raised and kept_on_loss(last, trigger, gone)):
+    rejected = isinstance(last, Done) and _unsalvageable(last.outcome) is not None
+    if (keep_on_raise and (raised or rejected)) or (
+        not raised and kept_on_loss(last, trigger, gone)
+    ):
         return "kept", []
     terminate, delete_leg = cleanup_plan(last, keep_thread, display_model)
     warnings: list[str] = []
