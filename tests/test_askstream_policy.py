@@ -19,10 +19,15 @@ from pplx_agent_tools.askstream.policy import (
     Verb,
     deadline_of,
     for_verb,
+    reconnect_delay,
     stall_of,
 )
 from pplx_agent_tools.cli_runner import resolve_timeout
-from pplx_agent_tools.verbs._ask_common import COPILOT_STALL_SECONDS, DEFAULT_STALL_SECONDS
+from pplx_agent_tools.verbs._ask_common import (
+    COPILOT_STALL_SECONDS,
+    DEFAULT_STALL_SECONDS,
+    RESEARCH_SILENCE_SECONDS,
+)
 
 # Parser argv prefix, deadline env var, default deadline, default stall, per verb,
 # as each CLI's main() resolves them.
@@ -130,3 +135,24 @@ def test_make_caps_the_stall_window_at_the_deadline() -> None:
     )
     assert isinstance(p, Policy)
     assert p.stall == StallAfter(60.0)
+
+
+def test_for_verb_takes_the_research_silence_window() -> None:
+    """Research's silence window covers a clarifying-question wait, so the
+    lifecycle must not fall back to the 25 s default."""
+    p = for_verb("research", silence_s=RESEARCH_SILENCE_SECONDS)
+    assert isinstance(p, Policy)
+    assert p.silence_s == RESEARCH_SILENCE_SECONDS == 90.0
+    default = for_verb("research")
+    assert isinstance(default, Policy)
+    assert default.silence_s == 25.0
+
+
+@pytest.mark.parametrize("consecutive", [0, 3, 64, 1024, 10**6])
+def test_reconnect_delay_never_overflows(consecutive: int) -> None:
+    p = for_verb("ask")
+    assert isinstance(p, Policy)
+    delay = reconnect_delay(p, consecutive, None, 0.5)
+    assert 0.0 < delay <= p.backoff_cap_s
+    if consecutive >= 64:
+        assert delay == p.backoff_cap_s
