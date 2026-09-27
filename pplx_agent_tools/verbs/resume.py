@@ -23,7 +23,7 @@ from functools import partial
 from typing import Any
 
 from ..errors import PplxError, ThreadGoneError, ThreadRecordsError
-from ..handles import ThreadHandle, ThreadRecord, ThreadStore, resume_command
+from ..handles import ThreadHandle, ThreadRecord, ThreadStore, hash_prompt, resume_command
 from ..wire import RECONNECT_PATH, Client, thread_ref
 from ._ask_common import AskStreamState, error_notes
 from .research import (
@@ -39,11 +39,14 @@ from .research import (
 _MODEL_MODE = {"pplx_alpha": "research", _COUNCIL_MODEL: "agentic_research"}
 
 
-def last_resumable(store: ThreadStore) -> tuple[ThreadRecord, list[str]]:
+def last_resumable(
+    store: ThreadStore, *, query: str | None = None
+) -> tuple[ThreadRecord, list[str]]:
     """The newest resumable record in `store`, for `--last`, and the notes
-    the result should carry about how it was chosen."""
+    the result should carry about how it was chosen. `query`, the exact
+    prompt the run was started with, narrows the choice to that run."""
     try:
-        pick = store.pick_last()
+        pick = store.pick_last(prompt_hash=hash_prompt(query) if query is not None else None)
     except OSError as e:
         raise ThreadRecordsError(
             f"cannot read the research thread records under {store.directory}: "
@@ -55,15 +58,26 @@ def last_resumable(store: ThreadStore) -> tuple[ThreadRecord, list[str]]:
         else []
     )
     if pick.record is not None:
-        return pick.record, unreadable
+        # In a fan-out the newest run is as likely another agent's as this one's.
+        several = (
+            [
+                f"--last took the newest of {pick.candidates} resumable research threads "
+                f"recorded for profile {store.profile!r}; to get a specific run's report, "
+                "pass --query with its exact prompt, or its uuid"
+            ]
+            if query is None and pick.candidates > 1
+            else []
+        )
+        return pick.record, unreadable + several
     live = (
         [f"{pick.live} newer run(s) are still being read by a live pplx process"]
         if pick.live
         else []
     )
+    matching = " whose prompt matches --query exactly" if query is not None else ""
     raise PplxError(
         f"no resumable research thread recorded for profile {store.profile!r} in the "
-        f"last 25 h{error_notes(live + unreadable)}"
+        f"last 25 h{matching}{error_notes(live + unreadable)}"
     )
 
 
@@ -82,6 +96,7 @@ def resume(
     progress: bool = False,
     new_consumer: Callable[[], SnapshotReport] = SnapshotReport,
     notes: Sequence[str] = (),
+    prompt: str | None = None,
 ) -> ResearchResult:
     """Reconnect to `backend_uuid` and return its report as `research` would.
 
@@ -94,7 +109,8 @@ def resume(
     research, an exception (Ctrl-C included) keeps it too, since the thread
     is the only copy of a report already paid for, and prints this command on
     stderr. `new_consumer` builds the consumer the frames are read into.
-    `notes` lead the result's warnings.
+    `notes` lead the result's warnings. `prompt`, the run's prompt when
+    the caller knows it, stands in for a snapshot that does not echo it.
     """
     notes = list(notes)
     unread = False
@@ -159,7 +175,7 @@ def resume(
         handle,
         label="resume",
         endpoint=where,
-        query=_initial_query(report.text) or "",
+        query=_initial_query(report.text) or prompt or "",
         mode=mode,
         requested_model=None if model == _COUNCIL_MODEL else model,
         timeout=timeout,

@@ -566,8 +566,9 @@ def render_research_json(result: ResearchResult) -> dict[str, Any]:
 
 
 def render_resume_text(result: ResearchResult) -> str:
-    """A resumed report reads exactly as the research run would have."""
-    return render_research_text(result)
+    """The resumed thread's query, then the report as the research run would
+    have printed it: `--last` may pick a run other than the caller's."""
+    return f"query: {result.query or '(unknown)'}\n\n{render_research_text(result)}"
 
 
 def render_resume_json(result: ResearchResult) -> dict[str, Any]:

@@ -2,8 +2,9 @@
 whose client was killed, by reattaching to its thread.
 
 Takes the thread uuid `pplx research` printed, or `--last` for the newest
-resumable thread recorded for the profile. Creates no thread; the resumed
-thread is deleted once its report is read, as research does.
+resumable thread recorded for the profile (`--query` narrows it to the run
+with that exact prompt). Creates no thread; the resumed thread is deleted
+once its report is read, as research does.
 """
 
 from __future__ import annotations
@@ -40,6 +41,14 @@ def build_parser() -> PplxArgumentParser:
         "--last",
         action="store_true",
         help="resume the newest resumable research thread recorded for the profile",
+    )
+    parser.add_argument(
+        "--query",
+        metavar="PROMPT",
+        help=(
+            "with --last: only the run whose `pplx research` prompt was exactly PROMPT "
+            "(for parallel runs, where the newest may be another's)"
+        ),
     )
     parser.add_argument("-j", "--json", action="store_true", help="output JSON")
     parser.add_argument(
@@ -86,6 +95,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if (args.uuid is None) == (not args.last):
         parser.error("give a thread uuid or --last, not both")
+    if args.query is not None and not args.last:
+        parser.error("--query goes with --last")
     keep_thread = args.keep_thread or os.environ.get("PPLX_KEEP_THREADS") == "1"
     progress = args.progress or os.environ.get("PPLX_PROGRESS") == "1"
     timeout = resolve_timeout(
@@ -97,7 +108,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     store = ThreadStore(args.profile)
 
     def run(client: Client) -> ResearchResult:
-        uuid, notes = (args.uuid, []) if args.uuid else _last(store)
+        uuid, notes = (args.uuid, []) if args.uuid else _last(store, args.query)
         return resume(
             client,
             uuid,
@@ -107,6 +118,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             stall_seconds=stall_seconds,
             progress=progress,
             notes=notes,
+            prompt=args.query,
         )
 
     return run_verb(
@@ -120,8 +132,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
 
 
-def _last(store: ThreadStore) -> tuple[str, list[str]]:
-    record, notes = last_resumable(store)
+def _last(store: ThreadStore, query: str | None) -> tuple[str, list[str]]:
+    record, notes = last_resumable(store, query=query)
     return record.backend_uuid, notes
 
 

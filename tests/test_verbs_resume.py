@@ -29,7 +29,7 @@ from pplx_agent_tools.errors import (
     StreamStallError,
     ThreadGoneError,
 )
-from pplx_agent_tools.handles import ThreadRecord, ThreadStore
+from pplx_agent_tools.handles import ThreadHandle, ThreadRecord, ThreadStore
 from pplx_agent_tools.render import render_resume_json, render_resume_text
 from pplx_agent_tools.verbs.research import research
 from pplx_agent_tools.verbs.resume import resume
@@ -269,12 +269,15 @@ def test_a_gone_thread_loses_its_record_and_is_not_offered_again() -> None:
     assert client.deleted == [] and client.terminated == []
 
 
-def test_resume_renders_as_its_own_verb() -> None:
+def test_resume_renders_as_its_own_verb_and_names_the_query() -> None:
     result = resume(_Reconnect([_completed(WEATHER)]), UUID, store=ThreadStore())
     doc = render_resume_json(result)
     assert doc["_verb"] == "resume"
     assert doc["answer"] == result.answer and doc["resume"] is None
-    assert render_resume_text(result).startswith(result.answer[:40])
+    assert doc["query"] == result.query and result.query.startswith("Compare five weather")
+    first, blank, rest = render_resume_text(result).split("\n", 2)
+    assert first == f"query: {result.query}" and blank == ""
+    assert rest.startswith(result.answer[:40])
 
 
 # ---------- CLI ----------
@@ -434,6 +437,106 @@ def test_cli_resume_usage_errors_exit_1(
     assert ei.value.code == EXIT_GENERIC
     assert json.loads(capsys.readouterr().out)["error"]["type"] == "UsageError"
     assert client.reconnected == []
+
+
+ALPHA, BETA = "alpha: which CDNs ship HTTP/3?", "beta: which CDNs ship QUIC?"
+OTHER = "11111111-2222-4333-8444-555555555555"
+
+
+class _ByUuid(_Reconnect):
+    """Answers each thread with its own prompt and report."""
+
+    def sse_reconnect(self, backend_uuid: str, **_kw: Any) -> Iterator[dict[str, Any]]:  # type: ignore[override]
+        self.reconnected.append(backend_uuid)
+        prompt = BETA if backend_uuid == OTHER else ALPHA
+        blocks = [
+            {"step_type": "INITIAL_QUERY", "content": {"query": prompt}},
+            {"step_type": "FINAL", "content": {"answer": json.dumps({"answer": f"on {prompt}"})}},
+        ]
+        frame = {"backend_uuid": backend_uuid, "status": "COMPLETED", "text": json.dumps(blocks)}
+        yield {"event": "message", "data": frame}
+        yield {"event": "end_of_stream", "data": {}}
+
+
+def _two_killed_runs() -> None:
+    """A fan-out of two research runs, both killed: ALPHA, then BETA a
+    second later, each recorded the way research records it."""
+    for uuid, prompt in ((UUID, ALPHA), (OTHER, BETA)):
+        ThreadHandle(ThreadStore(), prompt=prompt).observe(uuid, TOKEN)
+    store = ThreadStore()
+    for uuid, secs in ((UUID, 60), (OTHER, 59)):
+        record = store.load(uuid)
+        assert record is not None
+        started = datetime.now(timezone.utc) - timedelta(seconds=secs)
+        store.save(
+            ThreadRecord(
+                uuid,
+                started,
+                "running",
+                read_write_token=TOKEN,
+                prompt_sha256=record.prompt_sha256,
+                pid=None,
+            )
+        )
+
+
+def test_cli_resume_last_query_picks_the_run_with_that_prompt(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _two_killed_runs()
+    client = _ByUuid([])
+    rc, out, err = _run(monkeypatch, capsys, ["--last", "--query", ALPHA], client)
+    assert rc == EXIT_OK and client.reconnected == [UUID]
+    assert out.splitlines()[0] == f"query: {ALPHA}"
+    assert f"on {ALPHA}" in out and BETA not in out
+    assert "--query" not in err
+
+    client = _ByUuid([])
+    rc, out, _ = _run(monkeypatch, capsys, ["--last", "--query", BETA, "-j"], client)
+    doc = json.loads(out)
+    assert rc == EXIT_OK and client.reconnected == [OTHER] and doc["query"] == BETA
+
+
+def test_cli_resume_last_among_several_warns_and_names_the_query(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _two_killed_runs()
+    client = _ByUuid([])
+    rc, out, _ = _run(monkeypatch, capsys, ["--last", "-j"], client)
+    doc = json.loads(out)
+    assert rc == EXIT_OK and client.reconnected == [OTHER] and doc["query"] == BETA
+    [note] = [w for w in doc["warnings"] if "--query" in w]
+    assert "2 resumable" in note and "uuid" in note
+
+
+def test_cli_resume_last_query_with_no_match_is_a_clear_error(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _two_killed_runs()
+    client = _ByUuid([])
+    rc, out, _ = _run(monkeypatch, capsys, ["--last", "--query", "gamma", "-j"], client)
+    assert rc == EXIT_GENERIC and client.reconnected == []
+    message = json.loads(out)["error"]["message"]
+    assert "no resumable research thread" in message and "--query" in message
+
+
+def test_the_query_hash_is_the_one_research_records() -> None:
+    from pplx_agent_tools.handles import hash_prompt
+
+    prompt = "  Compare HTTP/3 adoption\nacross CDNs, 2026 — ünïcode  "
+    ThreadHandle(ThreadStore(), prompt=prompt).observe(UUID, None)
+    record = ThreadStore().load(UUID)
+    assert record is not None and record.prompt_sha256 == hash_prompt(prompt)
+    pick = ThreadStore().pick_last(prompt_hash=hash_prompt(prompt))
+    assert pick.record is not None and pick.record.backend_uuid == UUID
+
+
+def test_cli_resume_query_without_last_is_a_usage_error(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with pytest.raises(SystemExit) as ei:
+        _run(monkeypatch, capsys, [UUID, "--query", ALPHA, "--json"], _Reconnect([]))
+    assert ei.value.code == EXIT_GENERIC
 
 
 def test_resume_is_listed_in_top_level_help(capsys: pytest.CaptureFixture[str]) -> None:

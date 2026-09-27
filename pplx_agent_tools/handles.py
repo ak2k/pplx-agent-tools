@@ -69,6 +69,11 @@ class ThreadRecord:
         )
 
 
+def hash_prompt(prompt: str) -> str:
+    """The digest a record keeps of its research prompt; `--query` matches it."""
+    return hashlib.sha256(prompt.encode()).hexdigest()
+
+
 def _opt_str(value: object) -> str | None:
     return value if isinstance(value, str) else None
 
@@ -154,11 +159,13 @@ def resume_command(backend_uuid: str, profile: str | None) -> str:
 class LastPick:
     """What `--last` found: the newest resumable record, if any; how many
     newer `running` records it passed over because a live process is still
-    reading them; and how many files were not readable records."""
+    reading them; how many files were not readable records; and how many
+    records it could have picked."""
 
     record: ThreadRecord | None
     live: int
     unreadable: int = 0
+    candidates: int = 0
 
 
 class ThreadStore:
@@ -229,11 +236,16 @@ class ThreadStore:
                 found.append(record)
         return sorted(found, key=lambda r: r.started, reverse=True), unreadable
 
-    def pick_last(self, *, now: datetime | None = None) -> LastPick:
-        """Raises OSError when the directory cannot be listed."""
-        live = 0
+    def pick_last(self, *, now: datetime | None = None, prompt_hash: str | None = None) -> LastPick:
+        """The newest resumable record, only among those whose prompt hashes
+        to `prompt_hash` when given. Raises OSError when the directory cannot
+        be listed."""
+        live = candidates = 0
+        chosen: ThreadRecord | None = None
         records, unreadable = self._scan(now or _now())
         for record in records:
+            if prompt_hash is not None and record.prompt_sha256 != prompt_hash:
+                continue
             pid = record.pid
             if (
                 record.status == "running"
@@ -241,10 +253,13 @@ class ThreadStore:
                 and pid != os.getpid()
                 and _alive(pid)
             ):
-                live += 1
+                if chosen is None:
+                    live += 1
                 continue
-            return LastPick(record, live, unreadable)
-        return LastPick(None, live, unreadable)
+            candidates += 1
+            if chosen is None:
+                chosen = record
+        return LastPick(chosen, live, unreadable, candidates)
 
     def prune(self, now: datetime) -> None:
         """Remove records, and temp files a killed writer left, older than
@@ -289,9 +304,7 @@ class ThreadHandle:
         record: ThreadRecord | None = None,
     ) -> None:
         self._store = store
-        self._prompt_sha256 = (
-            hashlib.sha256(prompt.encode()).hexdigest() if prompt is not None else None
-        )
+        self._prompt_sha256 = hash_prompt(prompt) if prompt is not None else None
         self._mode = mode
         self._model = model
         # A record this run resumes; it is claimed at the first frame.
