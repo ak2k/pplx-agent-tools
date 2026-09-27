@@ -11,7 +11,7 @@ from typing import Any
 import pytest
 
 from pplx_agent_tools.askstream.fsm import Done, Known, NoIds, ReconnectReason, UuidOnly
-from pplx_agent_tools.askstream.outcome import Completed, Cut, EndedEarly, Lost
+from pplx_agent_tools.askstream.outcome import Completed, Cut, EndedEarly
 from pplx_agent_tools.askstream.projections import CITATIONS_NOT_FINAL, research_answer
 from pplx_agent_tools.errors import (
     AuthError,
@@ -336,15 +336,6 @@ def _release(
 def test_release_before_the_run_started_sends_nothing() -> None:
     client, got = _release(None)
     assert got == ("none", [])
-    assert (client.terminated, client.deleted) == ([], [])
-
-
-@pytest.mark.parametrize("trigger", [None, "drop", "eof", "silence"])
-def test_release_of_a_gone_thread_sends_no_legs_and_does_not_keep_it(
-    trigger: ReconnectReason | None,
-) -> None:
-    client, got = _release(Done(Lost("stream dropped"), KNOWN), trigger, gone=True)
-    assert got == ("gone", [])
     assert (client.terminated, client.deleted) == ([], [])
 
 

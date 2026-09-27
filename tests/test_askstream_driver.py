@@ -13,8 +13,13 @@ from pplx_agent_tools.askstream.blocks import BlockStore
 from pplx_agent_tools.askstream.drift import Drift, name_of
 from pplx_agent_tools.askstream.driver import ConnBounds, Driver
 from pplx_agent_tools.askstream.frames import AskFrame
-from pplx_agent_tools.askstream.fsm import AUTH_NOTICE, Done, ReconnectBackoff
-from pplx_agent_tools.askstream.outcome import Completed, Cut, EndedEarly, Rejected
+from pplx_agent_tools.askstream.fsm import (
+    AUTH_NOTICE,
+    Done,
+    ReconnectBackoff,
+    ReconnectReason,
+)
+from pplx_agent_tools.askstream.outcome import Completed, Cut, EndedEarly, Lost, Rejected
 from pplx_agent_tools.askstream.patch import Limits
 from pplx_agent_tools.askstream.policy import (
     FIRST_CONTENT_OFF,
@@ -32,6 +37,7 @@ from pplx_agent_tools.askstream.policy import (
     for_verb,
 )
 from pplx_agent_tools.errors import (
+    AntiBotError,
     AuthError,
     NetworkError,
     PplxError,
@@ -41,6 +47,8 @@ from pplx_agent_tools.errors import (
     StreamDeadlineError,
     StreamSilenceError,
 )
+from pplx_agent_tools.verbs._ask_common import cutoff_cause, cutoff_silence
+from pplx_agent_tools.verbs._research_stream import release
 from tests._driver import (
     HEARTBEAT,
     FakeClient,
@@ -50,9 +58,16 @@ from tests._driver import (
     fixture_items,
     message,
     paced,
+    run_research,
 )
+from tests._fsm import KNOWN
 
 UUID = "00000000-0000-4000-8000-000000000001"
+CTX = "00000000-0000-4000-8000-000000000002"
+TOKEN = "TEST_RW_TOKEN"
+STOPPED = [(UUID, CTX, "pplx_alpha")]
+DELETED = [(UUID, TOKEN)]
+MAY_BE_LIVE = "the run may still be running on the server and using quota"
 AT_3600 = At(3600.0)
 STALL_240 = StallAfter(240.0)
 RC_3_8 = Bounded(3, 8)
@@ -110,6 +125,7 @@ def p3_drop_then(reconnect: Script, *, drop_at: float = 26.0) -> FakeClient:
     return FakeClient(clock, initials=[initial], reconnects=[reconnect])
 
 
+P3_INITIAL = fixture_items("p3-research-initial")
 P3_RECONNECT = fixture_items("p3-research-reconnect1")
 
 
@@ -391,3 +407,151 @@ def test_interrupt_during_a_backoff_leaves_the_live_state() -> None:
         d.run()
     assert isinstance(d.state, ReconnectBackoff)
     assert [o.kind for o in client.opens] == ["initial"]
+
+
+# --- research: reconnect and keep (oracle 2) -----------------------------------------------------
+
+
+def _refused(*errors: PplxError) -> list[Script]:
+    return [[(0.0, e)] for e in errors]
+
+
+def test_research_drop_then_reconnect_completes_and_deletes_once() -> None:
+    client = p3_drop_then(paced(P3_RECONNECT, start=30.0))
+    run = run_research(client)
+    assert isinstance(run.driver.state, Done)
+    assert run.driver.state.outcome == Completed(1)
+    assert run.driver.reconnect_opens == 1
+    assert run.state.saw_completed
+    assert cutoff_cause(run.state) is None
+    assert run.thread == "cleaned"
+    assert (client.terminated, client.deleted) == ([], DELETED)
+
+
+def test_research_reconnects_exhausted_keep_the_thread_with_a_partial() -> None:
+    client = p3_drop_then([])
+    client.reconnects = _refused(*(NetworkError(f"reset {i}") for i in (1, 2, 3)))
+    run = run_research(client)
+    assert isinstance(run.driver.state, Done)
+    assert run.driver.state.outcome == Lost("stream dropped")
+    assert run.driver.reconnect_opens == 3
+    assert run.thread == "kept"
+    assert (client.terminated, client.deleted) == ([], [])
+    # A partial: content and no COMPLETED, which the CLI exits 6 on.
+    assert run.sources
+    assert not run.state.saw_completed
+    assert cutoff_cause(run.state) == "drop"
+    assert str(run.state.cutoff) == "reset 3"
+
+
+def _not_reconnectable() -> tuple[FakeClient, float]:
+    last = message({**P3_INITIAL[-1]["data"], "reconnectable": False})
+    initial = [*paced([*P3_INITIAL[:-1], last]), (26.0, NetworkError("reset"))]
+    return FakeClient(FakeClock(), initials=[initial]), 3600.0
+
+
+def _too_close_to_the_deadline() -> tuple[FakeClient, float]:
+    # 4 s left at the drop, under the 5 s a reconnect needs to be useful.
+    return p3_drop_then([]), 30.0
+
+
+def _refused_by(*errors: PplxError) -> Callable[[], tuple[FakeClient, float]]:
+    def build() -> tuple[FakeClient, float]:
+        client = p3_drop_then([])
+        client.reconnects = _refused(*errors)
+        return client, 3600.0
+
+    return build
+
+
+def _silent_then_refused() -> tuple[FakeClient, float]:
+    initial = [*paced(P3_INITIAL), (26.0, StreamSilenceError("went silent", 90.0))]
+    refused = _refused(*(NetworkError("refused") for _ in range(3)))
+    return FakeClient(FakeClock(), initials=[initial], reconnects=refused), 3600.0
+
+
+@pytest.mark.parametrize(
+    ("build", "opens", "outcome", "cut_by", "silent_for"),
+    [
+        pytest.param(_not_reconnectable, 0, Lost("stream dropped"), "drop", None, id="flag"),
+        pytest.param(_too_close_to_the_deadline, 0, Lost("stream dropped"), "drop", None, id="min"),
+        pytest.param(
+            _refused_by(AntiBotError("challenge")),
+            1,
+            Lost("stream dropped"),
+            "drop",
+            None,
+            id="antibot",
+        ),
+        pytest.param(
+            _refused_by(*(RateLimitError("429", retry_after=1.0) for _ in range(3))),
+            3,
+            Lost("stream dropped"),
+            "drop",
+            None,
+            id="429",
+        ),
+        pytest.param(
+            _refused_by(AuthError("expired")), 1, EndedEarly(1, "auth"), None, None, id="auth"
+        ),
+        pytest.param(_silent_then_refused, 3, Cut("stall", 240.0, 3), "stall", 90.0, id="silence"),
+    ],
+)
+def test_research_keeps_a_thread_lost_to_a_drop_or_silence(
+    build: Callable[[], tuple[FakeClient, float]],
+    opens: int,
+    outcome: object,
+    cut_by: str | None,
+    silent_for: float | None,
+) -> None:
+    client, timeout = build()
+    run = run_research(client, timeout=timeout)
+    assert isinstance(run.driver.state, Done)
+    assert run.driver.state.outcome == outcome
+    assert run.driver.trigger in ("drop", "silence")
+    assert run.driver.reconnect_opens == opens
+    assert run.thread == "kept"
+    assert (client.terminated, client.deleted) == ([], [])
+    assert run.sources
+    assert not run.state.saw_completed
+    assert cutoff_cause(run.state) == cut_by
+    assert cutoff_silence(run.state) == silent_for
+
+
+def test_research_interrupt_in_a_reconnect_backoff_terminates_and_deletes() -> None:
+    client = p3_drop_then(paced(P3_RECONNECT, start=30.0))
+    client.terminate_ok = False
+    err = io.StringIO()
+
+    def interrupted(_: float) -> None:
+        raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        run_research(client, sleep=interrupted, err=err)
+    assert (client.terminated, client.deleted) == (STOPPED, DELETED)
+    assert err.getvalue() == (
+        "pplx research: drop; reconnecting\n"
+        f"warning: {MAY_BE_LIVE}: the request to stop it failed\n"
+    )
+
+
+def test_research_trickle_to_the_deadline_does_not_keep_the_thread() -> None:
+    initial = [*paced(P3_INITIAL), (100.0, StreamDeadlineError("deadline"))]
+    client = FakeClient(FakeClock(), initials=[initial])
+    run = run_research(client, timeout=100.0, stall_seconds=None)
+    assert isinstance(run.driver.state, Done)
+    assert run.driver.state.outcome == Cut("deadline", 100.0, 0)
+    assert cutoff_cause(run.state) == "deadline"
+    assert run.thread == "cleaned"
+    assert (client.terminated, client.deleted) == (STOPPED, DELETED)
+
+
+@pytest.mark.parametrize("trigger", [None, "drop", "eof", "silence"])
+def test_release_of_a_gone_thread_sends_no_legs_and_does_not_keep_it(
+    trigger: ReconnectReason | None,
+) -> None:
+    client = FakeClient(FakeClock())
+    last = Done(Lost("stream dropped"), KNOWN)
+    got = release(client, last, trigger, gone=True, display_model="pplx_alpha", keep_thread=False)
+    assert got == ("gone", [])
+    assert (client.terminated, client.deleted) == ([], [])
