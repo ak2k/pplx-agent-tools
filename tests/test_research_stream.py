@@ -45,7 +45,7 @@ from pplx_agent_tools.verbs.research import (
     kept_warning,
     research,
 )
-from tests._askframes import diff, frame, replace, report, snap
+from tests._askframes import add, diff, frame, md, remove, replace, report, snap
 from tests._doubles import FakeTime
 from tests._driver import (
     HEARTBEAT,
@@ -278,6 +278,80 @@ def test_a_partial_whose_report_patch_was_rejected_is_flagged_short(
         "a patch to the report could not be applied (missing_target), so it stopped "
         "updating and the answer may be missing content"
     ]
+
+
+def _cut_short(*, body: bool, by: str) -> ResearchRun:
+    """The cover note streams, then the answer gets shorter: a reconnect
+    snapshot restates a cover note or report that does not continue the
+    held one, or a patch removes a chunk. Then the stream drops and no
+    reconnect recovers it."""
+    ids = {
+        "backend_uuid": FIXTURE_UUID,
+        "context_uuid": FIXTURE_CTX,
+        "read_write_token": FIXTURE_TOKEN,
+        "display_model": MODEL,
+        "reconnectable": True,
+    }
+
+    def msg(*blocks: dict[str, Any]) -> Item:
+        return message({**ids, "status": "PENDING", "blocks": list(blocks)})
+
+    def body_of(text: str) -> list[dict[str, Any]]:
+        return [snap("unified_assets", "unified_assets_block", report(text))] if body else []
+
+    chunks = ["Held text ", "the snapshot lost."]
+    streamed = [
+        msg(md(chunks[:1], 0), *body_of("Body")),
+        msg(diff("ask_text", "markdown_block", add("/chunks/1", chunks[1]))),
+    ]
+    if by == "patch":
+        streamed.append(msg(diff("ask_text", "markdown_block", remove("/chunks/1"))))
+    initial = [*paced(streamed), (5.0, NetworkError("reset"))]
+    reconnects = _refused(4, NetworkError("x"))
+    snapshot = {
+        "cover": msg(md(["Other"], 0), *body_of("Body")),
+        "report": msg(md(chunks, 0), *body_of("Other")),
+    }
+    if by in snapshot:
+        reconnects[0] = [(7.0, snapshot[by]), (8.0, NetworkError("reset"))]
+    client = FakeClient(FakeClock(), initials=[initial], reconnects=reconnects)
+    return run_research(client)
+
+
+_REWOUND = "a reconnect restated the {} without text already received, so the answer may be missing content"
+_SHRANK = "the cover note streamed 28 chars but reads 10, so the answer may be missing content"
+
+
+@pytest.mark.parametrize(
+    ("body", "by", "warning"),
+    [
+        (True, "cover", _REWOUND.format("cover note")),
+        (False, "cover", _REWOUND.format("cover note")),
+        (True, "report", _REWOUND.format("report")),
+        (True, "patch", _SHRANK),
+        (False, "patch", _SHRANK),
+    ],
+    ids=["cover", "cover-no-report", "report", "patch", "patch-no-report"],
+)
+def test_a_partial_whose_answer_got_shorter_is_flagged_short(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, body: bool, by: str, warning: str
+) -> None:
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    run = _cut_short(body=body, by=by)
+    assert run.consumer.text is None
+    result = finish_report(
+        run,
+        ThreadHandle(ThreadStore()),
+        label="research",
+        endpoint=ENDPOINT,
+        query="q",
+        mode="research",
+        requested_model=None,
+        timeout=3600.0,
+        resume=None,
+    )
+    assert result.content_shortfall
+    assert warning in result.warnings
 
 
 def _report_store(*frames: AskFrame) -> tuple[BlockStore, Counter[Drift]]:

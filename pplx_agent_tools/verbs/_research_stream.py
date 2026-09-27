@@ -66,6 +66,7 @@ from ..askstream.projections import (
     report_body,
     research_answer,
 )
+from ..askstream.projections import answer as project_answer
 from ..errors import (
     AuthError,
     NetworkError,
@@ -100,6 +101,8 @@ _READ_LABELS: dict[ReadKey, str] = {
     "unified_assets": "report",
     "web_results": "source list",
 }
+# The projections a reconnect can rewind, as a warning names them.
+_REWOUND_LABELS = {"answer": "cover note", "report_body": "report"}
 
 
 @dataclass(frozen=True)
@@ -116,8 +119,8 @@ class Decoder:
 class SnapshotConsumer:
     """v0.8's bookkeeping over each frame's `text`: the newest snapshot that
     decoded, and the high-water marks that show whether it lost content.
-    It also keeps the store's report body high-water, the measure for an
-    answer read from the projections."""
+    It also keeps the store's report body and cover note high-waters, the
+    measures for an answer read from the projections."""
 
     def __init__(self, decoder: Decoder, store: BlockStore) -> None:
         self._decoder = decoder
@@ -131,9 +134,11 @@ class SnapshotConsumer:
         self.saw = {"body": False, "last_frame_decoded": False}
         self.decode_error: SchemaError | None = None
         self.report_high = 0
+        self.cover_high = 0
 
     def on_frame(self, frame: AskFrame) -> None:
         self.report_high = max(self.report_high, len(report_body(self._store)))
+        self.cover_high = max(self.cover_high, _cover_len(self._store))
         text = frame.text
         if text is None:
             return
@@ -473,6 +478,10 @@ def _salvage(
             warnings=[],
         )
     projected = research_answer(store, state.saw_completed)
+    unread = _unread(store, driver.drift)
+    # A terminal frame restates every projection whole.
+    if not state.saw_completed:
+        unread += _rewound(store, consumer.cover_high)
     return ResearchRun(
         driver,
         store,
@@ -487,7 +496,7 @@ def _salvage(
         saw={"body": consumer.report_high > 0, "last_frame_decoded": consumer.decode_error is None},
         questions=None,
         warnings=list(citation_warnings(projected)),
-        unread=_unread(store, driver.drift),
+        unread=unread,
     )
 
 
@@ -509,6 +518,30 @@ def _unread(store: BlockStore, drift: Counter[Drift]) -> list[str]:
             for d in drift
             if d.kind == "projection_missing" and d.name.split("/")[0] == key
         ]
+    return out
+
+
+def _cover_len(store: BlockStore) -> int:
+    ans, _ = project_answer(store, "ask_text_only")
+    return len(ans.streamed)
+
+
+def _rewound(store: BlockStore, cover_high: int) -> list[str]:
+    """A warning for each projection a reconnect snapshot restated without
+    text the run held, and for a cover note shorter than the longest it
+    streamed however it got there: the report body beside it can be whole."""
+    out = [
+        f"a reconnect restated the {label} without text already received, so the "
+        "answer may be missing content"
+        for name, label in _REWOUND_LABELS.items()
+        if name in store.rewound
+    ]
+    n = _cover_len(store)
+    if n < cover_high and "answer" not in store.rewound:
+        out.append(
+            f"the cover note streamed {cover_high} chars but reads {n}, so the answer "
+            "may be missing content"
+        )
     return out
 
 

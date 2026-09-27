@@ -194,6 +194,7 @@ class BlockStore:
         "_probe",
         "_reconnect_pending",
         "_report_high",
+        "_rewound",
         "_seen",
         "_seen_text",
         "_sources",
@@ -225,6 +226,7 @@ class BlockStore:
         self._sources_high = 0
         self._diff_mode = False
         self._reconnect_pending = False
+        self._rewound: set[str] = set()
         self._dead: CapExceeded | None = None
         self._drift_once: set[Drift] = set()
         # Charged like a tracked field: it outlives the `web_results` document
@@ -251,6 +253,12 @@ class BlockStore:
         """The run's sources: the latest non-empty `web_results` list."""
         self._readable()
         return self._sources
+
+    @property
+    def rewound(self) -> frozenset[str]:
+        """The projections, `answer` or `report_body`, that a reconnect
+        snapshot restated without text the run already held."""
+        return frozenset(self._rewound)
 
     def seen_sizes(self) -> tuple[int, ...]:
         return (len(self._seen_text), *(len(s) for s in self._seen.values()))
@@ -528,6 +536,8 @@ class BlockStore:
         for name, verdict in verdicts:
             if verdict == "mismatch":
                 drift += self._once((Drift("projection_mismatch", name_of(name)),))
+                if kind == "reconnect":
+                    self._rewound.add(name)
         return p
 
 
