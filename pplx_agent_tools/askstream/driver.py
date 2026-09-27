@@ -23,7 +23,6 @@ import time
 from collections import Counter
 from collections.abc import Callable, Generator, Iterator
 from dataclasses import dataclass
-from functools import partial
 from typing import Any, Protocol, TextIO, TypeAlias, final
 
 from typing_extensions import assert_never
@@ -114,6 +113,20 @@ class StreamClient(Protocol):
 def delete(client: StreamClient, ref: ThreadRef) -> bool:
     """Delete the thread; the one place the raw token is read."""
     return client.delete_thread(ref.uuid, ref.token.reveal())
+
+
+def reconnecting(client: StreamClient, backend_uuid: str) -> Opener:
+    """The opener that reattaches to the thread `backend_uuid`."""
+
+    def reopen(b: ConnBounds) -> Iterator[Item]:
+        return client.sse_reconnect(
+            backend_uuid,
+            max_total_seconds=b.max_total_seconds,
+            stall_seconds=b.stall_seconds,
+            silence_seconds=b.silence_seconds,
+        )
+
+    return reopen
 
 
 def _deadline(s: State) -> At | Unbounded:
@@ -381,7 +394,7 @@ class Driver:
                 case Open(conn=conn, target=ReconnectTarget(uuid=uuid)):
                     self._store.begin_reconnect()
                     self.reconnect_opens += 1
-                    self._begin(conn, partial(self._reconnect, uuid), now)
+                    self._begin(conn, reconnecting(self._client, uuid), now)
                 case Close(conn=conn):
                     if self._conn == conn:
                         self._close()
@@ -391,14 +404,6 @@ class Driver:
                     print(f"{prefix}{self._label}: {detail}", file=self._stderr(), flush=True)
                 case _:
                     assert_never(x)
-
-    def _reconnect(self, uuid: str, b: ConnBounds) -> Iterator[Item]:
-        return self._client.sse_reconnect(
-            uuid,
-            max_total_seconds=b.max_total_seconds,
-            stall_seconds=b.stall_seconds,
-            silence_seconds=b.silence_seconds,
-        )
 
     def _bounds(self, now: float) -> ConnBounds:
         left = self._deadline_left(now)
