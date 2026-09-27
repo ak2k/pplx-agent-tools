@@ -43,6 +43,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..askstream.driver import ConnBounds
+from ..askstream.fsm import AUTH_NOTICE
 from ..errors import PplxError, SchemaError
 from ..handles import ThreadHandle, ThreadStore, resume_command
 from ..wire import Client
@@ -57,7 +58,13 @@ from ._ask_common import (
     error_notes,
     to_source,
 )
-from ._research_stream import Decoder, ResearchRun, raise_if_empty, research_stream
+from ._research_stream import (
+    Decoder,
+    ResearchRun,
+    ended_on_auth,
+    raise_if_empty,
+    research_stream,
+)
 
 ENDPOINT = "/rest/sse/perplexity_ask"
 DEFAULT_MODE = "research"
@@ -330,6 +337,7 @@ def finish_report(
         content_shortfall=content_shortfall,
         warnings=cutoff_warnings(state)
         + lead
+        + _auth_warnings(run, resume)
         + run.warnings
         + warnings
         + state.cleanup_warnings
@@ -340,6 +348,16 @@ def finish_report(
         served_model=state.display_model,
         resume=resume,
     )
+
+
+def _auth_warnings(run: ResearchRun, resume: str | None) -> list[str]:
+    """The cause of a partial whose reconnect was refused for expired cookies,
+    which has no cut_by: its resume command is refused the same way until
+    they are refreshed."""
+    if not ended_on_auth(run.outcome):
+        return []
+    then = f", then get the report with `{resume}`" if resume else ""
+    return [f"the stream ended early because a reconnect was refused: {AUTH_NOTICE}{then}"]
 
 
 def _clarifying_warnings(questions: list[str] | None, *, no_answer: bool = False) -> list[str]:

@@ -536,7 +536,7 @@ def raise_if_empty(
         raise SchemaError(f"{undecodable}{error_notes(notes)}") from undecodable
     if run.answer or run.sources or (run.consumer.text is not None and run.state.saw_completed):
         return
-    if isinstance(outcome, (EndedEarly, SettledWithoutTerminal)) and outcome.by == "auth":
+    if ended_on_auth(outcome):
         e = run.driver.last_error
         refused = e if isinstance(e, AuthError) else AuthError(AUTH_NOTICE)
         if notes:
@@ -549,6 +549,12 @@ def raise_if_empty(
         cutoff=run.state.cutoff,
         warnings=[*decoder.unanswered(run.questions), *notes],
     )
+
+
+def ended_on_auth(outcome: Outcome) -> bool:
+    """Whether a reconnect refused for expired cookies ended the run after
+    it had streamed."""
+    return isinstance(outcome, (EndedEarly, SettledWithoutTerminal)) and outcome.by == "auth"
 
 
 def _warn(warnings: list[str], err: TextIO | None) -> None:

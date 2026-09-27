@@ -41,6 +41,7 @@ from pplx_agent_tools.verbs.research import (
     _shortfall_verdict,
     decode_research_text,
     finish_report,
+    kept_warning,
     research,
 )
 from tests._askframes import diff, frame, replace, report, snap
@@ -518,6 +519,26 @@ def test_research_names_the_resume_command_on_the_error_of_a_kept_rejected_run(
     assert f"`{command}`" in capsys.readouterr().err
     record = ThreadStore().load(FIXTURE_UUID)
     assert record is not None and record.status == "kept"
+
+
+def test_a_partial_ended_by_an_auth_refused_reconnect_names_the_expiry_beside_the_resume_command(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The resume command fails the same way until the cookies are refreshed,
+    and the partial has no cut_by to say why it ended."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    monkeypatch.delenv("PPLX_PROFILE", raising=False)
+    monkeypatch.setattr(_research_stream, "time", FakeTime())
+    initial = [*paced(P3_INITIAL), (26.0, NetworkError("reset"))]
+    client = _Posting(FakeClock(), initials=[initial], reconnects=[[(0.0, AuthError("x"))]])
+    result = research(client, "q")  # pyright: ignore[reportArgumentType]
+    command = f"pplx resume --profile default {FIXTURE_UUID}"
+    assert (result.resume, result.cut_by, result.stream_complete) == (command, None, False)
+    kept = result.warnings.index(kept_warning(command))
+    assert result.warnings[kept + 1] == (
+        "the stream ended early because a reconnect was refused: session cookies expired; "
+        f"refresh with pplx auth, then get the report with `{command}`"
+    )
 
 
 def test_a_failed_run_returns_for_research_to_raise() -> None:
