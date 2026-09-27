@@ -843,6 +843,49 @@ def test_reconnect_behind_on_report_body_is_a_mismatch() -> None:
     assert mismatches([r]) == [Drift("projection_mismatch", name_of("report_body"))]
 
 
+def _plan(step_id: str) -> dict[str, Any]:
+    return snap("plan", "plan_block", {"goals": [{"id": step_id, "description": "d"}]})
+
+
+def _held_snapshot(
+    chunks: list[str], urls: tuple[str, ...], body: str, step_id: str = "0"
+) -> AskFrame:
+    return frame(
+        md(chunks, 0),
+        web(*urls),
+        _plan(step_id),
+        snap("unified_assets", "unified_assets_block", report(body)),
+    )
+
+
+@pytest.mark.parametrize(
+    ("snapshot", "change"),
+    [
+        pytest.param(_held_snapshot(["Hi"], (A, B), "Body"), "idle", id="restating"),
+        pytest.param(
+            _held_snapshot(["Hi"], (A, B), "Body", step_id="9"), "idle", id="renumbered-step"
+        ),
+        pytest.param(_held_snapshot(["Hi", " more"], (A, B), "Body"), "progress", id="answer"),
+        pytest.param(_held_snapshot(["Hi"], (A, B, C), "Body"), "progress", id="sources"),
+        pytest.param(_held_snapshot(["Hi"], (A, B), "Body more"), "progress", id="report-body"),
+    ],
+)
+def test_a_reconnect_snapshot_is_progress_only_past_a_high_water(
+    snapshot: AskFrame, change: str
+) -> None:
+    s = store("ask_text_only")
+    report_frame = frame(
+        diff("unified_assets", "unified_assets_block", replace("", report("Body")))
+    )
+    feed(s, *ask_stream(["Hi"]), frame(_plan("0")), report_frame)
+    s.begin_reconnect()
+    (r,) = feed(s, snapshot)
+    assert r.change == change
+    s.begin_reconnect()
+    (again,) = feed(s, _held_snapshot(["Hi"], (A, B), "Body", step_id="7"))
+    assert again.change == "idle"
+
+
 def test_legacy_snapshot_stream_has_no_parity_check() -> None:
     """Without diffs every snapshot replaces the field, so there is no
     accumulated state to compare; legacy asks change sources at the end."""

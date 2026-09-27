@@ -184,6 +184,7 @@ def _hash(v: JsonValue) -> int:
 
 class BlockStore:
     __slots__ = (
+        "_answer_high",
         "_answer_paths",
         "_dead",
         "_diff_mode",
@@ -196,6 +197,7 @@ class BlockStore:
         "_seen",
         "_seen_text",
         "_sources",
+        "_sources_high",
         "_sources_weight",
         "_track_all",
         "budget",
@@ -219,6 +221,8 @@ class BlockStore:
         self._seen: dict[FieldKey, _Seen] = {}
         self._seen_text = _Seen()
         self._report_high = 0
+        self._answer_high = 0
+        self._sources_high = 0
         self._diff_mode = False
         self._reconnect_pending = False
         self._dead: CapExceeded | None = None
@@ -300,15 +304,20 @@ class BlockStore:
             cls = classify_field(_field_name(u.key))
             report_touched = report_touched or cls == "report_asset"
             progress = progress or (r and cls == "content")
+        report_grew = False
         if report_touched:
             n = len(report_body(self))
             if n > self._report_high:
                 self._report_high = n
-                progress = True
+                report_grew = True
+        progress = progress or report_grew
 
         parity = None
         if before is not None and kind is not None:
-            parity = self._parity(kind, before, self._project(), drift)
+            after = self._project()
+            parity = self._parity(kind, before, after, drift)
+            if kind == "reconnect":
+                progress = self._past_high_water(before, after) or report_grew
         if terminal:
             _, ambiguous = answer(self, self._answer_paths)
             drift += self._once(ambiguous + projection_missing(self))
@@ -479,6 +488,17 @@ class BlockStore:
     def _drop(self, key: FieldKey, weight: int) -> None:
         self._fields.pop(key, None)
         self.budget.total_weight -= weight
+
+    def _past_high_water(self, before: _Projected, after: _Projected) -> bool:
+        """Whether a reconnect snapshot took the answer or the source list
+        past the longest the run has held. The snapshot restates what the run
+        already sent, in values that need not match it (step ids renumber),
+        so a changed field alone is not progress."""
+        answer_high = max(self._answer_high, len(before.answer.streamed))
+        sources_high = max(self._sources_high, len(before.urls))
+        self._answer_high = max(answer_high, len(after.answer.streamed))
+        self._sources_high = max(sources_high, len(after.urls))
+        return self._answer_high > answer_high or self._sources_high > sources_high
 
     def _project(self) -> _Projected:
         ans, _ = answer(self, self._answer_paths)

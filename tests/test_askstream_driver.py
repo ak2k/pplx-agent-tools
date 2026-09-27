@@ -4,12 +4,14 @@ ordering (oracle 3) and interrupts."""
 
 from __future__ import annotations
 
+import copy
 import io
 from collections.abc import Callable, Iterator
+from typing import Any
 
 import pytest
 
-from pplx_agent_tools.askstream.blocks import BlockStore
+from pplx_agent_tools.askstream.blocks import BlockStore, FrameApplied, Synced
 from pplx_agent_tools.askstream.drift import Drift, name_of
 from pplx_agent_tools.askstream.driver import ConnBounds, Driver
 from pplx_agent_tools.askstream.frames import AskFrame
@@ -36,6 +38,7 @@ from pplx_agent_tools.askstream.policy import (
     StallOff,
     for_verb,
 )
+from pplx_agent_tools.askstream.sse import decode_parsed
 from pplx_agent_tools.errors import (
     AntiBotError,
     AuthError,
@@ -372,6 +375,70 @@ def test_starved_by_progress_the_deadline_cut_lands_on_the_first_item_past_it() 
     assert 10.0 <= clock.now < 10.0 + 0.001 + 1e-9
     assert d.since_progress is not None
     assert 0.0 < d.since_progress <= 0.001 + 1e-9
+
+
+def _then_heartbeats(clock: FakeClock, items: list[Item]) -> Iterator[tuple[float, Item]]:
+    """`items` a second apart from when the conn is first read, then a
+    heartbeat every 15 s for as long as it is read: a run that has stopped."""
+    t = clock.now
+    for item in items:
+        t += 1.0
+        yield t, item
+    while True:
+        t += 15.0
+        yield t, HEARTBEAT
+
+
+def _p3_held() -> tuple[float, dict[str, Any]]:
+    """When the last P3_INITIAL frame the store counts as progress arrives,
+    and the data of a reconnect snapshot restating all the store then holds."""
+    store = BlockStore("ask_text_only", research_policy().limits, expect_text=True)
+    last = 0.0
+    for i, item in enumerate(P3_INITIAL):
+        frame, _ = decode_parsed(item["event"], item["data"])
+        assert isinstance(frame, AskFrame)
+        applied = store.apply_frame(frame)
+        if isinstance(applied, FrameApplied) and applied.change == "progress":
+            last = 1.0 + i
+    blocks = [
+        {"intended_usage": usage, path[0]: copy.deepcopy(st.doc)}
+        for (usage, path), st in store.fields.items()
+        if isinstance(st, Synced)
+    ]
+    return last, {**copy.deepcopy(P3_INITIAL[-1]["data"]), "blocks": blocks}
+
+
+def _renumbered(data: dict[str, Any], n: int) -> dict[str, Any]:
+    """The same snapshot with its workflow step ids renumbered, as the
+    server does between snapshots."""
+    data = copy.deepcopy(data)
+    for block in data["blocks"]:
+        for step in block.get("workflow_block", {}).get("steps", []):
+            step["id"] = f"00000000-0000-4000-9000-{n:012d}"
+    return data
+
+
+# Stall, then 3 reconnects in a row without new content, each its 30 s grace
+# plus a backoff of at most 8 s, and one 15 s heartbeat for the cut to land on.
+STUCK_BOUND = 240.0 + 3 * (30.0 + 8.0) + 15.0
+
+
+@pytest.mark.parametrize("renumber", [False, True], ids=["restating", "renumbered-step-ids"])
+def test_a_stuck_run_is_cut_within_stall_and_three_reconnects_of_its_last_progress(
+    renumber: bool,
+) -> None:
+    clock = FakeClock()
+    last, held = _p3_held()
+    snapshots = [_renumbered(held, n) if renumber else held for n in range(1, 12)]
+    client = FakeClient(
+        clock,
+        initials=[_then_heartbeats(clock, P3_INITIAL)],
+        reconnects=[_then_heartbeats(clock, [message(s)]) for s in snapshots],
+    )
+    run = run_research(client)
+    assert isinstance(run.outcome, Cut) and run.outcome.cause == "stall"
+    assert clock.now - last <= STUCK_BOUND
+    assert run.outcome.reconnects == 3
 
 
 # --- bookkeeping ---------------------------------------------------------------------------------
