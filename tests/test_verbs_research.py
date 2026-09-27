@@ -19,6 +19,7 @@ from pplx_agent_tools.errors import (
     exit_code,
 )
 from pplx_agent_tools.render import render_research_json, render_research_text
+from pplx_agent_tools.verbs import _research_stream
 from pplx_agent_tools.verbs.research import (
     ResearchResult,
     ResearchSource,
@@ -28,7 +29,13 @@ from pplx_agent_tools.verbs.research import (
     research,
 )
 
-from ._doubles import _TestClientBase
+from ._doubles import BU, CTX, FakeTime, _TestClientBase
+
+
+@pytest.fixture(autouse=True)
+def _fake_time(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(_research_stream, "time", FakeTime())
+
 
 # JSON-like recursive values, mirroring tests/test_fuzz_robustness.py — bounded
 # leaves keep individual inputs small (breadth of shape, not size).
@@ -71,9 +78,9 @@ def _snapshot(answer: str = "QUIC is a protocol. [1]") -> str:
 # Ids a cut run can be terminated with, so cleanup goes on to delete it; a run
 # pplx cannot stop keeps its thread for `pplx resume`.
 _STOPPABLE = {
-    "backend_uuid": "BU",
+    "backend_uuid": BU,
     "read_write_token": "RW",
-    "context_uuid": "CTX",
+    "context_uuid": CTX,
     "display_model": "pplx_alpha",
 }
 
@@ -254,7 +261,7 @@ def test_render_json_envelope() -> None:
 
 def _complete_events() -> list[dict[str, Any]]:
     return [
-        {"data": {"backend_uuid": "BU", "read_write_token": "RW", "text": _snapshot()}},
+        {"data": {"backend_uuid": BU, "read_write_token": "RW", "text": _snapshot()}},
         {"data": {"text": _snapshot(), "status": "COMPLETED"}},
     ]
 
@@ -266,7 +273,7 @@ def test_research_completes_parses_and_cleans_up() -> None:
     assert result.answer == "QUIC is a protocol. [1]"  # unwrapped markdown
     assert [s.url for s in result.sources] == ["https://cited"]  # FINAL cited set
     assert result.mode == "research"
-    assert client.deleted == [("BU", "RW")]  # incognito thread cleaned up by default
+    assert client.deleted == [(BU, "RW")]  # incognito thread cleaned up by default
 
 
 def test_research_keep_thread_skips_cleanup() -> None:
@@ -281,7 +288,7 @@ def test_research_partial_on_deadline_returns_incomplete() -> None:
     result = research(client, "q", timeout=30)
     assert result.stream_complete is False  # never saw COMPLETED
     assert result.answer == "QUIC is a protocol. [1]"  # partial answer still returned
-    assert client.deleted == [("BU", "RW")]
+    assert client.deleted == [(BU, "RW")]
 
 
 def test_research_deadline_before_any_content_raises() -> None:
@@ -296,7 +303,7 @@ def test_research_midstream_network_error_keeps_thread_and_returns_the_partial()
     What accumulated is returned as a drop cut rather than thrown away, and the
     thread is kept: the run finishes server-side for `pplx resume`."""
     client = _FakeClient(
-        [{"data": {"backend_uuid": "BU", "read_write_token": "RW", "text": _snapshot()}}],
+        [{"data": {"backend_uuid": BU, "read_write_token": "RW", "text": _snapshot()}}],
         raise_network=True,
     )
 
@@ -306,12 +313,12 @@ def test_research_midstream_network_error_keeps_thread_and_returns_the_partial()
     assert result.stream_complete is False
     assert result.cut_by == "drop"
     assert client.deleted == []
-    assert result.resume == "pplx resume --profile default BU"
+    assert result.resume == f"pplx resume --profile default {BU}"
 
 
 def test_research_network_error_before_any_content_raises() -> None:
     client = _FakeClient(
-        [{"data": {"backend_uuid": "BU", "read_write_token": "RW"}}], raise_network=True
+        [{"data": {"backend_uuid": BU, "read_write_token": "RW"}}], raise_network=True
     )
 
     with pytest.raises(NetworkError) as excinfo:
@@ -320,8 +327,8 @@ def test_research_network_error_before_any_content_raises() -> None:
     assert not isinstance(excinfo.value, StreamDeadlineError)
     assert exit_code(excinfo.value) == EXIT_NETWORK
     assert client.deleted == []
-    assert excinfo.value.resume == "pplx resume --profile default BU"
-    assert "pplx resume --profile default BU" in str(excinfo.value)
+    assert excinfo.value.resume == f"pplx resume --profile default {BU}"
+    assert f"pplx resume --profile default {BU}" in str(excinfo.value)
 
 
 def test_research_deadline_and_closed_empty_texts_are_distinguishable() -> None:
@@ -359,7 +366,7 @@ def test_research_failed_status_raises_clear_error() -> None:
         [
             {
                 "data": {
-                    "backend_uuid": "BU",
+                    "backend_uuid": BU,
                     "read_write_token": "RW",
                     "text": "{}",
                     "status": "FAILED",
@@ -371,7 +378,7 @@ def test_research_failed_status_raises_clear_error() -> None:
     )
     with pytest.raises(SchemaError, match="FAILED"):
         research(client, "q", mode="research")
-    assert client.deleted == [("BU", "RW")]  # thread reaped even on FAILED (no leak)
+    assert client.deleted == [(BU, "RW")]  # thread reaped even on FAILED (no leak)
 
 
 def test_model_for_mode_maps_to_driving_model() -> None:
@@ -395,6 +402,14 @@ def test_build_body_council_models() -> None:
         "q", "pplx_agentic_research", council_models=["gpt55_thinking", "claude48opusthinking"]
     )
     assert body["params"]["compare_model_preferences"] == ["gpt55_thinking", "claude48opusthinking"]
+
+
+def test_build_body_asks_for_diff_frames() -> None:
+    params = _build_research_body("q", "pplx_alpha")["params"]
+    assert params["send_back_text_in_streaming_api"] is False
+    # The web client's full list, which keeps the report's replaces out of workflow_block.
+    assert len(params["supported_block_use_cases"]) == 29
+    assert "diff_blocks" in params["supported_block_use_cases"]
 
 
 def test_research_model_override_bypasses_mode_mapping() -> None:
@@ -547,7 +562,7 @@ def test_research_reads_past_text_completed_to_the_repaint() -> None:
     """`text_completed` fires before the terminal COMPLETED repaint. Research
     keeps whole snapshots, so it must consume the repaint, not stop early."""
     events = [
-        {"data": {"backend_uuid": "BU", "read_write_token": "RW", "text": _snapshot("early")}},
+        {"data": {"backend_uuid": BU, "read_write_token": "RW", "text": _snapshot("early")}},
         {"data": {"text": _snapshot("early"), "text_completed": True}},
         {"data": {"text": _snapshot("final repaint"), "status": "COMPLETED"}},
     ]
@@ -562,7 +577,7 @@ def test_research_flags_content_shortfall_when_final_snapshot_shrinks() -> None:
     events = [
         {
             "data": {
-                "backend_uuid": "BU",
+                "backend_uuid": BU,
                 "read_write_token": "RW",
                 "text": _snapshot(long_answer),
             }
@@ -612,7 +627,7 @@ def test_research_incomplete_when_stream_ends_at_text_completed() -> None:
     assert result.stream_complete is False
     assert result.answer == "partial"
     assert result.content_shortfall is False
-    assert client.deleted == [("BU", "RW")], "the incognito thread is still cleaned up"
+    assert client.deleted == [(BU, "RW")], "the incognito thread is still cleaned up"
 
 
 def test_decode_research_answer_survives_null_content() -> None:
@@ -636,7 +651,7 @@ def test_research_shortfall_survives_an_unparseable_longest_frame() -> None:
     says nothing about the kept snapshot and must not sink the run, even though
     its raw text is by far the largest in the stream."""
     events = [
-        {"data": {"backend_uuid": "BU", "read_write_token": "RW", "text": "not json " * 600}},
+        {"data": {"backend_uuid": BU, "read_write_token": "RW", "text": "not json " * 600}},
         {"data": {"text": _snapshot("the real answer"), "status": "COMPLETED"}},
     ]
     result = research(_FakeClient(events), "q")
@@ -684,7 +699,7 @@ def test_research_flags_shortfall_when_the_repaint_grows_in_metadata() -> None:
     assert len(repaint) > len(early), "the premise: the repaint is raw-larger, body-smaller"
 
     events = [
-        {"data": {"backend_uuid": "BU", "read_write_token": "RW", "text": early}},
+        {"data": {"backend_uuid": BU, "read_write_token": "RW", "text": early}},
         {"data": {"text": repaint, "status": "COMPLETED"}},
     ]
     result = research(_FakeClient(events), "q")
@@ -704,7 +719,7 @@ def test_research_flags_body_loss_masked_by_a_growing_cover_note() -> None:
     assert len(repaint) > len(early), "the premise: the repaint is total-larger, body-smaller"
 
     events = [
-        {"data": {"backend_uuid": "BU", "read_write_token": "RW", "text": early}},
+        {"data": {"backend_uuid": BU, "read_write_token": "RW", "text": early}},
         {"data": {"text": repaint, "status": "COMPLETED"}},
     ]
     result = research(_FakeClient(events), "q")
@@ -721,7 +736,7 @@ def test_research_no_shortfall_when_only_the_cover_note_shrinks() -> None:
     events = [
         {
             "data": {
-                "backend_uuid": "BU",
+                "backend_uuid": BU,
                 "read_write_token": "RW",
                 "text": _report_blocks("c" * 1_200, body),
             }
@@ -740,7 +755,7 @@ def test_research_keeps_the_last_parseable_snapshot_when_the_repaint_is_garbage(
     events = [
         {
             "data": {
-                "backend_uuid": "BU",
+                "backend_uuid": BU,
                 "read_write_token": "RW",
                 "text": _snapshot("the real answer"),
             }
@@ -756,7 +771,7 @@ def test_research_keeps_the_last_parseable_snapshot_when_the_repaint_is_garbage(
 
 def test_research_raises_when_no_frame_ever_parsed() -> None:
     events = [
-        {"data": {"backend_uuid": "BU", "read_write_token": "RW", "text": "not json"}},
+        {"data": {"backend_uuid": BU, "read_write_token": "RW", "text": "not json"}},
         {"data": {"text": "still not json", "status": "COMPLETED"}},
     ]
     with pytest.raises(SchemaError):
@@ -771,7 +786,7 @@ def test_research_no_shortfall_when_the_cover_note_quotes_the_whole_body() -> No
     events = [
         {
             "data": {
-                "backend_uuid": "BU",
+                "backend_uuid": BU,
                 "read_write_token": "RW",
                 "text": _report_blocks("cover", body),
             }
@@ -795,14 +810,14 @@ def test_research_survives_a_malformed_assets_field_mid_stream() -> None:
     bad = json.dumps([{"step_type": "RESEARCH_ANSWER", "assets": True, "content": None}])
     client = _FakeClient(
         [
-            {"data": {"backend_uuid": "BU", "read_write_token": "RW", "text": bad}},
+            {"data": {"backend_uuid": BU, "read_write_token": "RW", "text": bad}},
             {"data": {"text": _snapshot("the real answer"), "status": "COMPLETED"}},
         ]
     )
     result = research(client, "q")
 
     assert result.answer == "the real answer"
-    assert client.deleted == [("BU", "RW")], "the incognito thread is still cleaned up"
+    assert client.deleted == [(BU, "RW")], "the incognito thread is still cleaned up"
 
 
 @pytest.mark.parametrize("assets", [True, 3, "str", {"a": 1}, None, [1, "x", None]])

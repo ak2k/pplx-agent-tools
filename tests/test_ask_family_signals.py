@@ -28,6 +28,7 @@ from pplx_agent_tools.render import (
     render_research_json,
     render_research_text,
 )
+from pplx_agent_tools.verbs import _research_stream
 from pplx_agent_tools.verbs._ask_common import (
     COPILOT_STALL_SECONDS,
     DEFAULT_STALL_SECONDS,
@@ -69,6 +70,9 @@ _CLI: dict[str, tuple[Callable[[list[str]], int], list[str]]] = {
 def clock(monkeypatch: pytest.MonkeyPatch) -> _Clock:
     c = _Clock()
     monkeypatch.setattr(wire, "time", SimpleNamespace(monotonic=c.monotonic, time=lambda: 1.7e9))
+    monkeypatch.setattr(
+        _research_stream, "time", SimpleNamespace(monotonic=c.monotonic, sleep=c.sleep)
+    )
     return c
 
 

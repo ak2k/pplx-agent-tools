@@ -37,6 +37,7 @@ from pplx_agent_tools.render import (
     render_research_json,
     render_research_text,
 )
+from pplx_agent_tools.verbs import _research_stream
 from pplx_agent_tools.verbs._ask_common import (
     COPILOT_SETTLE_SECONDS,
     COPILOT_STALL_SECONDS,
@@ -58,7 +59,7 @@ from pplx_agent_tools.verbs.ask import (
     ask,
 )
 from pplx_agent_tools.verbs.fetch import FetchResult, fetch
-from pplx_agent_tools.verbs.research import ResearchResult, _text_changed, research
+from pplx_agent_tools.verbs.research import ResearchResult, research
 
 from ._doubles import _TestClientBase
 
@@ -111,6 +112,9 @@ class _Clock:
     def monotonic(self) -> float:
         return self.now
 
+    def sleep(self, seconds: float) -> None:
+        self.now += seconds
+
 
 class _ScriptedResp:
     def __init__(self, steps: list[Step], clock: _Clock) -> None:
@@ -161,6 +165,9 @@ class _StreamClient(_TestClientBase):
 def clock(monkeypatch: pytest.MonkeyPatch) -> _Clock:
     c = _Clock()
     monkeypatch.setattr(wire, "time", SimpleNamespace(monotonic=c.monotonic))
+    monkeypatch.setattr(
+        _research_stream, "time", SimpleNamespace(monotonic=c.monotonic, sleep=c.sleep)
+    )
     return c
 
 
@@ -233,16 +240,6 @@ def test_blocks_changed_counts_only_new_blocks() -> None:
     assert not is_progress({"data": {"blocks": [{"x": 1}], "status": "PENDING"}})
     assert is_progress({"data": {"blocks": [{"x": 2}]}})
     assert not is_progress(first)  # a replay of earlier blocks is not progress
-
-
-def test_text_changed_counts_only_new_text() -> None:
-    is_progress = _text_changed()
-    assert not is_progress({"data": {"status": "PENDING"}})
-    assert not is_progress({"data": {"text": None}})
-    assert is_progress({"data": {"text": "a"}})
-    assert not is_progress({"data": {"text": "a", "status": "PENDING"}})
-    assert is_progress({"data": {"text": "ab"}})
-    assert not is_progress({"data": {"text": "a"}})  # replayed snapshot
 
 
 def test_long_healthy_stream_outlives_the_old_research_deadline(clock: _Clock) -> None:

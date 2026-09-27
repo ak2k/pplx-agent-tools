@@ -376,7 +376,11 @@ def test_ask_family_bodies_share_one_base() -> None:
     research_p = _build_research_body("q", "pplx_alpha")["params"]
     fetch_p = _build_chat_body("q")["params"]
     base_keys = set(ask_p) - {"compare_model_preferences"}
-    assert set(research_p) == base_keys
+    # Research alone reads diff frames; ask and fetch stay on whole-text snapshots.
+    assert set(research_p) == base_keys | {"supported_block_use_cases"}
+    assert research_p["send_back_text_in_streaming_api"] is False
+    assert ask_p["send_back_text_in_streaming_api"] is True
+    assert fetch_p["send_back_text_in_streaming_api"] is True
     assert set(fetch_p) == base_keys
     for k in ("mode", "search_focus", "sources", "is_incognito", "use_schematized_api"):
         assert ask_p[k] == research_p[k] == fetch_p[k]

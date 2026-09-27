@@ -23,6 +23,7 @@ from pplx_agent_tools import cli_research, handles, wire
 from pplx_agent_tools.errors import EXIT_NETWORK, EXIT_PARTIAL, NetworkError
 from pplx_agent_tools.handles import ThreadStore
 from pplx_agent_tools.render import render_research_json, render_research_text
+from pplx_agent_tools.verbs import _research_stream
 from pplx_agent_tools.verbs._ask_common import (
     DEFAULT_STALL_SECONDS,
     AskStreamState,
@@ -57,6 +58,9 @@ RESUME = f"pplx resume --profile default {UUID}"
 def clock(monkeypatch: pytest.MonkeyPatch) -> _Clock:
     c = _Clock()
     monkeypatch.setattr(wire, "time", SimpleNamespace(monotonic=c.monotonic, time=lambda: 1.7e9))
+    monkeypatch.setattr(
+        _research_stream, "time", SimpleNamespace(monotonic=c.monotonic, sleep=c.sleep)
+    )
     return c
 
 

@@ -40,6 +40,7 @@ from curl_cffi.requests.exceptions import RequestException
 from pplx_agent_tools import wire
 from pplx_agent_tools.errors import NetworkError, RateLimitError, SchemaError
 from pplx_agent_tools.render import render_ask_json, render_fetch_json, render_research_json
+from pplx_agent_tools.verbs import _research_stream
 from pplx_agent_tools.verbs._ask_common import COPILOT_STALL_SECONDS, DEFAULT_STALL_SECONDS
 from pplx_agent_tools.verbs.ask import ask
 from pplx_agent_tools.verbs.fetch import fetch
@@ -120,6 +121,9 @@ class _Clock:
 
     def monotonic(self) -> float:
         return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.now += seconds
 
 
 class _SseResp:
@@ -207,6 +211,9 @@ class _CleanupClient(_TestClientBase):
 def clock(monkeypatch: pytest.MonkeyPatch) -> _Clock:
     c = _Clock()
     monkeypatch.setattr(wire, "time", SimpleNamespace(monotonic=c.monotonic, time=lambda: 1.7e9))
+    monkeypatch.setattr(
+        _research_stream, "time", SimpleNamespace(monotonic=c.monotonic, sleep=c.sleep)
+    )
     monkeypatch.setattr(wire, "_MAX_SSE_BUFFER_BYTES", _OVERSIZE_CAP)
     return c
 
