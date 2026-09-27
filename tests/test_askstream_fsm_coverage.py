@@ -189,7 +189,7 @@ def test_product_size_is_computed_from_the_axes() -> None:
     )
     n_events = len(event_axis())
     assert len(set(cells)) == len(cells) == n_states * len(COMPLETION_CLASSES) * n_events
-    assert len(cells) == 1728  # today's value, recorded in plan §3.8
+    assert len(cells) == 1800  # pinned so an axis change is a deliberate edit
 
 
 def test_classifiers_return_the_axis_classes() -> None:
@@ -223,8 +223,11 @@ def _policy(rng: random.Random, completion_cls: type) -> Policy:
     cap = deadline.t if isinstance(deadline, At) else 600.0
     p = Policy.make(
         deadline=deadline,
-        # Mostly on: T24 cells need the stall term to come first.
-        stall=rng.choice([StallAfter(rng.uniform(5, cap))] * 3 + [StallOff()]),
+        # Mostly on: T24 cells need the stall term to come first. The short
+        # windows let it precede the settle term in TextComplete.
+        stall=rng.choice(
+            [StallAfter(rng.uniform(5, cap)), StallAfter(rng.uniform(5, 60))] * 2 + [StallOff()]
+        ),
         completion=completion,
         answer_paths="ask_text_or_workflow",
         first_content=rng.choice([FirstContentOff(), FirstContentWithin(rng.uniform(1, 120))]),
@@ -687,7 +690,8 @@ def _chk_t19(
 def _chk_t20(
     p: Policy, s: fsm.State, e: fsm.Event, s2: fsm.State, eff: tuple[fsm.Effect, ...]
 ) -> None:
-    _chk_streamed_r("drop")(p, s, e, s2, eff)
+    assert isinstance(e, StreamBroke)
+    _chk_streamed_r({"transport": "drop", "silence": "silence"}[e.kind])(p, s, e, s2, eff)
 
 
 def _chk_t21(
@@ -891,7 +895,11 @@ RULES: list[Rule] = [
         lambda c: _conn_cur(c, Streaming, (StreamBroke,)) and c[4] in ("oversize", "cap"),
         _chk_t19,
     ),
-    Row("T20", lambda c: _conn_cur(c, Streaming, (StreamBroke,)) and c[4] == "transport", _chk_t20),
+    Row(
+        "T20",
+        lambda c: _conn_cur(c, Streaming, (StreamBroke,)) and c[4] in ("transport", "silence"),
+        _chk_t20,
+    ),
     Row("T21", lambda c: _tick(c, (Starting, StartBackoff, *LIVE_KINDS), ("deadline",)), _chk_t21),
     Row("T6", lambda c: _tick(c, (Starting,), ("open_due",)), _chk_t6),
     Row("T7", lambda c: _tick(c, (StartBackoff,), ("backoff",)), _chk_t7),

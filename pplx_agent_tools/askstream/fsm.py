@@ -305,7 +305,7 @@ class Fatal:
 
 
 Failure: TypeAlias = RateLimited | Transient | Gone | Fatal
-BrokeKind = Literal["transport", "oversize", "cap"]
+BrokeKind = Literal["transport", "silence", "oversize", "cap"]
 
 
 @final
@@ -883,6 +883,9 @@ def _broke(policy: Policy, live: Live, e: StreamBroke, u: float) -> LiveStep:
     match e.kind:
         case "transport":
             return _reconnect_or_fallback(policy, live, e.conn, "drop", e.now, u)
+        # The transport's own silence abort means what the silence timer means.
+        case "silence":
+            return _reconnect_or_fallback(policy, live, e.conn, "silence", e.now, u)
         case "oversize":
             return Done(Rejected(SchemaError(e.msg)), live.ids), (Close(e.conn),)
         case "cap":

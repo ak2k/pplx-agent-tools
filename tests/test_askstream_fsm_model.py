@@ -220,7 +220,7 @@ class LifecycleModel(RuleBasedStateMachine):
         self._apply(HeartbeatIn(ConnId(self._cur() or 0), self._advance(dt)), u)
 
     @precondition(_can_body)
-    @rule(dt=STEP, kind=st.sampled_from(["end", "transport", "oversize", "cap"]), u=U)
+    @rule(dt=STEP, kind=st.sampled_from(["end", "transport", "silence", "oversize", "cap"]), u=U)
     def stream_end(self, dt: float, kind: str, u: float) -> None:
         c, now = ConnId(self._cur() or 0), self._advance(dt)
         self._apply(StreamEnded(c, now) if kind == "end" else StreamBroke(c, now, kind, "m"), u)  # pyright: ignore[reportArgumentType]

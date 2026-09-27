@@ -523,6 +523,25 @@ def test_t20_drop_with_reconnect() -> None:
     assert isinstance(eff[-1], Notice)
 
 
+def test_t20_transport_silence_without_reconnect_is_a_stall_cut() -> None:
+    s, eff = step(
+        ASK,
+        streaming(live(phase=Producing(3.0), ids=KNOWN)),
+        StreamBroke(C1, 30.0, "silence", "no bytes for 25s"),
+    )
+    assert s == Done(Cut("stall", 480.0, 0), KNOWN)
+    assert eff == (Close(C1),)
+
+
+def test_t20_transport_silence_reconnects_as_silence() -> None:
+    lv = live(phase=Producing(3.0), ids=KNOWN)
+    s, eff = step(ASK_RC, streaming(lv), StreamBroke(C1, 30.0, "silence", "no bytes"), 0.5)
+    assert s == ReconnectBackoff(
+        replace(lv, rc_consecutive=1, rc_total=1), 31.0, ReconnectTarget(UUID), "silence"
+    )
+    assert eff == (Close(C1), Notice("reconnect", "silence; reconnecting"))
+
+
 # --- ticks: T21-T26 and boundaries ---------------------------------------------------------------
 
 LIVE_KINDS = ("streaming", "reconnecting", "backoff")
