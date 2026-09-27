@@ -1,16 +1,25 @@
-"""Doubles for the stream driver: a clock that sleeps by advancing, and a
-client whose conns replay scripted items at scripted times."""
+"""Doubles for the stream driver: a clock that sleeps by advancing, a
+client whose conns replay scripted items at scripted times, and a research
+run over both."""
 
 from __future__ import annotations
 
+import io
 import json
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from pplx_agent_tools.askstream.driver import ConnBounds
 from pplx_agent_tools.errors import PplxError
+from pplx_agent_tools.verbs._research_stream import Decoder, ResearchRun, research_stream
+from pplx_agent_tools.verbs.research import (
+    ENDPOINT,
+    _clarifying_warnings,
+    _decode_parts,
+    _join_answer,
+)
 
 DIFF = Path(__file__).parent / "fixtures" / "ask-diff"
 LEGACY = Path(__file__).parent / "fixtures" / "research"
@@ -105,3 +114,35 @@ class FakeClient:
     def delete_thread(self, entry_uuid: str, read_write_token: str) -> bool:
         self.deleted.append((entry_uuid, read_write_token))
         return True
+
+
+DECODER = Decoder(_decode_parts, _join_answer, lambda q: _clarifying_warnings(q, no_answer=True))
+
+
+def run_research(
+    client: FakeClient,
+    *,
+    timeout: float | None = 3600.0,
+    stall_seconds: float | None = 240.0,
+    keep_thread: bool = False,
+    err: io.StringIO | None = None,
+    sleep: Callable[[float], None] | None = None,
+    on_data: Callable[[dict[str, object]], None] | None = None,
+    observe: Callable[[ResearchRun], None] | None = None,
+) -> ResearchRun:
+    """`research_stream` over the fake client, on its clock, with no jitter."""
+    return research_stream(
+        client,
+        client.open_initial,
+        DECODER,
+        endpoint=ENDPOINT,
+        keep_thread=keep_thread,
+        timeout=timeout,
+        stall_seconds=stall_seconds,
+        on_data=on_data,
+        observe=observe,
+        clock=client.clock,
+        sleep=client.clock.sleep if sleep is None else sleep,
+        rand=lambda: 0.5,
+        err=io.StringIO() if err is None else err,
+    )
