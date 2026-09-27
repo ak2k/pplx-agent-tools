@@ -377,3 +377,54 @@ def test_capture_keeps_prior_value_when_jar_value_would_not_load(
     assert client.cookies == {"pref": '"x\\073y"', "session": "new"}
     err = capsys.readouterr().err
     assert "'pref'" in err and "SECRET" not in err
+
+
+# ---------- cleanup warnings name the thread by hash ----------
+
+
+class _CleanupResp:
+    def __init__(self, status: int | None) -> None:
+        self.status_code = status
+        self.content = b"nope"
+
+
+class _CleanupSession:
+    def __init__(self, status: int | None) -> None:
+        self._status = status
+
+    def _answer(self) -> _CleanupResp | None:
+        return None if self._status is None else _CleanupResp(self._status)
+
+    def post(self, url: str, **_kw: object) -> _CleanupResp | None:
+        return self._answer()
+
+    def request(self, method: str, url: str, **_kw: object) -> _CleanupResp | None:
+        return self._answer()
+
+
+THREAD = "0f0e0d0c-aaaa-4bbb-8ccc-123456789abc"
+
+
+def test_thread_ref_is_short_stable_and_not_the_id() -> None:
+    from pplx_agent_tools.wire import thread_ref
+
+    ref = thread_ref(THREAD)
+    assert ref == thread_ref(THREAD) != thread_ref(THREAD + "x")
+    assert ref.startswith("#") and len(ref) == 13
+    assert THREAD not in ref
+
+
+@pytest.mark.parametrize("status", [None, 403])
+def test_cleanup_warnings_print_a_hash_not_the_thread_id(
+    capsys: pytest.CaptureFixture[str], status: int | None
+) -> None:
+    from pplx_agent_tools.wire import thread_ref
+
+    client = Client({"any": "cookie"})
+    client._session = _CleanupSession(status)  # type: ignore[assignment]
+    assert client.delete_thread(THREAD, "TOKEN") is False
+    if status is not None:
+        assert client.terminate(THREAD, "CTX", "pplx_alpha") is False
+    err = capsys.readouterr().err
+    assert THREAD not in err and "TOKEN" not in err
+    assert f"thread {thread_ref(THREAD)}" in err

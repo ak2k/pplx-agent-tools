@@ -203,7 +203,7 @@ class Client:
             )
             if resp is None:
                 print(
-                    f"warning: thread cleanup failed: no response for {entry_uuid}",
+                    f"warning: thread cleanup failed: no response for thread {thread_ref(entry_uuid)}",
                     file=sys.stderr,
                 )
                 return False
@@ -215,7 +215,8 @@ class Client:
             print(f"warning: thread cleanup failed: {e}", file=sys.stderr)
             return False
         print(
-            f"warning: thread cleanup failed: DELETE {entry_uuid} returned {status}: {body}",
+            f"warning: thread cleanup failed: DELETE thread {thread_ref(entry_uuid)} "
+            f"returned {status}: {body}",
             file=sys.stderr,
         )
         return False
@@ -251,7 +252,8 @@ class Client:
             print(f"warning: run terminate failed: {e}", file=sys.stderr)
             return False
         print(
-            f"warning: run terminate failed: {entry_uuid} returned {status}: {body}",
+            f"warning: run terminate failed: thread {thread_ref(entry_uuid)} "
+            f"returned {status}: {body}",
             file=sys.stderr,
         )
         return False

@@ -452,8 +452,10 @@ def test_an_undecodable_cleanup_answer_never_replaces_the_interrupt(
     assert isinstance(outcome, KeyboardInterrupt), outcome
     assert [c[0] for c in session.calls] == ["terminate", "delete"]
     err = capsys.readouterr().err
-    assert "terminate failed: BU returned 502" in err
-    assert "cleanup failed: DELETE BU returned 502" in err
+    ref = wire.thread_ref("BU")
+    assert f"terminate failed: thread {ref} returned 502" in err
+    assert f"cleanup failed: DELETE thread {ref} returned 502" in err
+    assert "BU" not in err
 
 
 @pytest.mark.parametrize("verb", VERBS)
