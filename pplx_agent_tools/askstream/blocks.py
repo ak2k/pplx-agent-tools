@@ -197,6 +197,7 @@ class BlockStore:
         "_rewound",
         "_seen",
         "_seen_text",
+        "_seen_urls",
         "_sources",
         "_sources_high",
         "_sources_weight",
@@ -221,6 +222,7 @@ class BlockStore:
         self._fields: dict[FieldKey, FieldState] = {}
         self._seen: dict[FieldKey, _Seen] = {}
         self._seen_text = _Seen()
+        self._seen_urls = _Seen()
         self._report_high = 0
         self._answer_high = 0
         self._sources_high = 0
@@ -261,7 +263,7 @@ class BlockStore:
         return frozenset(self._rewound)
 
     def seen_sizes(self) -> tuple[int, ...]:
-        return (len(self._seen_text), *(len(s) for s in self._seen.values()))
+        return (len(self._seen_text), len(self._seen_urls), *(len(s) for s in self._seen.values()))
 
     # --- write side -----------------------------------------------------------
 
@@ -296,6 +298,7 @@ class BlockStore:
         drift: list[Drift] = []
         progress = frame.text is not None and self._seen_text.add(hash(frame.text))
         report_touched = False
+        sources_before = self._sources
         for u in frame.blocks:
             if isinstance(u, BlockMalformed):
                 self._malformed(u)
@@ -319,13 +322,14 @@ class BlockStore:
                 self._report_high = n
                 report_grew = True
         progress = progress or report_grew
+        new_source = self._sources is not sources_before and self._note_urls()
 
         parity = None
         if before is not None and kind is not None:
             after = self._project()
             parity = self._parity(kind, before, after, drift)
             if kind == "reconnect":
-                progress = self._past_high_water(before, after) or report_grew
+                progress = self._past_high_water(before, after) or report_grew or new_source
         if terminal:
             _, ambiguous = answer(self, self._answer_paths)
             drift += self._once(ambiguous + projection_missing(self))
@@ -492,6 +496,12 @@ class BlockStore:
         self.budget.total_weight += w - self._sources_weight
         self._sources, self._sources_weight = held, w
         return None
+
+    def _note_urls(self) -> bool:
+        """Adds the run's source URLs to those it has seen; True when any is
+        new, which a snapshot restating the same number of sources can hold."""
+        # A list, not a generator: `any` must not stop before every URL is added.
+        return any([self._seen_urls.add(hash(s.url)) for s in self._sources])
 
     def _drop(self, key: FieldKey, weight: int) -> None:
         self._fields.pop(key, None)

@@ -867,6 +867,8 @@ def _held_snapshot(
         ),
         pytest.param(_held_snapshot(["Hi", " more"], (A, B), "Body"), "progress", id="answer"),
         pytest.param(_held_snapshot(["Hi"], (A, B, C), "Body"), "progress", id="sources"),
+        pytest.param(_held_snapshot(["Hi"], (A, C), "Body"), "progress", id="new-source"),
+        pytest.param(_held_snapshot(["Hi"], (B,), "Body"), "idle", id="fewer-sources"),
         pytest.param(_held_snapshot(["Hi"], (A, B), "Body more"), "progress", id="report-body"),
     ],
 )
