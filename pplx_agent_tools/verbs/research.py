@@ -49,7 +49,6 @@ from ._ask_common import (
     cutoff_silence,
     cutoff_warnings,
     downgrade_verdict,
-    ended_by_drop,
     error_notes,
     no_content_error,
     release_on_exit,
@@ -266,7 +265,7 @@ def research(
         stall_seconds=stall_seconds,
         progress=progress,
     )
-    kept = state.backend_uuid if ended_by_drop(state) else None
+    kept = state.backend_uuid if state.kept and not state.deleted else None
     return finish_report(
         report,
         state,
@@ -300,10 +299,10 @@ def read_report(
     policy, keeping `handle`'s record current.
 
     The record is written before the frame that first names the thread is
-    consumed, and settled once cleanup has run, so a process killed in
+    consumed, and settled from what cleanup did, so a process killed in
     between leaves it `running`. A stream cut by a dropped connection or total
-    silence (`ended_by_drop`) is neither terminated nor deleted; every other
-    end is cleaned up as `release_on_exit` does for any ask-family run.
+    silence is neither terminated nor deleted (`state.kept`); every other end
+    is cleaned up as `release_on_exit` does for any ask-family run.
     `opener` replaces the default POST of `body` to `endpoint` (see
     `run_ask_stream`); `endpoint` then only names the stream in messages.
     """
@@ -342,12 +341,12 @@ def read_report(
 
 
 def _settled_status(state: AskStreamState) -> Status | None:
-    """The record status once cleanup has run; None leaves the record as it
+    """The record status from what cleanup did; None leaves the record as it
     was, for a stream that ended before any frame named the thread."""
-    if ended_by_drop(state):
-        return "kept"
     if state.deleted:
         return "deleted"
+    if state.kept:
+        return "kept"
     if state.backend_uuid is None:
         return None
     return "ended"

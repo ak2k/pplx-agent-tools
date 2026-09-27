@@ -98,6 +98,9 @@ class AskStreamState:
     cleanup_warnings: list[str] = field(default_factory=list)
     # Set by `release_on_exit` when the thread's delete succeeded.
     deleted: bool = False
+    # Set by `release_on_exit` when it left the run and its thread alone
+    # because the run goes on server-side; the one place that decides it.
+    kept: bool = False
 
 
 def run_may_be_live(state: AskStreamState, *, raised: bool, settles_after_text: bool) -> bool:
@@ -144,16 +147,18 @@ def release_on_exit(
     `state.cleanup_warnings` for the result or error to report; with an
     exception in flight there is neither, so they go to stderr.
 
-    `keep_on_drop` sends neither request when `ended_by_drop`: the run
-    finishes server-side without a listener, and its thread is how the caller
-    gets the result.
+    `keep_on_drop` sends neither request when `ended_by_drop`, and sets
+    `state.kept`: the run finishes server-side without a listener, and its
+    thread is how the caller gets the result.
     """
     raised = True
     try:
         yield
         raised = False
     finally:
-        if not (keep_on_drop and not raised and ended_by_drop(state)):
+        if keep_on_drop and not raised and ended_by_drop(state):
+            state.kept = True
+        else:
             if run_may_be_live(state, raised=raised, settles_after_text=settles_after_text):
                 _stop_run(client, state)
             if not keep_thread and state.backend_uuid and state.read_write_token:

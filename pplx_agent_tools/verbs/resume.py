@@ -24,7 +24,7 @@ from typing import Any
 from ..errors import PplxError, ThreadGoneError
 from ..handles import ThreadHandle, ThreadRecord, ThreadStore, resume_command
 from ..wire import RECONNECT_PATH, Client, thread_ref
-from ._ask_common import AskStreamState, ended_by_drop
+from ._ask_common import AskStreamState
 from .research import (
     _COUNCIL_MODEL,
     DEFAULT_MODE,
@@ -98,7 +98,7 @@ def resume(
     except ThreadGoneError:
         handle.settle("gone")
         raise
-    kept = ended_by_drop(state)
+    kept = state.kept and not state.deleted
     if not kept and not keep_thread and state.backend_uuid and not state.read_write_token:
         state.cleanup_warnings.append(
             "the thread was not deleted: no read_write_token was recorded for it or sent "

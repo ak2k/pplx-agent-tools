@@ -10,6 +10,7 @@ Streams run through the real `Client.sse_post` on a fake clock.
 
 from __future__ import annotations
 
+import contextlib
 import json
 from types import SimpleNamespace
 from typing import Any
@@ -18,12 +19,17 @@ import pytest
 from curl_cffi import CurlECode
 
 from pplx_agent_tools import cli_research, wire
-from pplx_agent_tools.errors import EXIT_NETWORK, EXIT_PARTIAL
+from pplx_agent_tools.errors import EXIT_NETWORK, EXIT_PARTIAL, NetworkError
 from pplx_agent_tools.handles import ThreadStore
 from pplx_agent_tools.render import render_research_json, render_research_text
-from pplx_agent_tools.verbs._ask_common import DEFAULT_STALL_SECONDS
+from pplx_agent_tools.verbs._ask_common import (
+    DEFAULT_STALL_SECONDS,
+    AskStreamState,
+    release_on_exit,
+)
 from pplx_agent_tools.verbs.research import research
 
+from ._doubles import _TestClientBase
 from .test_stall_guard import (
     HEARTBEAT,
     LONG_DEADLINE,
@@ -241,3 +247,44 @@ def test_an_unwritable_state_dir_on_a_kept_run_still_names_the_resume_command(
     assert result.resume == RESUME
     assert any("could not record" in w for w in result.warnings)
     assert any(RESUME in w for w in result.warnings)
+
+
+def test_an_interrupt_after_a_drop_cut_deletes_and_is_not_offered_to_last(
+    clock: _Clock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from pplx_agent_tools.verbs import research as research_mod
+
+    real = research_mod.run_ask_stream
+
+    def cut_then_interrupt(*args: Any, **kwargs: Any) -> None:
+        real(*args, **kwargs)  # returns with the drop as the cutoff
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(research_mod, "run_ask_stream", cut_then_interrupt)
+    client = _StreamClient([(0, _report("part")), (0, DROP)], clock)
+    with pytest.raises(KeyboardInterrupt):
+        research(client, "q")
+    assert client.deleted == [(UUID, TOKEN)]
+    assert ThreadStore().pick_last().record is None
+
+
+@pytest.mark.parametrize("raised", [False, True])
+def test_cleanup_records_its_keep_decision_in_the_state(raised: bool) -> None:
+    class _Client(_TestClientBase):
+        def delete_thread(self, entry_uuid: str, read_write_token: str) -> bool:  # type: ignore[override]
+            return True
+
+    state = AskStreamState(
+        backend_uuid=UUID,
+        read_write_token=TOKEN,
+        context_uuid="CTX",
+        display_model="pplx_alpha",
+        cutoff=NetworkError("drop"),
+    )
+    with (
+        contextlib.suppress(KeyboardInterrupt),
+        release_on_exit(_Client(), state, keep_thread=False, keep_on_drop=True),
+    ):
+        if raised:
+            raise KeyboardInterrupt
+    assert (state.kept, state.deleted) == ((False, True) if raised else (True, False))
