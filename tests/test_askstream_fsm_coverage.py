@@ -737,6 +737,10 @@ def _chk_t12(
     p: Policy, s: fsm.State, e: fsm.Event, s2: fsm.State, eff: tuple[fsm.Effect, ...]
 ) -> None:
     assert isinstance(s, ReconnectBackoff)
+    if _remaining(s.live.deadline, e.now) < p.min_useful_s:
+        assert s2 == Done(expected_fallback(p, s.reason, s.live), s.live.ids)
+        assert eff == ()
+        return
     assert isinstance(s2, Reconnecting)
     conn = s.live.next_conn
     assert (s2.conn, s2.target, s2.reason, s2.open_due_at) == (

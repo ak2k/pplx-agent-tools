@@ -901,6 +901,9 @@ def _tick_live(policy: Policy, s: LiveState, now: float, u: float) -> LiveStep:
             notice = Notice("open_timeout", "reconnect open timeout")
             return _reconnect_or_fallback(policy, live, s.conn, s.reason, now, u, notices=(notice,))
         case "backoff" if isinstance(s, ReconnectBackoff):
+            # The backoff itself can use up the time the guard saw.
+            if _remaining(live.deadline, now) < policy.min_useful_s:
+                return Done(fallback(policy, s.reason, live), live.ids), ()
             conn = live.next_conn
             nxt = replace(live, next_conn=ConnId(conn + 1))
             state = Reconnecting(nxt, conn, s.target, s.reason, now + policy.open_s)

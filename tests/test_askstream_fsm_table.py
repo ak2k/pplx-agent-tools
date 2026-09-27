@@ -370,6 +370,24 @@ def test_t12_backoff_elapsed_opens_reconnect() -> None:
     assert eff == (Open(ConnId(3), ReconnectTarget(UUID), 35.0),)
 
 
+@pytest.mark.parametrize("reason", REASONS)
+@pytest.mark.parametrize("phase", PHASES)
+def test_t12_backoff_elapsing_too_close_to_the_deadline_falls_back(
+    reason: ReconnectReason, phase: fsm.Phase
+) -> None:
+    lv = live(phase=phase, ids=KNOWN, next_conn=3, rc_consecutive=1, rc_total=1)
+    s, eff = step(ASK_RC, rc_backoff(lv, 535.001, reason), Tick(535.001))
+    assert s == Done(expected_fallback(ASK_RC, reason, lv), KNOWN)
+    assert eff == ()
+
+
+def test_t12_boundary_exactly_min_useful_left_reopens() -> None:
+    lv = live(ids=KNOWN, next_conn=3, rc_consecutive=1, rc_total=1)
+    s, eff = step(ASK_RC, rc_backoff(lv, 535.0, "drop"), Tick(535.0))
+    assert isinstance(s, Reconnecting)
+    assert eff == (Open(ConnId(3), ReconnectTarget(UUID), 35.0),)
+
+
 def test_reconnecting_body_event_before_opened_is_defensive() -> None:
     lv = live(ids=KNOWN, next_conn=3, rc_consecutive=1, rc_total=1)
     s, eff = step(ASK_RC, reconnecting(lv, "silence"), HeartbeatIn(C2, 104.0))
