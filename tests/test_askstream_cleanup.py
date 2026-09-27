@@ -82,8 +82,10 @@ def _expected_delete(ids: fsm.Ids, keep: bool) -> object:
 def _expected_terminate(ids: fsm.Ids, model: str | None) -> object:
     if isinstance(ids, NoIds):
         return TerminateNotNeeded()
-    if ids.context is None or model is None:
-        return TerminateUnsupported()
+    if ids.context is None:
+        return TerminateUnsupported("context uuid")
+    if model is None:
+        return TerminateUnsupported("display model")
     return Terminate(TerminateRef(UUID, ids.context, model))
 
 
