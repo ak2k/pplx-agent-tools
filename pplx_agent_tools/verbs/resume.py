@@ -22,9 +22,9 @@ import sys
 from collections.abc import Sequence
 from typing import Any
 
+from ..askstream.driver import reconnecting
 from ..errors import PplxError, ThreadGoneError, ThreadRecordsError
 from ..handles import ThreadHandle, ThreadRecord, ThreadStore, hash_prompt, resume_command
-from ..askstream.driver import reconnecting
 from ..wire import RECONNECT_PATH, Client, thread_ref
 from ._ask_common import AskStreamState, error_notes
 from ._research_stream import research_stream
