@@ -404,6 +404,8 @@ EXPECTED_EXIT = {
     "NetworkError": 4,
     "StreamDeadlineError": 4,
     "StreamStallError": 4,
+    "StreamSilenceError": 4,
+    "StreamFirstContentError": 4,
     "AntiBotError": 5,
     "SchemaError": 1,
     "ResourceLimitError": 1,

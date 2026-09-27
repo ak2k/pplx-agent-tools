@@ -28,20 +28,24 @@ retry.
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
 from ..errors import SchemaError
 from ..wire import Client
 from ._ask_common import (
+    RESEARCH_SILENCE_SECONDS,
     AskStreamState,
     Source,
     base_ask_params,
     cutoff_cause,
+    cutoff_silence,
     cutoff_warnings,
+    downgrade_verdict,
+    error_notes,
     no_content_error,
-    release_thread,
+    release_on_exit,
     run_ask_stream,
     status_completed,
     to_source,
@@ -101,8 +105,23 @@ class ResearchResult:
     # guarantee.
     content_shortfall: bool = False
     warnings: list[str] = field(default_factory=list)
-    # "stall" | "deadline" when that bound cut the stream; None otherwise.
+    # "stall" | "deadline" when that bound cut the stream, "drop" when the
+    # connection died mid-stream; None otherwise.
     cut_by: str | None = None
+    # Set with a "stall" cut_by when the connection carried no bytes at all
+    # for that many seconds.
+    silent_for: float | None = None
+    # Questions the run asked the user; pplx cannot answer them, so the server
+    # went on with its default answers.
+    clarifying_questions: list[str] = field(default_factory=list)
+    # The run asked clarifying questions but none of them could be read.
+    clarifying_unreadable: bool = False
+    # True when the server ran a model other than the one requested; None when
+    # no frame named one, and always None for Model Council, whose reported
+    # model has never been observed.
+    downgraded: bool | None = None
+    # The last model the frames named; None when none did.
+    served_model: str | None = None
 
 
 def _text_changed() -> Callable[[dict[str, Any]], bool]:
@@ -171,7 +190,13 @@ def research(
     # earlier frames, so it is raw-larger even when its body shrank. `total` is
     # the fallback for streams that never carry a body block. Decoding every
     # snapshot costs ~0.3s over an 800-frame stream.
-    latest: dict[str, Any] = {"text": None, "answer": "", "sources": [], "body_len": 0}
+    latest: dict[str, Any] = {
+        "text": None,
+        "answer": "",
+        "sources": [],
+        "body_len": 0,
+        "questions": None,
+    }
     best: dict[str, int] = {"body": 0, "total": 0}
     saw: dict[str, bool] = {"body": False, "last_frame_decoded": False}
     last_raw: dict[str, str | None] = {"text": None}
@@ -183,7 +208,7 @@ def research(
         text: str = data["text"]
         last_raw["text"] = text
         try:
-            cover_parts, report_parts, sources = _decode_parts(text)
+            cover_parts, report_parts, sources, questions = _decode_parts(text)
         except SchemaError:
             saw["last_frame_decoded"] = False
             return
@@ -192,7 +217,9 @@ def research(
         # otherwise measure zero and read as a total loss of the report.
         body = "\n\n".join(report_parts).strip()
         answer = _join_answer(cover_parts, report_parts)
-        latest.update(text=text, answer=answer, sources=sources, body_len=len(body))
+        latest.update(
+            text=text, answer=answer, sources=sources, body_len=len(body), questions=questions
+        )
         saw["last_frame_decoded"] = True
         if body:
             saw["body"] = True
@@ -200,7 +227,7 @@ def research(
         best["total"] = max(best["total"], len(answer))
 
     state = AskStreamState()
-    try:
+    with release_on_exit(client, state, keep_thread=keep_thread):
         run_ask_stream(
             client,
             ENDPOINT,
@@ -213,9 +240,8 @@ def research(
             label="research",
             is_complete=status_completed,
             is_progress=_text_changed(),
+            silence_seconds=RESEARCH_SILENCE_SECONDS,
         )
-    finally:
-        release_thread(client, state, keep_thread=keep_thread)
 
     if state.failed:
         raise SchemaError(
@@ -227,9 +253,13 @@ def research(
         if last_raw["text"] is not None:
             # Text arrived but no frame ever parsed — the decode error is the
             # honest diagnosis, so re-raise it rather than reporting no content.
-            decode_research_text(last_raw["text"])
+            _raise_undecodable(last_raw["text"], state.cleanup_warnings)
         raise no_content_error(
-            label="research", endpoint=ENDPOINT, timeout=timeout, cutoff=state.cutoff
+            label="research",
+            endpoint=ENDPOINT,
+            timeout=timeout,
+            cutoff=state.cutoff,
+            warnings=state.cleanup_warnings,
         )
 
     answer: str = latest["answer"]
@@ -237,12 +267,25 @@ def research(
     if not state.saw_completed and not answer and not sources:
         # A cut stream whose only snapshot is the empty INITIAL_QUERY step has
         # nothing to salvage; report it as a retryable cutoff, as `ask` does.
+        # Questions the run asked before the cut go in the error, so the retry
+        # can answer them.
         raise no_content_error(
-            label="research", endpoint=ENDPOINT, timeout=timeout, cutoff=state.cutoff
+            label="research",
+            endpoint=ENDPOINT,
+            timeout=timeout,
+            cutoff=state.cutoff,
+            warnings=_clarifying_warnings(latest["questions"], no_answer=True)
+            + state.cleanup_warnings,
         )
     content_shortfall, warnings = _shortfall_verdict(
         answer_len=len(answer), body_len=latest["body_len"], best=best, saw=saw
     )
+    questions: list[str] | None = latest["questions"]
+    warnings += _clarifying_warnings(questions)
+    downgraded: bool | None = None
+    if model_preference != _COUNCIL_MODEL:
+        downgraded, downgrade_warnings = downgrade_verdict(state, model_preference)
+        warnings += downgrade_warnings
 
     return ResearchResult(
         query=query,
@@ -251,9 +294,26 @@ def research(
         mode=mode,
         stream_complete=state.saw_completed,
         cut_by=cutoff_cause(state),
+        silent_for=cutoff_silence(state),
         content_shortfall=content_shortfall,
-        warnings=cutoff_warnings(state) + warnings,
+        warnings=cutoff_warnings(state) + warnings + state.cleanup_warnings,
+        clarifying_questions=questions or [],
+        clarifying_unreadable=questions is not None and not questions,
+        downgraded=downgraded,
+        served_model=state.display_model,
     )
+
+
+def _clarifying_warnings(questions: list[str] | None, *, no_answer: bool = False) -> list[str]:
+    """The warning for clarifying questions the run asked (None: it asked
+    none). pplx cannot answer them: a run that went on used the server's
+    defaults; with `no_answer` the run ended before any answer arrived."""
+    outcome = "no answer arrived" if no_answer else "proceeded on the server's default answers"
+    if questions:
+        return [f"research asked clarifying questions and {outcome}: " + "; ".join(questions)]
+    if questions is not None:
+        return [f"research asked clarifying questions pplx could not read and {outcome}"]
+    return []
 
 
 def _shortfall_verdict(
@@ -285,6 +345,15 @@ def _shortfall_verdict(
     return bool(warnings), warnings
 
 
+def _raise_undecodable(text: str, warnings: Sequence[str]) -> None:
+    """Raise the decode error for `text`, ending with `warnings`: cleanup has
+    already run by then, so a run it could not stop is named here."""
+    try:
+        decode_research_text(text)
+    except SchemaError as e:
+        raise SchemaError(f"{e}{error_notes(warnings)}") from e
+
+
 def decode_research_text(text: str) -> tuple[str, list[ResearchSource]]:
     """Pure decode of a research snapshot `text` (JSON block list) → (answer, sources).
 
@@ -302,7 +371,7 @@ def decode_research_text(text: str) -> tuple[str, list[ResearchSource]]:
     the answer's [n] markers); we fall back to the intermediate SEARCH_RESULTS
     rounds when FINAL carries none.
     """
-    cover_parts, report_parts, sources = _decode_parts(text)
+    cover_parts, report_parts, sources, _ = _decode_parts(text)
     return _join_answer(cover_parts, report_parts), sources
 
 
@@ -318,8 +387,12 @@ def _join_answer(cover_parts: list[str], report_parts: list[str]) -> str:
     return "\n\n".join(cover_parts + kept_reports).strip()
 
 
-def _decode_parts(text: str) -> tuple[list[str], list[str], list[ResearchSource]]:
-    """`decode_research_text` before the join: (cover parts, report body parts, sources).
+def _decode_parts(
+    text: str,
+) -> tuple[list[str], list[str], list[ResearchSource], list[str] | None]:
+    """`decode_research_text` before the join: (cover parts, report body parts,
+    sources, clarifying question texts). The question texts are None when the
+    snapshot asked none, and empty when it asked some that could not be read.
 
     Split out so a caller can measure the report BODY on its own — the joined
     answer mixes cover note and body, and a snapshot that grows the cover while
@@ -335,6 +408,7 @@ def _decode_parts(text: str) -> tuple[list[str], list[str], list[ResearchSource]
 
     cover_parts: list[str] = []
     report_parts: list[str] = []
+    questions: list[str] | None = None
     final_web: list[Any] | None = None
     search_web: list[Any] = []
     for blk in blocks:
@@ -346,6 +420,11 @@ def _decode_parts(text: str) -> tuple[list[str], list[str], list[ResearchSource]
         # `content` and a perfectly good report asset drops the whole report.
         if step == "RESEARCH_ANSWER":
             report_parts.extend(_report_bodies(blk))
+            continue
+        # Dispatched ahead of the guard for the same reason: a clarifying step
+        # with an unreadable `content` still means the run went on without answers.
+        if step == "RESEARCH_CLARIFYING_QUESTIONS":
+            questions = (questions or []) + _question_texts(blk.get("content"))
             continue
         content = blk.get("content")
         if not isinstance(content, dict):
@@ -369,7 +448,19 @@ def _decode_parts(text: str) -> tuple[list[str], list[str], list[ResearchSource]
         if src is not None and src.url not in seen:
             seen.add(src.url)
             sources.append(src)
-    return cover_parts, report_parts, sources
+    return cover_parts, report_parts, sources, questions
+
+
+def _question_texts(content: Any) -> list[str]:
+    """A RESEARCH_CLARIFYING_QUESTIONS block's `content` → its question texts.
+    Total over JSON shape, like `_report_bodies`."""
+    raw = content.get("questions") if isinstance(content, dict) else None
+    out: list[str] = []
+    for q in raw if isinstance(raw, list) else []:
+        text = q.get("question_text") if isinstance(q, dict) else None
+        if isinstance(text, str) and text.strip():
+            out.append(text.strip())
+    return out
 
 
 def _report_bodies(blk: dict[str, Any]) -> list[str]:

@@ -112,7 +112,7 @@ def _finalize(result: FetchResult, max_chars: int | None) -> int:
         print(f"warning: content truncated at {max_chars} chars", file=sys.stderr)
     if not result.stream_complete:
         print(
-            "warning: stream did not reach COMPLETED (deadline, stall or server cut); "
+            "warning: stream did not reach COMPLETED (deadline, stall, drop or server cut); "
             "partial content returned (exit 6)",
             file=sys.stderr,
         )

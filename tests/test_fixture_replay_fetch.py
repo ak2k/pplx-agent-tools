@@ -108,6 +108,8 @@ class FixtureClient(_TestClientBase):
         max_total_seconds: float | None = None,
         stall_seconds: float | None = None,
         is_progress: Callable[[dict[str, Any]], bool] | None = None,
+        silence_seconds: float | None = None,
+        first_content_seconds: float | None = None,
     ) -> Iterator[dict[str, Any]]:
         for payload in self._events:
             yield {"event": "message", "data": payload}
@@ -211,6 +213,8 @@ class StarvedStreamClient(_TestClientBase):
         max_total_seconds: float | None = None,
         stall_seconds: float | None = None,
         is_progress: Callable[[dict[str, Any]], bool] | None = None,
+        silence_seconds: float | None = None,
+        first_content_seconds: float | None = None,
     ) -> Iterator[dict[str, Any]]:
         raise StreamDeadlineError(f"SSE stream on {path} exceeded its deadline")
 
@@ -243,7 +247,7 @@ def test_deadline_and_closed_empty_texts_are_distinguishable() -> None:
 
     assert str(deadline.value) == (
         "fetch --prompt stream on /rest/sse/perplexity_ask exceeded 30.0s deadline "
-        "before the first content arrived"
+        "before the first content arrived; no progress event arrived: retry once"
     )
     assert str(closed.value) == (
         "fetch --prompt stream on /rest/sse/perplexity_ask closed with no content"
@@ -904,6 +908,8 @@ class MidStreamFailureClient(_TestClientBase):
         max_total_seconds: float | None = None,
         stall_seconds: float | None = None,
         is_progress: Callable[[dict[str, Any]], bool] | None = None,
+        silence_seconds: float | None = None,
+        first_content_seconds: float | None = None,
     ) -> Iterator[dict[str, Any]]:
         for payload in self._events[: self._fail_after]:
             yield {"event": "message", "data": payload}

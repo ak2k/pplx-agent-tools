@@ -63,7 +63,15 @@ class StreamDeadlineError(NetworkError):
     timeout (exit 4). Distinguished from NetworkError so verbs that can salvage
     a partial result (e.g. `pplx fetch --prompt` accumulating chunks) can catch
     it specifically without swallowing real network failures.
+
+    `since_progress` is how long before the cut was seen the last progress
+    event arrived, None when none did, so a cut before any content can say
+    whether the run was still working.
     """
+
+    def __init__(self, message: str, since_progress: float | None = None) -> None:
+        super().__init__(message)
+        self.since_progress = since_progress
 
 
 class StreamStallError(StreamDeadlineError):
@@ -77,6 +85,22 @@ class StreamStallError(StreamDeadlineError):
     def __init__(self, message: str, seconds: float) -> None:
         super().__init__(message)
         self.seconds = seconds
+
+
+class StreamSilenceError(StreamStallError):
+    """SSE stream carried no bytes at all, heartbeats included, for `seconds`.
+
+    Reported as a stall (`cut_by: "stall"`), but its text says "no bytes" so a
+    reader can tell a dead connection from a backend that is alive but idle.
+    """
+
+
+class StreamFirstContentError(StreamStallError):
+    """SSE stream produced no first content within `seconds` of the response.
+
+    A stall subclass so the salvage paths treat it alike; it always ends a
+    stream with nothing to salvage, so it surfaces only as its own exit-4 error.
+    """
 
 
 class AntiBotError(PplxError):

@@ -92,6 +92,8 @@ class _FakeClient(_TestClientBase):
         max_total_seconds: float | None = None,
         stall_seconds: float | None = None,
         is_progress: Callable[[dict[str, Any]], bool] | None = None,
+        silence_seconds: float | None = None,
+        first_content_seconds: float | None = None,
     ) -> Iterator[dict[str, Any]]:
         yield from self._events
         if self._raise_deadline:
@@ -281,12 +283,26 @@ def test_research_deadline_before_any_content_raises() -> None:
         research(client, "q", timeout=30)
 
 
-def test_research_midstream_network_error_reaps_thread_then_raises() -> None:
+def test_research_midstream_network_error_reaps_thread_and_returns_the_partial() -> None:
     """A research run is minutes long, so a transport failure part-way through
-    is a likely exit — and the thread ids are already in hand when it happens."""
+    is a likely exit — and the thread ids are already in hand when it happens.
+    What accumulated is returned as a drop cut rather than thrown away."""
     client = _FakeClient(
         [{"data": {"backend_uuid": "BU", "read_write_token": "RW", "text": _snapshot()}}],
         raise_network=True,
+    )
+
+    result = research(client, "q")
+
+    assert result.answer
+    assert result.stream_complete is False
+    assert result.cut_by == "drop"
+    assert client.deleted == [("BU", "RW")]
+
+
+def test_research_network_error_before_any_content_raises() -> None:
+    client = _FakeClient(
+        [{"data": {"backend_uuid": "BU", "read_write_token": "RW"}}], raise_network=True
     )
 
     with pytest.raises(NetworkError) as excinfo:
@@ -298,8 +314,8 @@ def test_research_midstream_network_error_reaps_thread_then_raises() -> None:
 
 
 def test_research_deadline_and_closed_empty_texts_are_distinguishable() -> None:
-    """Same wording as ask and fetch --prompt: the deadline says retry longer,
-    the closed-empty stream says do not."""
+    """Same wording as ask and fetch --prompt: the deadline says retry, the
+    closed-empty stream says do not."""
     starved = _FakeClient([], raise_deadline=True)
     with pytest.raises(StreamDeadlineError) as deadline:
         research(starved, "q", timeout=30)
@@ -310,7 +326,7 @@ def test_research_deadline_and_closed_empty_texts_are_distinguishable() -> None:
 
     assert str(deadline.value) == (
         "research stream on /rest/sse/perplexity_ask exceeded 30.0s deadline "
-        "before the first content arrived"
+        "before the first content arrived; no progress event arrived: retry once"
     )
     assert str(closed.value) == (
         "research stream on /rest/sse/perplexity_ask closed with no content"
@@ -382,6 +398,8 @@ def test_research_model_override_bypasses_mode_mapping() -> None:
             max_total_seconds=None,
             stall_seconds=None,
             is_progress=None,
+            silence_seconds=None,
+            first_content_seconds=None,
         ):  # type: ignore[override]
             captured["mp"] = body["params"]["model_preference"]
             return iter(self._events)
@@ -402,6 +420,8 @@ def test_research_council_auto_sends_default_trio() -> None:
             max_total_seconds=None,
             stall_seconds=None,
             is_progress=None,
+            silence_seconds=None,
+            first_content_seconds=None,
         ):  # type: ignore[override]
             captured["mp"] = body["params"]["model_preference"]
             captured["compare"] = body["params"].get("compare_model_preferences")
@@ -425,6 +445,8 @@ def test_research_council_explicit_models_override_default() -> None:
             max_total_seconds=None,
             stall_seconds=None,
             is_progress=None,
+            silence_seconds=None,
+            first_content_seconds=None,
         ):  # type: ignore[override]
             captured["compare"] = body["params"].get("compare_model_preferences")
             return iter(self._events)
@@ -445,6 +467,8 @@ def test_research_passes_model_preference_into_body() -> None:
             max_total_seconds=None,
             stall_seconds=None,
             is_progress=None,
+            silence_seconds=None,
+            first_content_seconds=None,
         ):  # type: ignore[override]
             captured["model_preference"] = body["params"]["model_preference"]
             captured["is_incognito"] = body["params"]["is_incognito"]

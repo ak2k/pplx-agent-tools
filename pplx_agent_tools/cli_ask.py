@@ -98,7 +98,7 @@ def _finalize(result: AskResult) -> int:
         )
     if isinstance(result.completion, Cut):
         print(
-            "warning: ask stream did not reach COMPLETED (deadline, stall or cut); "
+            "warning: ask stream did not reach COMPLETED (deadline, stall, drop or cut); "
             "partial answer returned (exit 6)",
             file=sys.stderr,
         )

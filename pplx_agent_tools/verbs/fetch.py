@@ -46,10 +46,12 @@ from ._ask_common import (
     base_ask_params,
     blocks_changed,
     cutoff_cause,
+    cutoff_silence,
     cutoff_warnings,
+    downgrade_verdict,
     extract_chunks_from_event,
     no_content_error,
-    release_thread,
+    release_on_exit,
     run_ask_stream,
 )
 
@@ -103,8 +105,17 @@ class FetchResult:
     # (only meaningful for --prompt mode; plain mode is always True).
     stream_complete: bool = True
     warnings: list[str] = field(default_factory=list)
-    # "stall" | "deadline" when that bound cut the --prompt stream; None otherwise.
+    # "stall" | "deadline" when that bound cut the --prompt stream, "drop" when
+    # its connection died mid-stream; None otherwise.
     cut_by: str | None = None
+    # Set with a "stall" cut_by when the connection carried no bytes at all
+    # for that many seconds.
+    silent_for: float | None = None
+    # --prompt only: True when the server ran a model other than the one
+    # requested; None when no frame named one, and in plain mode.
+    downgraded: bool | None = None
+    # --prompt only: the last model the frames named; None when none did.
+    served_model: str | None = None
 
 
 def fetch(
@@ -133,8 +144,9 @@ def fetch(
 
     `timeout` bounds the wall-clock duration of `--prompt` mode (the SSE
     chat call) and `stall_seconds` its time without new content. When
-    either trips with any accumulated content, the partial answer is returned
-    with `stream_complete=False` and a warning naming which one. Plain mode
+    either trips, or the connection drops, with any accumulated content, the
+    partial answer is returned with `stream_complete=False` and a warning
+    naming which one. Plain mode
     uses curl's own connect/read timeouts and ignores both.
 
     `progress`, when True, emits a single stderr char every N SSE events
@@ -283,9 +295,10 @@ def _fetch_with_prompt(
     stall guard + heartbeat + thread-id/completion/FAILED capture) via
     `_ask_common.run_ask_stream`; we accumulate the `markdown_block` chunks. The
     created thread runs incognito and is best-effort deleted (unless
-    `keep_thread`) on every exit path. On a tripped deadline or stall with
-    partial content we return it with `stream_complete=False` (the agent contract is "you always
-    get *something* plus a flag").
+    `keep_thread`) on every exit path. On a tripped deadline or stall, or a
+    dropped connection, with partial content we return it with
+    `stream_complete=False` (the agent contract is "you always get *something*
+    plus a flag").
     """
     body = _build_chat_body(f"{prompt}\n\nFor URL: {url}", model_preference=model)
     chunks: list[str] = []
@@ -294,7 +307,7 @@ def _fetch_with_prompt(
         chunks.extend(extract_chunks_from_event(event))
 
     state = AskStreamState()
-    try:
+    with release_on_exit(client, state, keep_thread=keep_thread):
         run_ask_stream(
             client,
             _PROMPT_ENDPOINT,
@@ -307,8 +320,6 @@ def _fetch_with_prompt(
             label="fetch",
             is_progress=blocks_changed(),
         )
-    finally:
-        release_thread(client, state, keep_thread=keep_thread)
 
     if state.failed:
         raise SchemaError(
@@ -323,12 +334,14 @@ def _fetch_with_prompt(
             endpoint=_PROMPT_ENDPOINT,
             timeout=timeout,
             cutoff=state.cutoff,
+            warnings=state.cleanup_warnings,
         )
 
     truncated = False
     if max_chars and len(content) > max_chars:
         content = content[:max_chars]
         truncated = True
+    downgraded, downgrade_warnings = downgrade_verdict(state, model)
 
     return FetchResult(
         url=url,
@@ -340,7 +353,10 @@ def _fetch_with_prompt(
         truncated=truncated,
         stream_complete=state.saw_completed,
         cut_by=cutoff_cause(state),
-        warnings=cutoff_warnings(state),
+        silent_for=cutoff_silence(state),
+        warnings=cutoff_warnings(state) + downgrade_warnings + state.cleanup_warnings,
+        downgraded=downgraded,
+        served_model=state.display_model,
     )
 
 

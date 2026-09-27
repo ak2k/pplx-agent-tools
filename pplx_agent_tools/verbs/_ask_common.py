@@ -3,9 +3,10 @@
 All three hit /rest/sse/perplexity_ask and share: the request `params` block
 (`base_ask_params`), the copilot chunk/source extractors + the `Source` type, and
 the SSE orchestration (`run_ask_stream`: 429 retry honoring `retry-after`, an
-overall wall-clock deadline and a no-new-content stall guard that both soft-fail to a
-partial result, a progress heartbeat, and capture of the thread identifiers +
-completion/FAILED signals; `release_thread` is the matching cleanup).
+overall wall-clock deadline, a no-new-content stall guard and a dropped
+connection that all soft-fail to a partial result, first-content and silence
+bounds, a progress heartbeat, and capture of the thread identifiers +
+completion/FAILED signals; `release_on_exit` is the matching cleanup).
 Only the *accumulation* differs (copilot streams `markdown_block` chunks +
 `web_results` blocks; research streams full-snapshot `text`), so callers pass an
 `on_event` callback and own their accumulator.
@@ -17,16 +18,20 @@ import json
 import random
 import sys
 import time
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
+from dataclasses import dataclass, field
 from typing import Any, Literal
 from uuid import uuid4
 
 from ..errors import (
+    NetworkError,
     PplxError,
     RateLimitError,
     SchemaError,
     StreamDeadlineError,
+    StreamFirstContentError,
+    StreamSilenceError,
     StreamStallError,
 )
 from ..wire import Client
@@ -49,50 +54,148 @@ COPILOT_STALL_SECONDS = 480.0
 # captures; 15 s is ~50x that, and heartbeats (~15 s apart) are what trigger
 # the check, so the worst-case wait is about 30 s instead of the stall window.
 COPILOT_SETTLE_SECONDS = 15.0
+# Total silence, heartbeats included, that ends an `ask` or `fetch --prompt`
+# stream (curl's low-speed abort): 3x the largest gap on a healthy stream.
+# Legacy streams send a heartbeat comment every 15.0 s, and on a quiet healthy
+# stream that heartbeat alone sets the gap, so 3 x 15 s.
+SILENCE_SECONDS = 45.0
+# The same bound for `research`. A research run can wait out a clarifying
+# question for its `auto_skip_seconds` (60 s in the captured run), and whether
+# heartbeats keep flowing during that wait has not been measured. The window
+# is fixed when the request starts, so it has to cover that wait: 60 s plus
+# 30 s (two heartbeat intervals), or the window above if that is larger.
+RESEARCH_SILENCE_SECONDS = max(SILENCE_SECONDS, 60.0 + 30.0)
+# A stream whose first progress event has not arrived by then is cut. On the
+# legacy body the first data frame, a query echo at 0.10-0.37 s, already counts
+# as progress, so this fires only when heartbeats keep the connection alive
+# but no data frame arrives.
+FIRST_CONTENT_SECONDS = 90.0
+# A deadline before content whose last progress event came longer ago than
+# this reads as a stuck run rather than a slow one: 3x the longest gap between
+# progress events measured on a healthy legacy stream (6.4 s, on research; a
+# thinking-model ask's longest was 4.0 s).
+STUCK_GAP_SECONDS = 20.0
+_RUN_MAY_BE_LIVE = "the run may still be running on the server and using quota"
 
 
 @dataclass
 class AskStreamState:
     backend_uuid: str | None = None
     read_write_token: str | None = None
+    context_uuid: str | None = None
+    # The last non-null one the frames carried: the model the server ran.
+    display_model: str | None = None
     saw_completed: bool = False
+    text_completed: bool = False
     failed: bool = False  # server emitted status=FAILED (e.g. model incompatible with mode)
-    # The deadline or stall that cut the stream short, kept rather than raised
-    # so the caller can salvage what it accumulated. Its type says which bound
-    # fired; `cutoff_warnings` and `no_content_error` report from it.
-    cutoff: StreamDeadlineError | None = None
+    # The bound or dropped connection that cut the stream short, kept rather
+    # than raised so the caller can salvage what it accumulated. Its type says
+    # which one; `cutoff_warnings` and `no_content_error` report from it.
+    cutoff: NetworkError | None = None
+    # Set by `release_on_exit` when the run may outlive pplx: the terminate it
+    # needed could not be sent, or failed. A retry would run alongside it.
+    cleanup_warnings: list[str] = field(default_factory=list)
 
 
-def release_thread(client: Client, state: AskStreamState, *, keep_thread: bool) -> None:
-    """Best-effort delete of the thread `state` identifies, unless `keep_thread`.
+def run_may_be_live(state: AskStreamState, *, raised: bool, settles_after_text: bool) -> bool:
+    """Whether the run may still be going on the server once pplx stops reading.
 
-    Callers run this in a `finally` around `run_ask_stream`, so every exit path
-    reaps the incognito thread, KeyboardInterrupt included. delete_thread never
-    raises, so cleanup cannot mask the exception already in flight.
+    Not after a COMPLETED or FAILED frame, nor after the completion the caller
+    stops at. A caller that `settles_after_text` (ask) holds a whole answer
+    once `text_completed` arrives, and that run completes on its own however
+    the stream then ends, unless an exception stopped the read (`raised`, e.g.
+    Ctrl-C): that interrupts a live stream.
     """
-    if not keep_thread and state.backend_uuid and state.read_write_token:
-        client.delete_thread(state.backend_uuid, state.read_write_token)
+    if state.saw_completed or state.failed:
+        return False
+    return not (settles_after_text and state.text_completed and not raised)
+
+
+@contextmanager
+def release_on_exit(
+    client: Client, state: AskStreamState, *, keep_thread: bool, settles_after_text: bool = False
+) -> Iterator[None]:
+    """Wrap `run_ask_stream`: on every exit, KeyboardInterrupt included,
+    terminate the run if it may still be going, then delete its thread unless
+    `keep_thread`.
+
+    Terminate needs the context uuid and the display model as well as the
+    backend uuid; delete needs the read_write_token. Both are best-effort and
+    never raise, so cleanup cannot mask the exception already in flight. A
+    terminate that was needed but could not be sent, or failed, is recorded in
+    `state.cleanup_warnings` for the result or error to report; with an
+    exception in flight there is neither, so they go to stderr.
+    """
+    raised = True
+    try:
+        yield
+        raised = False
+    finally:
+        if run_may_be_live(state, raised=raised, settles_after_text=settles_after_text):
+            _stop_run(client, state)
+        if not keep_thread and state.backend_uuid and state.read_write_token:
+            client.delete_thread(state.backend_uuid, state.read_write_token)
+        if raised:
+            for warning in state.cleanup_warnings:
+                print(f"warning: {warning}", file=sys.stderr)
+
+
+def _stop_run(client: Client, state: AskStreamState) -> None:
+    """Terminate a run that may still be going, noting in `state` when that
+    cannot be done. Without a backend uuid no run is known to exist."""
+    if not state.backend_uuid:
+        return
+    if not state.context_uuid or not state.display_model:
+        missing = "display model" if state.context_uuid else "context uuid"
+        state.cleanup_warnings.append(
+            f"{_RUN_MAY_BE_LIVE}: no {missing} arrived, so pplx could not ask it to stop"
+        )
+    elif not client.terminate(state.backend_uuid, state.context_uuid, state.display_model):
+        state.cleanup_warnings.append(f"{_RUN_MAY_BE_LIVE}: the request to stop it failed")
 
 
 def cutoff_warnings(state: AskStreamState) -> list[str]:
-    """The result warning naming which bound (stall or deadline) cut the stream."""
+    """The result warning naming which bound or drop cut the stream."""
     if state.cutoff is None:
         return []
     return [f"stream cut before COMPLETED, returning partial content: {state.cutoff}"]
 
 
-def cutoff_cause(state: AskStreamState) -> Literal["stall", "deadline"] | None:
-    """Which bound cut the stream: "stall", "deadline", or None when neither did
-    (a completed stream, or one the server closed early).
+def cutoff_silence(state: AskStreamState) -> float | None:
+    """How long the stream carried no bytes at all when that cut it (a "stall"
+    to `cutoff_cause`); None for any other end. A larger --stall-timeout
+    cannot help this cut, so results name it apart from a progress stall."""
+    return state.cutoff.seconds if isinstance(state.cutoff, StreamSilenceError) else None
+
+
+def cutoff_cause(state: AskStreamState) -> Literal["stall", "deadline", "drop"] | None:
+    """What cut the stream: "stall" (silence included), "deadline", "drop" (the
+    connection died mid-stream), or None when none did (a completed stream, or
+    one the server closed early).
 
     Results carry this on stdout because the retry differs by cause and agents
-    commonly discard stderr: a larger --timeout cannot help a stall.
+    commonly discard stderr: a larger --timeout cannot help a stall, and a
+    retry may help a drop.
     """
     if isinstance(state.cutoff, StreamStallError):
         return "stall"
-    if state.cutoff is not None:
+    if isinstance(state.cutoff, StreamDeadlineError):
         return "deadline"
+    if state.cutoff is not None:
+        return "drop"
     return None
+
+
+def downgrade_verdict(state: AskStreamState, requested: str) -> tuple[bool | None, list[str]]:
+    """(downgraded, warnings): whether the server ran a model other than the
+    one requested, judged by the last `display_model` the frames carried.
+    None when no frame named one."""
+    served = state.display_model
+    if served is None:
+        return None, []
+    if served == requested:
+        return False, []
+    return True, [f"model downgraded: requested {requested!r}, the server ran {served!r}"]
 
 
 def base_ask_params(
@@ -127,6 +230,10 @@ def base_ask_params(
         "send_back_text_in_streaming_api": True,
         "skip_search_enabled": True,
         "is_incognito": is_incognito,
+        # Without these the server may hold the run for a confirmation or
+        # approval only the web UI can give.
+        "should_ask_for_mcp_tool_confirmation": False,
+        "supports_tool_approval_modal": False,
         "attachments": [],
         "mentions": [],
         "client_coordinates": None,
@@ -293,17 +400,18 @@ def run_ask_stream(
     is_complete: Callable[[dict[str, Any]], bool] = event_marks_completed,
     is_progress: Callable[[dict[str, Any]], bool] | None = None,
     settle_seconds: float | None = None,
+    silence_seconds: float = SILENCE_SECONDS,
 ) -> None:
     """Drive the SSE call with retry/deadline/stall guard, filling in `state`.
 
     `on_event(event)` is invoked for every SSE event so the caller can accumulate
-    (chunks or snapshot). The orchestrator captures `backend_uuid` /
-    `read_write_token` and the completion / FAILED signals into `state`, which
-    the caller owns so it can run `release_thread` in a `finally` once the ids
-    are known, whatever ends the stream. Propagates a terminal `RateLimitError`
-    (exit 3) when retries are exhausted and a mid-stream `NetworkError` (exit 4);
-    a tripped deadline or stall returns with `state.cutoff` set so the caller can
-    salvage whatever `on_event` accumulated.
+    (chunks or snapshot). The orchestrator captures the thread ids, the display
+    model and the completion / FAILED signals into `state`, which the caller
+    owns so `release_on_exit` can clean up whatever ends the stream. Propagates
+    a terminal `RateLimitError` (exit 3) when retries are exhausted. A tripped
+    deadline, stall, silence or first-content bound, or a `NetworkError`,
+    returns with `state.cutoff` set so the caller can salvage whatever
+    `on_event` accumulated, or raise `no_content_error` when there is none.
 
     `is_complete` decides which event ends the stream. The default accepts the
     early `text_completed` flag, which is right for delta-accumulating callers
@@ -318,6 +426,10 @@ def run_ask_stream(
     `text_completed` frame: the answer is whole by then and only the terminal
     frame is outstanding. The
     resulting stall cutoff lands in `state.cutoff` like any other.
+
+    `silence_seconds` sizes the transport's abort on a stream that sends no
+    bytes at all (see `Client.sse_post`); the first-content bound is
+    `FIRST_CONTENT_SECONDS` for every verb.
     """
     overall_deadline = (time.monotonic() + timeout) if timeout else None
 
@@ -334,7 +446,8 @@ def run_ask_stream(
                 raise last_rate_limit
             # Budget already spent before this attempt — surface it as a tripped
             # deadline so a caller with no content raises StreamDeadlineError
-            # (exit 4), not the generic "no content" SchemaError.
+            # (exit 4), not the generic "no content" SchemaError. Only 429s came
+            # back, so no progress event arrived.
             state.cutoff = StreamDeadlineError(
                 f"{label} stream on {endpoint} exceeded {timeout:.1f}s deadline"
             )
@@ -352,6 +465,7 @@ def run_ask_stream(
                 is_complete=is_complete,
                 is_progress=is_progress,
                 settle_seconds=settle_seconds,
+                silence_seconds=silence_seconds,
             )
             break
         except StreamStallError as e:
@@ -362,11 +476,17 @@ def run_ask_stream(
             # caller's bound instead.
             state.cutoff = (
                 StreamDeadlineError(
-                    f"{label} stream on {endpoint} exceeded {timeout:.1f}s deadline"
+                    f"{label} stream on {endpoint} exceeded {timeout:.1f}s deadline",
+                    e.since_progress,
                 )
                 if timeout
                 else e
             )
+            break
+        except NetworkError as e:
+            # A connection that dies after content arrived still leaves a
+            # partial worth returning; with no content the caller raises this.
+            state.cutoff = e
             break
         except RateLimitError as e:
             last_rate_limit = e
@@ -383,30 +503,70 @@ def run_ask_stream(
 
 
 def no_content_error(
-    *, label: str, endpoint: str, timeout: float | None, cutoff: StreamDeadlineError | None
+    *,
+    label: str,
+    endpoint: str,
+    timeout: float | None,
+    cutoff: NetworkError | None,
+    warnings: Sequence[str] = (),
 ) -> PplxError:
     """The error for an ask-family stream that produced no usable content.
 
     The texts live here so the three verbs cannot drift apart on the one
-    distinction an agent acts on: a deadline or stall that tripped before the
-    first content is worth retrying (exit 4), whereas a stream the server closed
-    empty is not (exit 1).
+    distinction an agent acts on: a bound that tripped, or a connection that
+    dropped, before the first content is worth retrying (exit 4), whereas a
+    stream the server closed empty is not (exit 1). `warnings` end the text,
+    since an error carries no warnings list: a run that may still be going,
+    which a retry would run alongside, or questions a retry can answer.
     """
+    notes = error_notes(warnings)
+    if isinstance(cutoff, StreamFirstContentError):
+        return StreamFirstContentError(
+            f"{label} stream on {endpoint} sent no first content within "
+            f"{cutoff.seconds:.1f}s{notes}",
+            cutoff.seconds,
+        )
+    if isinstance(cutoff, StreamSilenceError):
+        return StreamSilenceError(
+            f"{label} stream on {endpoint} went silent: no bytes for {cutoff.seconds:.1f}s "
+            f"before the first content arrived{notes}",
+            cutoff.seconds,
+        )
     if isinstance(cutoff, StreamStallError):
         return StreamStallError(
             f"{label} stream on {endpoint} stalled: no new content for {cutoff.seconds:.1f}s "
-            f"before the first content arrived",
+            f"before the first content arrived{notes}",
             cutoff.seconds,
         )
+    if cutoff is not None and not isinstance(cutoff, StreamDeadlineError):
+        return NetworkError(f"{cutoff}{notes}") if notes else cutoff
     if cutoff is not None:
         # `timeout` is None only when the budget was spent by an earlier retry
         # rather than by a caller-supplied bound.
         budget = f"{timeout:.1f}s" if timeout is not None else "its"
         return StreamDeadlineError(
             f"{label} stream on {endpoint} exceeded {budget} deadline "
-            f"before the first content arrived"
+            f"before the first content arrived; {_deadline_advice(cutoff.since_progress)}{notes}",
+            cutoff.since_progress,
         )
-    return SchemaError(f"{label} stream on {endpoint} closed with no content")
+    return SchemaError(f"{label} stream on {endpoint} closed with no content{notes}")
+
+
+def error_notes(warnings: Sequence[str]) -> str:
+    """The suffix that ends an error's text with the warnings a result would
+    have carried: an error has no warnings list."""
+    return "".join(f"; {w}" for w in warnings)
+
+
+def _deadline_advice(since_progress: float | None) -> str:
+    """Which retry fits a deadline before content: a run still making progress
+    needs more time, one gone quiet for longer than a healthy run does is stuck."""
+    if since_progress is None:
+        return "no progress event arrived: retry once"
+    came = f"the last progress event came {since_progress:.1f}s before the cut"
+    if since_progress <= STUCK_GAP_SECONDS:
+        return f"{came}, so the run was still working: raise --timeout"
+    return f"{came}, longer than a healthy run goes without one: retry once"
 
 
 def _drive_one(
@@ -422,6 +582,7 @@ def _drive_one(
     is_complete: Callable[[dict[str, Any]], bool],
     is_progress: Callable[[dict[str, Any]], bool] | None,
     settle_seconds: float | None,
+    silence_seconds: float,
 ) -> None:
     event_count = 0
     window = stall_seconds
@@ -452,6 +613,8 @@ def _drive_one(
             max_total_seconds=remaining_seconds,
             stall_seconds=stall_seconds,
             is_progress=is_progress,
+            silence_seconds=silence_seconds,
+            first_content_seconds=FIRST_CONTENT_SECONDS,
             **extra,
         ):
             event_count += 1
@@ -463,6 +626,12 @@ def _drive_one(
                     state.backend_uuid = data["backend_uuid"]
                 if state.read_write_token is None and isinstance(data.get("read_write_token"), str):
                     state.read_write_token = data["read_write_token"]
+                if state.context_uuid is None and isinstance(data.get("context_uuid"), str):
+                    state.context_uuid = data["context_uuid"]
+                if isinstance(data.get("display_model"), str):
+                    state.display_model = data["display_model"]
+                if data.get("text_completed"):
+                    state.text_completed = True
             on_event(event)
             # FAILED frames still carry text/blocks, so check before treating the
             # event as normal progress.

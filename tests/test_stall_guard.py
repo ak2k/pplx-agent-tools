@@ -25,6 +25,8 @@ from pplx_agent_tools.errors import (
     NetworkError,
     RateLimitError,
     StreamDeadlineError,
+    StreamFirstContentError,
+    StreamSilenceError,
     StreamStallError,
 )
 from pplx_agent_tools.render import (
@@ -39,6 +41,8 @@ from pplx_agent_tools.verbs._ask_common import (
     COPILOT_SETTLE_SECONDS,
     COPILOT_STALL_SECONDS,
     DEFAULT_STALL_SECONDS,
+    FIRST_CONTENT_SECONDS,
+    SILENCE_SECONDS,
     AskStreamState,
     blocks_changed,
     cutoff_cause,
@@ -257,12 +261,14 @@ def test_deadline_tighter_than_stall_reports_as_deadline(clock: _Clock) -> None:
     assert "exceeded 50.0s deadline" in str(exc.value)
 
 
-def test_curl_timeout_mid_stream_is_a_stall(clock: _Clock) -> None:
+def test_curl_timeout_mid_stream_is_silence(clock: _Clock) -> None:
     client = _StreamClient(
         [(0, _chunk("a")), (0, _curl_error(CurlECode.OPERATION_TIMEDOUT))], clock
     )
-    with pytest.raises(StreamStallError, match=r"no new content for 120\.0s"):
-        list(client.sse_post("/x", {}, max_total_seconds=1800, stall_seconds=120))
+    with pytest.raises(StreamSilenceError, match=r"no bytes for 25\.0s"):
+        list(
+            client.sse_post("/x", {}, max_total_seconds=1800, stall_seconds=120, silence_seconds=25)
+        )
 
 
 def test_curl_timeout_is_a_deadline_when_the_deadline_is_the_tighter_bound(clock: _Clock) -> None:
@@ -274,11 +280,11 @@ def test_curl_timeout_is_a_deadline_when_the_deadline_is_the_tighter_bound(clock
     assert not isinstance(exc.value, StreamStallError)
 
 
-def test_curl_timeout_without_stall_guard_is_a_stall_of_the_backstop(clock: _Clock) -> None:
+def test_curl_timeout_without_a_silence_window_is_silence_of_the_backstop(clock: _Clock) -> None:
     client = _StreamClient(
         [(0, _chunk("a")), (0, _curl_error(CurlECode.OPERATION_TIMEDOUT))], clock
     )
-    with pytest.raises(StreamStallError, match=r"no new content for 90\.0s"):
+    with pytest.raises(StreamSilenceError, match=r"no bytes for 90\.0s"):
         list(client.sse_post("/x", {}, max_total_seconds=180))
 
 
@@ -294,7 +300,11 @@ def test_curl_timeout_after_the_deadline_passed_reports_the_deadline(clock: _Clo
         clock,
     )
     with pytest.raises(StreamDeadlineError, match=r"exceeded 1800\.0s deadline") as exc:
-        list(client.sse_post("/x", {}, max_total_seconds=1800, stall_seconds=240))
+        list(
+            client.sse_post(
+                "/x", {}, max_total_seconds=1800, stall_seconds=240, silence_seconds=240
+            )
+        )
     assert not isinstance(exc.value, StreamStallError)
 
 
@@ -311,8 +321,35 @@ def test_curl_timeout_after_the_deadline_is_a_stall_when_the_stall_came_due_firs
         ],
         clock,
     )
-    with pytest.raises(StreamStallError):
-        list(client.sse_post("/x", {}, max_total_seconds=300, stall_seconds=240))
+    with pytest.raises(StreamStallError) as exc:
+        list(
+            client.sse_post("/x", {}, max_total_seconds=300, stall_seconds=240, silence_seconds=240)
+        )
+    assert type(exc.value) is StreamStallError
+
+
+@pytest.mark.parametrize(
+    ("steps", "expected"),
+    [
+        ([(90, _curl_error(CurlECode.OPERATION_TIMEDOUT))], StreamSilenceError),
+        (
+            [*_heartbeats(75), (90, _curl_error(CurlECode.OPERATION_TIMEDOUT))],
+            StreamFirstContentError,
+        ),
+    ],
+    ids=["no bytes at all", "heartbeats then silence"],
+)
+def test_a_silence_window_as_long_as_the_first_content_bound_names_a_socket_that_sent_nothing(
+    clock: _Clock, steps: list[Step], expected: type[StreamStallError]
+) -> None:
+    client = _StreamClient(steps, clock)
+    with pytest.raises(StreamStallError) as exc:
+        list(
+            client.sse_post(
+                "/x", {}, max_total_seconds=1800, silence_seconds=90, first_content_seconds=90
+            )
+        )
+    assert type(exc.value) is expected
 
 
 def test_research_alternating_replayed_snapshots_still_stalls(clock: _Clock) -> None:
@@ -331,23 +368,27 @@ def test_other_curl_errors_stay_network_errors(clock: _Clock) -> None:
 
 
 @pytest.mark.parametrize(
-    ("stall", "deadline", "expected"),
+    ("silence", "deadline", "expected"),
     [
-        (DEFAULT_STALL_SECONDS, 1800.0, (30.0, 210.0)),  # abort at the default window
+        (SILENCE_SECONDS, 1800.0, (30.0, SILENCE_SECONDS - 30.0)),  # the ask-family window
         (120.0, 1800.0, (30.0, 90.0)),  # low-speed abort after ~120 s of silence
         (120.0, 50.0, (30.0, 20.0)),  # capped by the remaining deadline
         (10.0, None, (10.0, 0.0)),  # window shorter than the connect leg shrinks it
-        (None, 180.0, (30.0, 60.0)),  # guard disabled: today's 90 s backstop
+        (None, 180.0, (30.0, 60.0)),  # no window: the 90 s backstop
     ],
 )
 def test_transport_read_leg_matches_the_silence_window(
     clock: _Clock,
-    stall: float | None,
+    silence: float | None,
     deadline: float | None,
     expected: tuple[float, float],
 ) -> None:
     client = _StreamClient([(0, COMPLETED)], clock)
-    list(client.sse_post("/x", {}, max_total_seconds=deadline, stall_seconds=stall))
+    list(
+        client.sse_post(
+            "/x", {}, max_total_seconds=deadline, stall_seconds=240, silence_seconds=silence
+        )
+    )
     assert client.session.timeout == expected
 
 
@@ -393,10 +434,10 @@ def test_stall_before_any_content_exits_network(
     clock: _Clock, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     client = _StreamClient(_heartbeats(600), clock)
-    rc = _run_cli(monkeypatch, cli_ask.main, ["q", *LONG_DEADLINE], client)
+    rc = _run_cli(monkeypatch, cli_ask.main, ["q", "--stall-timeout", "60"], client)
     cap = capsys.readouterr()
     assert rc == EXIT_NETWORK
-    assert "no new content for 480.0s before the first content arrived" in cap.err
+    assert "no new content for 60.0s before the first content arrived" in cap.err
 
 
 def test_research_repeating_its_snapshot_stalls_with_the_partial(
@@ -450,7 +491,7 @@ def test_envelope_frames_before_content_exit_network(
     rc = _run_cli(monkeypatch, cli_ask.main, ["q", *LONG_DEADLINE], client)
     cap = capsys.readouterr()
     assert rc == EXIT_NETWORK
-    assert "no new content for 480.0s before the first content arrived" in cap.err
+    assert f"sent no first content within {FIRST_CONTENT_SECONDS:.1f}s" in cap.err
 
 
 def test_ask_whose_blocks_keep_changing_runs_past_the_window(
@@ -556,15 +597,15 @@ def test_ask_cli_silent_after_text_completed_exits_zero(
     assert clock.now - 1000.0 <= COPILOT_SETTLE_SECONDS + 15
 
 
-def test_ask_fully_silent_after_text_completed_ends_at_the_stall_window(clock: _Clock) -> None:
+def test_ask_fully_silent_after_text_completed_ends_at_the_silence_window(clock: _Clock) -> None:
     """With no COMPLETED frame and no heartbeats nothing reaches the in-loop
-    settle check, so curl's low-speed abort, sized to the stall window, ends the
-    read; the whole answer is still returned."""
+    settle check, so curl's low-speed abort, sized to the silence window, ends
+    the read; the whole answer is still returned."""
     client = _StreamClient(
         [
             (0, _chunk("the ")),
             (0, _text_completed("answer")),
-            (COPILOT_STALL_SECONDS, _curl_error(CurlECode.OPERATION_TIMEDOUT)),
+            (SILENCE_SECONDS, _curl_error(CurlECode.OPERATION_TIMEDOUT)),
         ],
         clock,
     )
@@ -572,8 +613,7 @@ def test_ask_fully_silent_after_text_completed_ends_at_the_stall_window(clock: _
     assert result.answer == "the answer"
     assert result.completion == FinishedWithoutSources()
     assert result.warnings == [SOURCES_FRAME_MISSING]
-    assert clock.now - 1000.0 == COPILOT_STALL_SECONDS
-    assert client.session.timeout[0] + client.session.timeout[1] == COPILOT_STALL_SECONDS
+    assert client.session.timeout[0] + client.session.timeout[1] == SILENCE_SECONDS
 
 
 def test_research_whose_text_keeps_changing_runs_past_the_window(
@@ -601,13 +641,14 @@ def test_curl_timeout_after_content_keeps_the_partial(
     cap = capsys.readouterr()
     assert rc == EXIT_PARTIAL
     assert "kept" in cap.out
-    assert "stalled" in cap.err
+    assert f"stream: incomplete (stall: no bytes for {SILENCE_SECONDS:.1f}s)" in cap.out
+    assert "went silent: no bytes for" in cap.err
 
 
-def test_non_timeout_transport_error_after_content_exits_network(
+def test_non_timeout_transport_error_before_content_exits_network(
     clock: _Clock, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    client = _StreamClient([(0, _chunk("lost")), (0, _curl_error(CurlECode.RECV_ERROR))], clock)
+    client = _StreamClient([(0, ENVELOPE), (0, _curl_error(CurlECode.RECV_ERROR))], clock)
     rc = _run_cli(monkeypatch, cli_ask.main, ["q"], client)
     assert rc == EXIT_NETWORK
     assert "mid-stream" in capsys.readouterr().err
