@@ -6,12 +6,18 @@ from __future__ import annotations
 
 import io
 import json
+from collections import Counter
+from pathlib import Path
 from typing import Any
 
 import pytest
 
+from pplx_agent_tools.askstream.blocks import BlockStore, FrameApplied
+from pplx_agent_tools.askstream.drift import Drift, name_of
+from pplx_agent_tools.askstream.frames import AskFrame
 from pplx_agent_tools.askstream.fsm import Done, Known, NoIds, ReconnectReason, UuidOnly
 from pplx_agent_tools.askstream.outcome import Completed, Cut, EndedEarly
+from pplx_agent_tools.askstream.patch import Limits
 from pplx_agent_tools.askstream.projections import CITATIONS_NOT_FINAL, research_answer
 from pplx_agent_tools.errors import (
     AuthError,
@@ -23,9 +29,16 @@ from pplx_agent_tools.errors import (
     StreamSilenceError,
     StreamStallError,
 )
+from pplx_agent_tools.handles import ThreadHandle, ThreadStore
 from pplx_agent_tools.verbs._ask_common import Source, cutoff_cause, cutoff_silence
-from pplx_agent_tools.verbs._research_stream import ResearchRun, release
-from pplx_agent_tools.verbs.research import ENDPOINT, _shortfall_verdict, decode_research_text
+from pplx_agent_tools.verbs._research_stream import ResearchRun, _unread, release
+from pplx_agent_tools.verbs.research import (
+    ENDPOINT,
+    _shortfall_verdict,
+    decode_research_text,
+    finish_report,
+)
+from tests._askframes import diff, frame, replace, report, snap
 from tests._driver import (
     HEARTBEAT,
     FakeClient,
@@ -215,6 +228,81 @@ def test_a_terminal_text_whose_report_body_is_shorter_than_the_streamed_one_is_f
         f"kept snapshot's report body decodes to {run.body_len} chars but an earlier frame "
         f"carried {run.consumer.report_high}; the report may be truncated"
     ]
+
+
+def _cut_p1a(*, reject_report_patch: bool) -> ResearchRun:
+    """p1-A's first 60 frames, then a drop no reconnect recovers."""
+    items = fixture_items("p1-A")[:60]
+    if reject_report_patch:
+        items = json.loads(json.dumps(items))
+        for block in items[11]["data"]["blocks"]:
+            if block.get("intended_usage") == "unified_assets":
+                block["diff_block"]["patches"][0]["path"] = "/no/such/path"
+    initial = [*paced(items), (100.0, NetworkError("reset"))]
+    client = FakeClient(FakeClock(), initials=[initial], reconnects=_refused(3, NetworkError("x")))
+    return run_research(client)
+
+
+def test_a_partial_whose_report_patch_was_rejected_is_flagged_short(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    whole, cut = _cut_p1a(reject_report_patch=False), _cut_p1a(reject_report_patch=True)
+    assert len(cut.answer) < len(whole.answer)
+    results = [
+        finish_report(
+            run,
+            ThreadHandle(ThreadStore()),
+            label="research",
+            endpoint=ENDPOINT,
+            query="q",
+            mode="research",
+            requested_model=None,
+            timeout=3600.0,
+            resume=None,
+        )
+        for run in (whole, cut)
+    ]
+    assert not results[0].content_shortfall
+    assert not any("could not be applied" in w for w in results[0].warnings)
+    assert results[1].content_shortfall
+    assert [w for w in results[1].warnings if "could not be applied" in w] == [
+        "a patch to the report could not be applied (missing_target), so it stopped "
+        "updating and the answer may be missing content"
+    ]
+
+
+def _report_store(*frames: AskFrame) -> tuple[BlockStore, Counter[Drift]]:
+    store = BlockStore("ask_text_only", Limits())
+    drift: Counter[Drift] = Counter()
+    first = frame(diff("unified_assets", "unified_assets_block", replace("", report("Body"))))
+    for f in (first, *frames):
+        applied = store.apply_frame(f)
+        assert isinstance(applied, FrameApplied)
+        drift.update(applied.drift)
+    return store, drift
+
+
+def test_a_field_a_snapshot_brought_back_in_sync_is_not_unread() -> None:
+    rejected = frame(diff("unified_assets", "unified_assets_block", replace("/no/such", "x")))
+    resynced = frame(snap("unified_assets", "unified_assets_block", report("Body more")))
+    store, drift = _report_store(rejected)
+    assert [d.kind for d in drift] == ["patch_rejected"]
+    assert len(_unread(store, drift)) == 1
+    store, drift = _report_store(rejected, resynced)
+    assert [d.kind for d in drift] == ["patch_rejected"]
+    assert _unread(store, drift) == []
+
+
+def test_a_read_path_missing_from_its_document_is_unread() -> None:
+    store, _ = _report_store()
+    missing = Counter([Drift("projection_missing", name_of("unified_assets/assets"))])
+    assert _unread(store, missing) == [
+        "the report arrived in a shape pplx could not read (unified_assets/assets), so the "
+        "answer may be missing content"
+    ]
+    other = Counter([Drift("projection_missing", name_of("text"))])
+    assert _unread(store, other) == []
 
 
 # --- outcome to cutoff -------------------------------------------------------------------------

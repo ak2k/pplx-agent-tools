@@ -18,13 +18,14 @@ from __future__ import annotations
 import random
 import sys
 import time
+from collections import Counter
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal, TextIO, TypeAlias
 
 from typing_extensions import assert_never
 
-from ..askstream.blocks import BlockStore
+from ..askstream.blocks import BlockStore, Desynced
 from ..askstream.cleanup import (
     Delete,
     DeleteKept,
@@ -36,6 +37,7 @@ from ..askstream.cleanup import (
     cleanup_plan,
     kept_on_loss,
 )
+from ..askstream.drift import Drift
 from ..askstream.driver import Driver, Opener, StreamClient, delete
 from ..askstream.frames import AskFrame
 from ..askstream.fsm import AUTH_NOTICE, ReconnectReason, State
@@ -57,7 +59,13 @@ from ..askstream.policy import (
     for_verb,
     stall_of,
 )
-from ..askstream.projections import citation_warnings, report_body, research_answer
+from ..askstream.projections import (
+    READS,
+    ReadKey,
+    citation_warnings,
+    report_body,
+    research_answer,
+)
 from ..errors import (
     AuthError,
     NetworkError,
@@ -86,6 +94,12 @@ RECONNECT = Bounded(3, 8)
 Parts: TypeAlias = tuple[list[str], list[str], list[Source], list[str] | None]
 # "deleted": the delete succeeded; "cleaned": released without one.
 ThreadStatus = Literal["none", "gone", "kept", "deleted", "cleaned"]
+# The fields a projected answer is read from, as a warning names them.
+_READ_LABELS: dict[ReadKey, str] = {
+    "ask_text": "cover note",
+    "unified_assets": "report",
+    "web_results": "source list",
+}
 
 
 @dataclass(frozen=True)
@@ -146,7 +160,9 @@ class SnapshotConsumer:
 class ResearchRun:
     """A finished run: what research builds its result from, and the parts
     a caller may inspect. `body_len`, `best` and `saw` feed v0.8's
-    shortfall verdict; `warnings` holds the projection's citation warning."""
+    shortfall verdict; `warnings` holds the projection's citation warning,
+    and `unread` a warning for each field of a projected answer the store
+    could not keep whole, which marks the answer short."""
 
     driver: Driver
     store: BlockStore
@@ -161,6 +177,7 @@ class ResearchRun:
     saw: dict[str, bool]
     questions: list[str] | None
     warnings: list[str]
+    unread: list[str] = field(default_factory=list[str])
 
     @property
     def terminal_text(self) -> str | None:
@@ -462,7 +479,29 @@ def _salvage(
         saw={"body": consumer.report_high > 0, "last_frame_decoded": consumer.decode_error is None},
         questions=None,
         warnings=list(citation_warnings(projected)),
+        unread=_unread(store, driver.drift),
     )
+
+
+def _unread(store: BlockStore, drift: Counter[Drift]) -> list[str]:
+    """A warning for each field a projected answer reads that a rejected
+    patch left out of sync, or that arrived without the list it is read
+    from: the answer may be missing what it held."""
+    out: list[str] = []
+    for key, label in _READ_LABELS.items():
+        state = store.state(READS[key])
+        if isinstance(state, Desynced):
+            out.append(
+                f"a patch to the {label} could not be applied ({state.reason}), so it "
+                "stopped updating and the answer may be missing content"
+            )
+        out += [
+            f"the {label} arrived in a shape pplx could not read ({d.name}), so the "
+            "answer may be missing content"
+            for d in drift
+            if d.kind == "projection_missing" and d.name.split("/")[0] == key
+        ]
+    return out
 
 
 def raise_if_empty(

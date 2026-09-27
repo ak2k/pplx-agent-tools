@@ -300,6 +300,8 @@ def finish_report(
     content_shortfall, warnings = _shortfall_verdict(
         answer_len=len(run.answer), body_len=run.body_len, best=run.best, saw=run.saw
     )
+    if run.unread:
+        content_shortfall, warnings = True, run.unread + warnings
     warnings += _clarifying_warnings(run.questions)
     downgraded: bool | None = None
     if requested_model is not None:
