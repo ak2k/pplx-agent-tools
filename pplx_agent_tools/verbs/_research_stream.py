@@ -7,9 +7,6 @@ outcome onto the cutoff errors v0.8's transport raised, so `cutoff_warnings`,
 A diff-mode stream carries `text` only on its COMPLETED frame, so a run that
 ends without one is answered from the block store's projections.
 
-Cleanup keeps the thread of a run that may go on server-side once the read
-ends, for `pplx resume`, and keeps the run's record (handles.py) in step.
-
 research.py imports this module, so it passes its decoding in (`Decoder`).
 """
 
@@ -18,7 +15,7 @@ from __future__ import annotations
 import random
 import sys
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal, TextIO, TypeAlias
 
@@ -61,14 +58,12 @@ from ..askstream.projections import citation_warnings, report_body, research_ans
 from ..errors import (
     AuthError,
     NetworkError,
-    PplxError,
     SchemaError,
     StreamDeadlineError,
     StreamFirstContentError,
     StreamSilenceError,
     StreamStallError,
 )
-from ..handles import ThreadHandle
 from ._ask_common import (
     _RUN_MAY_BE_LIVE,
     FIRST_CONTENT_SECONDS,
@@ -79,12 +74,12 @@ from ._ask_common import (
     no_content_error,
 )
 
+LABEL = "research"
 RECONNECT = Bounded(3, 8)
 
 # (cover note parts, report body parts, sources, clarifying question texts)
 Parts: TypeAlias = tuple[list[str], list[str], list[Source], list[str] | None]
-# "deleted": the delete succeeded; "cleaned": released without one.
-ThreadStatus = Literal["none", "gone", "kept", "deleted", "cleaned"]
+ThreadStatus = Literal["none", "gone", "kept", "cleaned"]
 
 
 @dataclass(frozen=True)
@@ -152,7 +147,6 @@ class ResearchRun:
     consumer: SnapshotConsumer
     state: AskStreamState
     thread: ThreadStatus
-    outcome: Outcome
     answer: str
     sources: list[Source]
     body_len: int
@@ -172,39 +166,23 @@ def research_stream(
     decoder: Decoder,
     *,
     endpoint: str,
-    label: str = "research",
     keep_thread: bool = False,
-    keep_on_raise: bool = False,
-    hold: bool = False,
     timeout: float | None = None,
     stall_seconds: float | None = None,
     progress: bool = False,
-    state: AskStreamState | None = None,
-    handle: ThreadHandle | None = None,
     on_data: Callable[[dict[str, object]], None] | None = None,
     observe: Callable[[ResearchRun], None] | None = None,
-    clock: Callable[[], float] | None = None,
-    sleep: Callable[[float], None] | None = None,
+    clock: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
     rand: Callable[[], float] = random.random,
     err: TextIO | None = None,
 ) -> ResearchRun:
     """Run one research stream to its end and release its thread.
 
-    Returns the salvaged run, a FAILED or empty one included, for the caller
-    to build its result or error from (`raise_if_empty`). Raises only what
-    ended the read itself: an exception (Ctrl-C included), or a rejection
-    with no partial to salvage. `observe` sees the run before it returns.
-
-    Cleanup (`release`) keeps the thread of a run that may go on server-side
-    once the read ends. `keep_on_raise` keeps it, sending nothing, when the
-    read ends in an exception, which otherwise terminates and deletes. `hold`
-    sends no delete and leaves the record of a thread the read is done with,
-    for a caller that deletes it only once the report is out.
-
-    `state` is filled in, when given, instead of a fresh one; the thread
-    ids, `kept` and `deleted` are set even when the read raises. `handle`
-    records the thread before the frame that first names it is applied, and
-    is settled from what cleanup did.
+    Returns the salvaged run, a FAILED one included (`state.failed`), for
+    research to build its result or its FAILED error from. Raises when
+    nothing can be salvaged, with v0.8's errors and texts. `observe` sees
+    the run before any such raise.
     """
     policy = for_verb(
         "research",
@@ -216,37 +194,26 @@ def research_stream(
     )
     if isinstance(policy, PolicyError):
         raise ValueError(policy.reason)
-    state = AskStreamState() if state is None else state
     store = BlockStore("ask_text_only", policy.limits, expect_text=True)
     consumer = SnapshotConsumer(decoder, store)
-
-    def seen(data: dict[str, object]) -> None:
-        _note_ids(state, data)
-        if handle is not None:
-            handle.observe(state.backend_uuid, state.read_write_token)
-        if on_data is not None:
-            on_data(data)
-
     driver = Driver(
         policy,
         client,
         opener,
         store,
-        label=f"pplx {label}",
+        label=f"pplx {LABEL}",
         on_frame=consumer.on_frame,
-        on_data=seen,
+        on_data=on_data,
         progress=progress,
-        # Looked up per call rather than bound at import, so a test's
-        # stand-in for this module's clock reaches the driver.
-        clock=time.monotonic if clock is None else clock,
-        sleep=time.sleep if sleep is None else sleep,
+        clock=clock,
+        sleep=sleep,
         rand=rand,
         err=err,
     )
     raised = True
     try:
         done = driver.run()
-        raised = _unsalvageable(done.outcome) is not None
+        raised = False
     finally:
         thread, warnings = release(
             client,
@@ -254,51 +221,29 @@ def research_stream(
             driver.trigger,
             gone=driver.gone,
             display_model=driver.display_model,
-            keep_thread=keep_thread or hold,
-            raised=raised,
-            keep_on_raise=keep_on_raise,
+            keep_thread=keep_thread,
         )
-        state.kept, state.deleted = thread == "kept", thread == "deleted"
-        state.cleanup_warnings += warnings
-        if handle is not None:
-            _settle(handle, thread, hold=hold)
         if raised:
-            _warn([*warnings, *(handle.warnings if handle is not None else [])], err)
+            _warn(warnings, err)
     outcome = done.outcome
-    unsalvageable = _unsalvageable(outcome)
-    if unsalvageable is not None:
-        raise unsalvageable
-    state.display_model = driver.display_model
-    state.saw_completed = isinstance(outcome, Completed)
-    state.failed = isinstance(outcome, ServerFailed)
-    state.cutoff = _cutoff(outcome, driver, policy.silence_s, endpoint, label)
-    run = _salvage(driver, store, consumer, state, thread, outcome)
+    # A cap or an oversized event leaves the store unreadable, and no other
+    # rejection after the first byte has content to salvage.
+    if isinstance(outcome, Rejected) and not isinstance(outcome.error, NetworkError):
+        _warn(warnings, err)
+        raise outcome.error
+    state = AskStreamState(
+        display_model=driver.display_model,
+        saw_completed=isinstance(outcome, Completed),
+        failed=isinstance(outcome, ServerFailed),
+        cutoff=_cutoff(outcome, driver, policy.silence_s, endpoint),
+        cleanup_warnings=warnings,
+    )
+    run = _salvage(driver, store, consumer, state, thread)
     if observe is not None:
         observe(run)
+    if not state.failed:
+        _raise_if_empty(run, outcome, decoder, endpoint, timeout)
     return run
-
-
-def _unsalvageable(outcome: Outcome) -> PplxError | None:
-    """The error of a rejection with nothing to salvage: a cap or an
-    oversized event leaves the store unreadable, and no other rejection
-    after the first byte has content."""
-    if isinstance(outcome, Rejected) and not isinstance(outcome.error, NetworkError):
-        return outcome.error
-    return None
-
-
-def _note_ids(state: AskStreamState, data: dict[str, object]) -> None:
-    """The first thread ids the frames carried, raw: the record and the
-    delete of a held thread need the token itself."""
-    uuid, token, context = (
-        data.get(k) for k in ("backend_uuid", "read_write_token", "context_uuid")
-    )
-    if state.backend_uuid is None and isinstance(uuid, str):
-        state.backend_uuid = uuid
-    if state.read_write_token is None and isinstance(token, str):
-        state.read_write_token = token
-    if state.context_uuid is None and isinstance(context, str):
-        state.context_uuid = context
 
 
 def release(
@@ -309,36 +254,24 @@ def release(
     gone: bool,
     display_model: str | None,
     keep_thread: bool,
-    raised: bool = False,
-    keep_on_raise: bool = False,
 ) -> tuple[ThreadStatus, list[str]]:
-    """Clean up after a run, on every exit path; `raised` when the read
-    ended in an exception.
-
-    Nothing is sent for a thread the server reports gone, nor for one kept
-    for resume: a run lost to a drop or silence, or with `keep_on_raise` any
-    read that raised. Otherwise the plan's legs, except that a run pplx could
-    not stop (its terminate could not be sent, or failed) keeps its thread
-    unless an exception is in flight: the run goes on without a listener,
-    and its thread is then how its report is got. Returns the thread's
-    status and the warnings for a run that may still be going.
-    """
+    """Clean up after a run, on every exit path: nothing for a thread the
+    server reports gone or one kept for resume, otherwise the plan's legs.
+    Returns the thread's status and the warnings for a run that may still
+    be going."""
     if last is None:
         return "none", []
     if gone:
         return "gone", []
-    if (raised and keep_on_raise) or (not raised and kept_on_loss(last, trigger, gone)):
+    if kept_on_loss(last, trigger, gone):
         return "kept", []
     terminate, delete_leg = cleanup_plan(last, keep_thread, display_model)
     warnings: list[str] = []
-    stopped = True
     match terminate:
         case Terminate(ref):
-            stopped = client.terminate(ref.uuid, ref.context, ref.model_preference)
-            if not stopped:
+            if not client.terminate(ref.uuid, ref.context, ref.model_preference):
                 warnings.append(f"{_RUN_MAY_BE_LIVE}: the request to stop it failed")
         case TerminateUnsupported(missing):
-            stopped = False
             warnings.append(
                 f"{_RUN_MAY_BE_LIVE}: no {missing} arrived, so pplx could not ask it to stop"
             )
@@ -346,34 +279,23 @@ def release(
             pass
         case _:
             assert_never(terminate)
-    if not stopped and not raised:
-        return "kept", warnings
     match delete_leg:
         case Delete(ref):
-            return ("deleted" if delete(client, ref) else "cleaned"), warnings
+            delete(client, ref)
         case DeleteNotNeeded() | DeleteKept() | DeleteNoToken():
-            return "cleaned", warnings
+            pass
         case _:
             assert_never(delete_leg)
-
-
-def _settle(handle: ThreadHandle, thread: ThreadStatus, *, hold: bool) -> None:
-    """Bring the record in line with cleanup: kept while the thread can be
-    resumed, removed once it is deleted, gone or finished with (unless
-    `hold`). A run that never named its thread has no record to change."""
-    if thread == "kept":
-        handle.keep()
-    elif thread in ("gone", "deleted") or not hold:
-        handle.forget()
+    return "cleaned", warnings
 
 
 def _cutoff(
-    outcome: Outcome, driver: Driver, silence_s: float, endpoint: str, label: str
+    outcome: Outcome, driver: Driver, silence_s: float, endpoint: str
 ) -> NetworkError | None:
     """The error v0.8's transport raised for the same end."""
     match outcome:
         case Cut():
-            return _cut_error(outcome, driver, silence_s, endpoint, label)
+            return _cut_error(outcome, driver, silence_s, endpoint)
         case Lost(msg):
             e = driver.last_error
             # A failed reconnect can leave a silence or deadline error last,
@@ -389,14 +311,12 @@ def _cutoff(
             assert_never(outcome)
 
 
-def _cut_error(
-    cut: Cut, driver: Driver, silence_s: float, endpoint: str, label: str
-) -> StreamDeadlineError:
+def _cut_error(cut: Cut, driver: Driver, silence_s: float, endpoint: str) -> StreamDeadlineError:
     seconds = cut.seconds
     match cut.cause:
         case "deadline":
             return StreamDeadlineError(
-                f"{label} stream on {endpoint} exceeded {seconds:.1f}s deadline",
+                f"{LABEL} stream on {endpoint} exceeded {seconds:.1f}s deadline",
                 driver.since_progress,
             )
         case "stall" if driver.trigger == "silence":
@@ -421,7 +341,6 @@ def _salvage(
     consumer: SnapshotConsumer,
     state: AskStreamState,
     thread: ThreadStatus,
-    outcome: Outcome,
 ) -> ResearchRun:
     """The answer from the newest decoded `text`, or else from the
     projections, whose sources are the run's retained list."""
@@ -432,7 +351,6 @@ def _salvage(
             consumer,
             state,
             thread,
-            outcome,
             answer=consumer.answer,
             sources=consumer.sources,
             body_len=consumer.body_len,
@@ -448,7 +366,6 @@ def _salvage(
         consumer,
         state,
         thread,
-        outcome,
         answer=projected.text,
         sources=[Source(s.url, s.title, s.snippet) for s in store.run_sources],
         body_len=len(report_body(store)),
@@ -459,19 +376,12 @@ def _salvage(
     )
 
 
-def raise_if_empty(
-    run: ResearchRun,
-    decoder: Decoder,
-    *,
-    label: str,
-    endpoint: str,
-    timeout: float | None,
-    notes: Sequence[str],
+def _raise_if_empty(
+    run: ResearchRun, outcome: Outcome, decoder: Decoder, endpoint: str, timeout: float | None
 ) -> None:
-    """v0.8's errors for a run with nothing to return; a FAILED run's error
-    is its caller's. `notes` end the text: cleanup has run by then, so a run
-    it could not stop, or a thread it kept, is named there."""
-    outcome = run.outcome
+    """v0.8's errors for a run with nothing to return. Cleanup has run by
+    now, so a run it could not stop is named at the end of the text."""
+    notes = run.state.cleanup_warnings
     undecodable = run.consumer.decode_error
     if run.consumer.text is None and undecodable is not None and not (run.answer or run.sources):
         raise SchemaError(f"{undecodable}{error_notes(notes)}") from undecodable
@@ -484,11 +394,11 @@ def raise_if_empty(
             raise AuthError(f"{refused}{error_notes(notes)}") from refused
         raise refused
     raise no_content_error(
-        label=label,
+        label=LABEL,
         endpoint=endpoint,
         timeout=timeout,
         cutoff=run.state.cutoff,
-        warnings=[*decoder.unanswered(run.questions), *notes],
+        warnings=decoder.unanswered(run.questions) + notes,
     )
 
 
