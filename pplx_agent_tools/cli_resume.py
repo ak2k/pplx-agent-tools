@@ -4,12 +4,13 @@ whose client was killed, by reattaching to its thread.
 Takes the thread uuid `pplx research` printed, or `--last` for the newest
 resumable thread recorded for the profile (`--query` narrows it to the run
 with that exact prompt). Creates no thread; the resumed thread is deleted
-once its report is read, as research does.
+once its report is on stdout, as research deletes its own.
 """
 
 from __future__ import annotations
 
 import os
+import sys
 from collections.abc import Sequence
 
 from .cli_research import _DEFAULT_TIMEOUT_SECONDS, _finalize
@@ -19,7 +20,7 @@ from .handles import ThreadStore
 from .render import render_resume_json, render_resume_text
 from .verbs._ask_common import DEFAULT_STALL_SECONDS
 from .verbs.research import ResearchResult
-from .verbs.resume import last_resumable, resume
+from .verbs.resume import HeldThread, last_resumable, resume
 from .wire import Client
 
 
@@ -106,10 +107,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.stall_timeout, "PPLX_STALL_TIMEOUT", DEFAULT_STALL_SECONDS, "resume"
     )
     store = ThreadStore(args.profile)
+    # The resumed thread, until its report is out.
+    held: list[HeldThread] = []
 
     def run(client: Client) -> ResearchResult:
         uuid, notes = (args.uuid, []) if args.uuid else _last(store, args.query)
-        return resume(
+        result, thread = resume(
             client,
             uuid,
             store=store,
@@ -120,16 +123,28 @@ def main(argv: Sequence[str] | None = None) -> int:
             notes=notes,
             prompt=args.query,
         )
+        held.append(thread)
+        return result
 
-    return run_verb(
-        "resume",
-        args,
-        requires_auth=True,
-        run=run,
-        render_text=render_resume_text,
-        render_json=render_resume_json,
-        finalize=_finalize,
-    )
+    def finalize(result: ResearchResult) -> int:
+        # print() only buffers: a closed pipe fails at the flush, before any delete.
+        sys.stdout.flush()
+        held.pop().release()
+        return _finalize(result)
+
+    try:
+        return run_verb(
+            "resume",
+            args,
+            requires_auth=True,
+            run=run,
+            render_text=render_resume_text,
+            render_json=render_resume_json,
+            finalize=finalize,
+        )
+    finally:
+        for thread in held:
+            thread.keep()
 
 
 def _last(store: ThreadStore, query: str | None) -> tuple[str, list[str]]:

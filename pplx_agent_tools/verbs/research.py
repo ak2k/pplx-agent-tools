@@ -295,6 +295,7 @@ def read_report(
     progress: bool,
     opener: Callable[..., Iterator[dict[str, Any]]] | None = None,
     keep_on_raise: bool = False,
+    hold: bool = False,
 ) -> None:
     """Drive one research stream into `on_event` under research's cleanup
     policy, keeping `handle`'s record current.
@@ -307,7 +308,9 @@ def read_report(
     `release_on_exit`); every other end is cleaned up as for any ask-family
     run, and so is an exception unless `keep_on_raise`. `opener` replaces the
     default POST of `body` to `endpoint` (see `run_ask_stream`); `endpoint`
-    then only names the stream in messages.
+    then only names the stream in messages. `hold` sends no delete and leaves
+    the record of a thread the read is done with, for a caller that deletes
+    and removes them only once the report is out.
     """
 
     def recording(event: dict[str, Any]) -> None:
@@ -318,7 +321,11 @@ def read_report(
     gone = False
     try:
         with release_on_exit(
-            client, state, keep_thread=keep_thread, keep_live=True, keep_on_raise=keep_on_raise
+            client,
+            state,
+            keep_thread=keep_thread or hold,
+            keep_live=True,
+            keep_on_raise=keep_on_raise,
         ):
             run_ask_stream(
                 client,
@@ -340,22 +347,22 @@ def read_report(
         gone = True
         raise
     finally:
-        _settle(handle, state, gone=gone)
+        _settle(handle, state, gone=gone, hold=hold)
         if raised:
             # An exception in flight has no result or error text of ours to carry these.
             for warning in handle.warnings:
                 print(f"warning: {warning}", file=sys.stderr)
 
 
-def _settle(handle: ThreadHandle, state: AskStreamState, *, gone: bool) -> None:
+def _settle(handle: ThreadHandle, state: AskStreamState, *, gone: bool, hold: bool) -> None:
     """Bring the record in line with what cleanup did: kept while the thread
-    can be resumed, removed once it is deleted, gone or finished with, and
-    left as it was when no frame named the thread."""
+    can be resumed, removed once it is deleted, gone or finished with (unless
+    `hold`), and left as it was when no frame named the thread."""
     if gone or state.deleted:
         handle.forget()
     elif state.kept:
         handle.keep()
-    elif state.backend_uuid is not None:
+    elif state.backend_uuid is not None and not hold:
         handle.forget()
 
 
