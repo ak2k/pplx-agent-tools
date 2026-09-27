@@ -46,6 +46,7 @@ from pplx_agent_tools.errors import (
     SchemaError,
     StreamDeadlineError,
     StreamSilenceError,
+    ThreadGoneError,
 )
 from pplx_agent_tools.verbs._ask_common import cutoff_cause, cutoff_silence
 from pplx_agent_tools.verbs._research_stream import release
@@ -257,6 +258,26 @@ def test_reconnect_auth_error_ends_early_keeping_the_partial() -> None:
     assert done.outcome == EndedEarly(1, "auth")
     assert d.trigger == "drop"
     assert err.getvalue().endswith(f"pplx research: {AUTH_NOTICE}\n")
+
+
+def test_a_reconnect_refused_as_gone_ends_the_run_and_marks_it_gone() -> None:
+    client = p3_drop_then([(30.0, ThreadGoneError("thread gone"))])
+    client.reconnects.append(paced(P3_RECONNECT, start=40.0))
+    err = io.StringIO()
+    d, done = drive(client, research_policy(), err=err)
+    assert done.outcome == Lost("stream dropped")
+    assert d.gone
+    assert d.reconnect_opens == 1
+    assert err.getvalue().endswith("pplx research: reconnect refused: Gone (HTTP 403)\n")
+
+
+def test_a_gone_thread_at_the_first_open_rejects_with_the_original_error() -> None:
+    e = ThreadGoneError("thread gone")
+    client = FakeClient(FakeClock(), initials=[[(0.5, e)]])
+    d, done = drive(client, research_policy())
+    assert isinstance(done.outcome, Rejected)
+    assert done.outcome.error is e
+    assert d.gone
 
 
 # --- mid-stream errors the FSM decides -----------------------------------------------------------
@@ -544,6 +565,15 @@ def test_research_trickle_to_the_deadline_does_not_keep_the_thread() -> None:
     assert cutoff_cause(run.state) == "deadline"
     assert run.thread == "cleaned"
     assert (client.terminated, client.deleted) == (STOPPED, DELETED)
+
+
+def test_research_reconnect_refused_as_gone_sends_no_legs_and_keeps_nothing() -> None:
+    client = p3_drop_then([(30.0, ThreadGoneError("thread gone"))])
+    run = run_research(client)
+    assert run.driver.gone
+    assert run.thread == "gone"
+    assert (client.terminated, client.deleted) == ([], [])
+    assert not run.state.kept
 
 
 @pytest.mark.parametrize("trigger", [None, "drop", "eof", "silence"])

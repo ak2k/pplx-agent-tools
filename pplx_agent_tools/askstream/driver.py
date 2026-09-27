@@ -41,6 +41,7 @@ from pplx_agent_tools.askstream.fsm import (
     Fatal,
     FrameIn,
     FrameSummary,
+    Gone,
     HeartbeatIn,
     InitialPost,
     Notice,
@@ -73,6 +74,7 @@ from pplx_agent_tools.errors import (
     SchemaError,
     StreamDeadlineError,
     StreamSilenceError,
+    ThreadGoneError,
 )
 from pplx_agent_tools.jsonval import as_object
 
@@ -283,10 +285,15 @@ class Driver:
     def _open_failure(self, e: PplxError) -> Failure:
         if isinstance(e, RateLimitError):
             return RateLimited(e.retry_after)
+        if isinstance(e, ThreadGoneError):
+            self.gone = True
         # A failed initial open rejects the run either way; Fatal keeps the
-        # original error, where the FSM would rebuild a Transient's from its text.
+        # original error, where the FSM would rebuild one for a Transient or
+        # a Gone.
         if isinstance(self.state, Starting):
             return Fatal(e)
+        if isinstance(e, ThreadGoneError):
+            return Gone(403)
         return Transient(str(e)) if isinstance(e, NetworkError) else Fatal(e)
 
     def _first_result(self, conn: ConnId, now: float) -> None:
