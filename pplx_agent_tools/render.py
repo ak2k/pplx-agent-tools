@@ -565,6 +565,15 @@ def render_research_json(result: ResearchResult) -> dict[str, Any]:
     return envelope("research", _research_payload(result), warnings=result.warnings)
 
 
+def render_resume_text(result: ResearchResult) -> str:
+    """A resumed report reads exactly as the research run would have."""
+    return render_research_text(result)
+
+
+def render_resume_json(result: ResearchResult) -> dict[str, Any]:
+    return envelope("resume", _research_payload(result), warnings=result.warnings)
+
+
 def _hit_to_json(hit: Hit) -> dict[str, Any]:
     out: dict[str, Any] = {
         "url": hit.url,

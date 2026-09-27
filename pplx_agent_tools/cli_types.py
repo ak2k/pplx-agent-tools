@@ -10,6 +10,7 @@ import argparse
 import enum
 import json
 import math
+import re
 import sys
 from collections.abc import Iterable
 from typing import Final, Literal, NewType, NoReturn, TypeAlias, TypeVar, overload
@@ -93,6 +94,20 @@ def positive_int(text: str) -> PositiveInt:
     if n < 1:
         raise argparse.ArgumentTypeError(f"expected a positive integer, got {n}")
     return PositiveInt(n)
+
+
+ThreadId = NewType("ThreadId", str)
+# Thread ids are UUIDs; the rule is looser than that but still admits nothing
+# that could change the request path the id is placed in.
+_THREAD_ID = re.compile(r"[0-9A-Za-z-]{8,64}")
+
+
+def thread_id(text: str) -> ThreadId:
+    if not _THREAD_ID.fullmatch(text):
+        raise argparse.ArgumentTypeError(
+            f"expected a thread uuid as `pplx research` printed it, got {text!r}"
+        )
+    return ThreadId(text)
 
 
 def duration(text: str) -> Duration:

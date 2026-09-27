@@ -1,0 +1,294 @@
+"""`pplx resume`: reattach to a research thread and read its report to the end.
+
+A reconnect to a finished thread returns one COMPLETED frame whose `text` is
+byte-equal to the live terminal's, then `end_of_stream`, so the resumed report
+must equal what `research()` returns replaying the whole stream. A still
+running thread sends snapshots until COMPLETED. The cleanup policy is
+research's: delete after COMPLETED, keep on a drop, terminate and delete on a
+stall.
+"""
+
+from __future__ import annotations
+
+import json
+from collections.abc import Callable, Iterator
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from pplx_agent_tools import cli, cli_runner
+from pplx_agent_tools.errors import (
+    EXIT_GENERIC,
+    EXIT_OK,
+    EXIT_PARTIAL,
+    NetworkError,
+    StreamStallError,
+    ThreadGoneError,
+)
+from pplx_agent_tools.handles import ThreadRecord, ThreadStore
+from pplx_agent_tools.render import render_resume_json, render_resume_text
+from pplx_agent_tools.verbs.research import research
+from pplx_agent_tools.verbs.resume import resume
+
+from ._doubles import _TestClientBase
+from .test_fixture_replay_research import (
+    FIXTURES,
+    SENTINEL_BACKEND_UUID,
+    SENTINEL_RW_TOKEN,
+    FixtureClient,
+)
+
+WEATHER = FIXTURES / "weather-nowcasting-apis.events.jsonl"
+OCIO = FIXTURES / "ocio-fees-final-only.events.jsonl"
+UUID = SENTINEL_BACKEND_UUID
+TOKEN = SENTINEL_RW_TOKEN
+
+
+@pytest.fixture(autouse=True)
+def state_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    home = tmp_path / "state"
+    monkeypatch.setenv("XDG_STATE_HOME", str(home))
+    monkeypatch.delenv("PPLX_PROFILE", raising=False)
+    return home
+
+
+def _payloads(path: Path) -> list[dict[str, Any]]:
+    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+
+def _completed(path: Path) -> dict[str, Any]:
+    return next(p for p in _payloads(path) if p.get("status") == "COMPLETED")
+
+
+class _Reconnect(_TestClientBase):
+    """Answers `sse_reconnect` from a script; any ask would be a bug."""
+
+    def __init__(self, frames: list[dict[str, Any]], *, then: BaseException | None = None) -> None:
+        super().__init__()
+        self._frames = frames
+        self._then = then
+        self.reconnected: list[str] = []
+        self.deleted: list[tuple[str, str]] = []
+
+    def sse_reconnect(  # type: ignore[override]
+        self,
+        backend_uuid: str,
+        *,
+        max_total_seconds: float | None = None,
+        stall_seconds: float | None = None,
+        is_progress: Callable[[dict[str, Any]], bool] | None = None,
+        stall_window: Callable[[], float | None] | None = None,
+        silence_seconds: float | None = None,
+        first_content_seconds: float | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        self.reconnected.append(backend_uuid)
+        for frame in self._frames:
+            yield {"event": "message", "data": frame}
+        if self._then is not None:
+            raise self._then
+        yield {"event": "end_of_stream", "data": {}}
+
+    def sse_post(self, *args: Any, **kwargs: Any) -> Iterator[dict[str, Any]]:  # type: ignore[override]
+        raise AssertionError("resume must not create a thread")
+
+    def delete_thread(self, entry_uuid: str, read_write_token: str) -> bool:  # type: ignore[override]
+        self.deleted.append((entry_uuid, read_write_token))
+        return True
+
+
+def _replayed(path: Path) -> tuple[str, list[str]]:
+    result = research(FixtureClient(path), "q")
+    assert result.stream_complete
+    return result.answer, [s.url for s in result.sources]
+
+
+def _save(status: str = "kept", *, token: str | None = TOKEN, age: float = 1.0, **kw: Any) -> None:
+    started = datetime.now(timezone.utc) - timedelta(hours=age)
+    ThreadStore().save(
+        ThreadRecord(UUID, started, status, read_write_token=token, **kw)  # type: ignore[arg-type]
+    )
+
+
+def _status() -> str | None:
+    record = ThreadStore().load(UUID)
+    return record.status if record is not None else None
+
+
+@pytest.mark.parametrize("fixture", [WEATHER, OCIO], ids=["weather", "ocio"])
+def test_a_finished_thread_resumes_to_the_whole_report_and_is_deleted(fixture: Path) -> None:
+    _save(mode="research", model="pplx_alpha")
+    client = _Reconnect([_completed(fixture)])
+    result = resume(client, UUID, store=ThreadStore())
+    answer, urls = _replayed(fixture)
+    assert result.answer == answer
+    assert [s.url for s in result.sources] == urls
+    assert len(result.answer) > 5000 and urls
+    assert result.stream_complete and result.resume is None
+    assert result.mode == "research" and result.downgraded is False
+    assert client.reconnected == [UUID]
+    assert client.deleted == [(UUID, TOKEN)]
+    assert _status() == "deleted"
+
+
+def test_a_running_thread_resumes_through_snapshots_to_completed() -> None:
+    payloads = _payloads(WEATHER)
+    pending = next(p for p in payloads if p.get("status") == "PENDING" and "read_write_token" in p)
+    client = _Reconnect([pending, _completed(WEATHER)])
+    result = resume(client, UUID, store=ThreadStore())
+    answer, urls = _replayed(WEATHER)
+    assert result.answer == answer
+    assert [s.url for s in result.sources] == urls
+    assert client.deleted == [(UUID, TOKEN)]
+
+
+def test_without_a_record_the_token_comes_from_the_frames() -> None:
+    client = _Reconnect([_completed(WEATHER)])
+    result = resume(client, UUID, store=ThreadStore())
+    assert result.stream_complete
+    assert client.deleted == [(UUID, TOKEN)]
+    assert _status() == "deleted"
+    assert result.query.startswith("Compare five weather nowcasting APIs")
+
+
+def test_with_no_token_anywhere_a_warning_says_the_thread_was_not_deleted() -> None:
+    _save(token=None)
+    frame = {k: v for k, v in _completed(WEATHER).items() if k != "read_write_token"}
+    client = _Reconnect([frame])
+    result = resume(client, UUID, store=ThreadStore())
+    assert client.deleted == []
+    assert any("not deleted" in w for w in result.warnings)
+    assert _status() == "ended"
+
+
+def test_keep_thread_leaves_a_finished_thread() -> None:
+    _save()
+    client = _Reconnect([_completed(WEATHER)])
+    result = resume(client, UUID, store=ThreadStore(), keep_thread=True)
+    assert result.stream_complete and client.deleted == []
+    assert _status() == "ended"
+
+
+def test_a_resume_that_drops_keeps_the_thread_and_names_itself_again() -> None:
+    _save()
+    pending = _payloads(WEATHER)[2]
+    client = _Reconnect([pending], then=NetworkError("SSE stream failed mid-stream: reset"))
+    result = resume(client, UUID, store=ThreadStore())
+    assert result.cut_by == "drop" and result.resume == f"pplx resume {UUID}"
+    assert client.deleted == [] and client.terminated == []
+    assert _status() == "kept"
+
+
+def test_a_resume_that_stalls_terminates_and_deletes() -> None:
+    _save()
+    pending = _payloads(WEATHER)[2]
+    client = _Reconnect([pending], then=StreamStallError("stalled", 240.0))
+    result = resume(client, UUID, store=ThreadStore())
+    assert result.cut_by == "stall" and result.resume is None
+    assert client.terminated == [(UUID, pending["context_uuid"], "pplx_alpha")]
+    assert client.deleted == [(UUID, TOKEN)]
+    assert _status() == "deleted"
+
+
+def test_a_gone_thread_marks_the_record_and_is_not_offered_again() -> None:
+    _save()
+    client = _Reconnect([], then=ThreadGoneError("thread gone"))
+    with pytest.raises(ThreadGoneError):
+        resume(client, UUID, store=ThreadStore())
+    assert _status() == "gone"
+    assert ThreadStore().pick_last().record is None
+    assert client.deleted == [] and client.terminated == []
+
+
+def test_resume_renders_as_its_own_verb() -> None:
+    result = resume(_Reconnect([_completed(WEATHER)]), UUID, store=ThreadStore())
+    doc = render_resume_json(result)
+    assert doc["_verb"] == "resume"
+    assert doc["answer"] == result.answer and doc["resume"] is None
+    assert render_resume_text(result).startswith(result.answer[:40])
+
+
+# ---------- CLI ----------
+
+
+def _run(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    argv: list[str],
+    client: Any,
+) -> tuple[int, str, str]:
+    monkeypatch.setattr(
+        cli_runner.Client, "from_default_cookies", classmethod(lambda cls, **_: client)
+    )
+    rc = cli.main(["resume", *argv])
+    cap = capsys.readouterr()
+    return rc, cap.out, cap.err
+
+
+def test_cli_resume_last_json_returns_the_report_without_the_token(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    other = "00000000-0000-4000-8000-00000000abcd"
+    ThreadStore().save(ThreadRecord(other, datetime.now(timezone.utc) - timedelta(hours=3), "kept"))
+    _save(age=1.0)
+    client = _Reconnect([_completed(WEATHER)])
+    rc, out, err = _run(monkeypatch, capsys, ["--last", "-j"], client)
+    assert rc == EXIT_OK
+    doc = json.loads(out)
+    assert doc["_verb"] == "resume" and doc["stream_complete"] is True
+    assert doc["answer"] == _replayed(WEATHER)[0]
+    assert client.reconnected == [UUID]
+    assert TOKEN not in out + err
+
+
+def test_cli_resume_by_uuid_with_a_drop_exits_partial(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    client = _Reconnect([_payloads(WEATHER)[2]], then=NetworkError("reset"))
+    rc, out, err = _run(monkeypatch, capsys, [UUID, "--profile", "work"], client)
+    assert rc == EXIT_PARTIAL
+    command = f"pplx resume --profile work {UUID}"
+    assert f"get the report with: {command}" in out
+    assert command in err
+
+
+def test_cli_resume_last_with_nothing_to_resume_is_a_clear_error(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _save("deleted")
+    rc, out, err = _run(monkeypatch, capsys, ["--last", "--json"], _Reconnect([]))
+    assert rc == EXIT_GENERIC
+    doc = json.loads(out)
+    assert "no resumable research thread" in doc["error"]["message"]
+    assert "no resumable research thread" in err
+
+
+def test_cli_resume_gone_json_is_exit_1(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    client = _Reconnect([], then=ThreadGoneError("thread gone"))
+    rc, out, _ = _run(monkeypatch, capsys, [UUID, "-j"], client)
+    assert rc == EXIT_GENERIC
+    assert json.loads(out)["error"]["type"] == "ThreadGoneError"
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [[], [UUID, "--last"], ["../../rest/thread/list_recent"], ["short"]],
+    ids=["neither", "both", "path", "short"],
+)
+def test_cli_resume_usage_errors_exit_1(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], argv: list[str]
+) -> None:
+    client = _Reconnect([])
+    with pytest.raises(SystemExit) as ei:
+        _run(monkeypatch, capsys, [*argv, "--json"], client)
+    assert ei.value.code == EXIT_GENERIC
+    assert json.loads(capsys.readouterr().out)["error"]["type"] == "UsageError"
+    assert client.reconnected == []
+
+
+def test_resume_is_listed_in_top_level_help(capsys: pytest.CaptureFixture[str]) -> None:
+    assert cli.main(["--help"]) == 0
+    assert "resume" in capsys.readouterr().out

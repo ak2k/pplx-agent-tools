@@ -51,7 +51,7 @@ DEFAULT_SSE_READ_TIMEOUT = 60.0
 # answered in 0.17 s when probed live.
 CLEANUP_TIMEOUT_SECONDS = 5.0
 # A thread's stream, reattached; the thread's backend uuid follows.
-_RECONNECT_PATH = "/rest/sse/perplexity_ask/reconnect/"
+RECONNECT_PATH = "/rest/sse/perplexity_ask/reconnect/"
 # Hard cap on un-dispatched SSE buffer (a single event with no `\n\n` terminator).
 # Defends against a server that trickles bytes forever without a terminator.
 _MAX_SSE_BUFFER_BYTES = 16 * 1024 * 1024
@@ -337,9 +337,9 @@ class Client:
         by `thread_ref` rather than its id.
         """
         yield from self._sse(
-            _RECONNECT_PATH + backend_uuid,
+            RECONNECT_PATH + backend_uuid,
             {"reconnectInitialSnapshot": True},
-            where=_RECONNECT_PATH + thread_ref(backend_uuid),
+            where=RECONNECT_PATH + thread_ref(backend_uuid),
             check_status=self._check_reconnect_status,
             max_total_seconds=max_total_seconds,
             stall_seconds=stall_seconds,
