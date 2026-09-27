@@ -34,10 +34,11 @@ from pplx_agent_tools.errors import (
 )
 from pplx_agent_tools.handles import ThreadHandle, ThreadRecord, ThreadStore, hash_prompt
 from pplx_agent_tools.render import render_resume_json, render_resume_text
+from pplx_agent_tools.verbs import _research_stream
 from pplx_agent_tools.verbs.research import research
 from pplx_agent_tools.verbs.resume import resume
 
-from ._doubles import _TestClientBase
+from ._doubles import FakeTime, _TestClientBase
 from .test_fixture_replay_research import (
     FIXTURES,
     SENTINEL_BACKEND_UUID,
@@ -57,6 +58,11 @@ def state_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("XDG_STATE_HOME", str(home))
     monkeypatch.delenv("PPLX_PROFILE", raising=False)
     return home
+
+
+@pytest.fixture(autouse=True)
+def _fake_time(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(_research_stream, "time", FakeTime())
 
 
 def _payloads(path: Path) -> list[dict[str, Any]]:
@@ -196,8 +202,10 @@ def test_a_resume_that_drops_keeps_the_thread_and_names_itself_again() -> None:
 def test_a_resume_that_stalls_terminates_and_deletes() -> None:
     _save()
     pending = _payloads(WEATHER)[2]
-    client = _Reconnect([pending], then=StreamStallError("stalled", 240.0))
-    result, held = resume(client, UUID, store=ThreadStore())
+    client = _Reconnect([pending], then=StreamStallError("stalled", 60.0))
+    # The driver's own stall timer decides the cut, so the bound must come due
+    # before research's 90 s silence window.
+    result, held = resume(client, UUID, store=ThreadStore(), stall_seconds=60.0)
     held.release()
     assert result.cut_by == "stall" and result.resume is None
     assert client.terminated == [(UUID, pending["context_uuid"], "pplx_alpha")]
@@ -214,8 +222,8 @@ def test_a_resume_stall_that_pplx_could_not_stop_keeps_the_thread() -> None:
             super().terminate(entry_uuid, context_uuid, model_preference)
             return False
 
-    client = _Refusing([pending], then=StreamStallError("stalled", 240.0))
-    result, held = resume(client, UUID, store=ThreadStore())
+    client = _Refusing([pending], then=StreamStallError("stalled", 60.0))
+    result, held = resume(client, UUID, store=ThreadStore(), stall_seconds=60.0)
     held.release()
     assert result.cut_by == "stall" and result.resume == f"pplx resume --profile default {UUID}"
     assert len(client.terminated) == 1 and client.deleted == []
