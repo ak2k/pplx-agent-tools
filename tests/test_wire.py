@@ -6,6 +6,8 @@ status-branching method directly with a tiny FakeResponse stand-in.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from pplx_agent_tools.errors import (
@@ -428,3 +430,26 @@ def test_cleanup_warnings_print_a_hash_not_the_thread_id(
     err = capsys.readouterr().err
     assert THREAD not in err and "TOKEN" not in err
     assert f"thread {thread_ref(THREAD)}" in err
+
+
+@pytest.mark.parametrize("cut", [0, 165])
+def test_a_delete_refusal_that_echoes_the_token_never_prints_it(
+    capsys: pytest.CaptureFixture[str], cut: int
+) -> None:
+    token = "SECRET-RW-TOKEN-7f3a"
+    # At 165 the token straddles the 200-byte excerpt's end, so a scrub run
+    # after the cut would miss it and print its head.
+    echo = ("x" * cut + json.dumps({"read_write_token": token})).encode()
+
+    class _Echo(_CleanupSession):
+        def _answer(self) -> _CleanupResp:
+            resp = _CleanupResp(422)
+            resp.content = echo
+            return resp
+
+    client = Client({"any": "cookie"})
+    client._session = _Echo(422)  # type: ignore[assignment]
+    assert client.delete_thread(THREAD, token) is False
+    err = capsys.readouterr().err
+    assert "cleanup failed" in err and "returned 422" in err
+    assert token[:8] not in err

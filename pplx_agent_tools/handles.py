@@ -23,7 +23,7 @@ import json
 import os
 import shlex
 import stat
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Literal, cast, get_args
@@ -48,7 +48,7 @@ class ThreadRecord:
     backend_uuid: str
     started: datetime
     status: Status
-    read_write_token: str | None = None
+    read_write_token: str | None = field(default=None, repr=False)
     prompt_sha256: str | None = None
     mode: str | None = None
     model: str | None = None

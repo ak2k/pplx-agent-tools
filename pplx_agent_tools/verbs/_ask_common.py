@@ -82,7 +82,7 @@ _RUN_MAY_BE_LIVE = "the run may still be running on the server and using quota"
 @dataclass
 class AskStreamState:
     backend_uuid: str | None = None
-    read_write_token: str | None = None
+    read_write_token: str | None = field(default=None, repr=False)
     context_uuid: str | None = None
     # The last non-null one the frames carried: the model the server ran.
     display_model: str | None = None

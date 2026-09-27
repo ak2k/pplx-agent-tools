@@ -249,3 +249,12 @@ def _dead_pid() -> int:
     p.join()
     assert p.pid is not None
     return p.pid
+
+
+def test_no_token_bearing_field_shows_in_a_repr() -> None:
+    from pplx_agent_tools.verbs._ask_common import AskStreamState
+
+    record = ThreadRecord(UUID, datetime.now(timezone.utc), "kept", read_write_token=TOKEN)
+    state = AskStreamState(backend_uuid=UUID, read_write_token=TOKEN)
+    assert TOKEN not in repr(record) and TOKEN not in repr(state)
+    assert UUID in repr(record)

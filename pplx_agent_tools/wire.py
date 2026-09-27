@@ -210,7 +210,7 @@ class Client:
             status = resp.status_code
             if status < 400:
                 return True
-            body = _body_excerpt(resp)
+            body = _body_excerpt(resp, redact=read_write_token)
         except Exception as e:
             print(f"warning: thread cleanup failed: {e}", file=sys.stderr)
             return False
@@ -671,11 +671,18 @@ def _media_type(resp: Any) -> str:
     return str(resp.headers.get("content-type", "")).split(";", 1)[0].strip().lower()
 
 
-def _body_excerpt(resp: Any) -> str:
+def _body_excerpt(resp: Any, *, redact: str | None = None) -> str:
     """The start of an error body, for a warning. Decoded here because
     `resp.text` raises when the declared charset is unknown and the body is
-    not UTF-8, and a cleanup request must never raise."""
-    return (resp.content or b"")[:200].decode("utf-8", "replace")
+    not UTF-8, and a cleanup request must never raise.
+
+    `redact` is removed before the cut, so a secret the body echoes cannot
+    survive in part at the excerpt's end."""
+    content = resp.content or b""
+    if not redact:
+        return content[:200].decode("utf-8", "replace")
+    text = content.decode("utf-8", "replace").replace(redact, "<redacted>")
+    return text[:200]
 
 
 def _json_body(resp: Any, path: str) -> JsonValue:
