@@ -21,6 +21,7 @@ import pytest
 from pplx_agent_tools import cli, cli_runner
 from pplx_agent_tools.errors import (
     EXIT_GENERIC,
+    EXIT_NETWORK,
     EXIT_OK,
     EXIT_PARTIAL,
     NetworkError,
@@ -389,6 +390,25 @@ def test_resume_by_uuid_with_an_unreadable_state_dir_never_says_no_token_was_rec
     assert any("could not be read" in w and "Permission denied" in w for w in result.warnings)
     assert not any("no read_write_token was recorded" in w for w in result.warnings)
     assert any("not deleted" in w for w in result.warnings)
+
+
+def test_cli_resume_a_failed_session_check_on_a_403_is_reported_as_that(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from pplx_agent_tools.wire import Client
+
+    from .test_wire_reconnect import _ProbeFails
+
+    _save()
+    client = Client({"any": "cookie"})
+    client._session = _ProbeFails("network")  # type: ignore[assignment]
+    rc, out, _ = _run(monkeypatch, capsys, [UUID, "-j"], client)
+    doc = json.loads(out)
+    assert rc == EXIT_NETWORK and doc["error"]["type"] == "SessionCheckError"
+    assert "403" in doc["error"]["message"]
+    assert "goes on server-side" not in doc["error"]["message"]
+    assert "going on server-side" not in doc["error"]["message"]
+    assert _status() == "kept"
 
 
 def test_cli_resume_gone_json_is_exit_1(

@@ -121,6 +121,16 @@ class ThreadGoneError(PplxError):
     exit_code = EXIT_GENERIC
 
 
+class SessionCheckError(PplxError):
+    """A reconnect was refused with a JSON 403, and the session check that
+    tells a gone thread from an expired session failed, so which it is is
+    unknown. Not a NetworkError, which a stream reads as a dropped connection.
+    Retry after a backoff. Exit 4.
+    """
+
+    exit_code = EXIT_NETWORK
+
+
 class ThreadRecordsError(PplxError):
     """The local records of research threads could not be read, so `--last`
     cannot tell whether one is resumable. Fix the directory, or resume by

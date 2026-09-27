@@ -413,6 +413,7 @@ EXPECTED_EXIT = {
     "TargetHttpError": 1,
     "ThreadGoneError": 1,
     "ThreadRecordsError": 1,
+    "SessionCheckError": 4,
 }
 
 

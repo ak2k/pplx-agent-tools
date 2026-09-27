@@ -17,6 +17,7 @@ import json
 import sys
 import time
 from collections.abc import Callable, Iterator
+from functools import partial
 from typing import Any
 
 from curl_cffi import CurlECode, CurlError
@@ -30,6 +31,7 @@ from .errors import (
     PplxError,
     RateLimitError,
     SchemaError,
+    SessionCheckError,
     StreamDeadlineError,
     StreamFirstContentError,
     StreamSilenceError,
@@ -340,7 +342,7 @@ class Client:
             RECONNECT_PATH + backend_uuid,
             {"reconnectInitialSnapshot": True},
             where=RECONNECT_PATH + thread_ref(backend_uuid),
-            check_status=self._check_reconnect_status,
+            check_status=partial(self._check_reconnect_status, backend_uuid=backend_uuid),
             max_total_seconds=max_total_seconds,
             stall_seconds=stall_seconds,
             is_progress=is_progress,
@@ -468,24 +470,34 @@ class Client:
             raise NetworkError(f"server error {status} on {path}")
         raise SchemaError(f"unexpected status {status} on {path}")
 
-    def _check_reconnect_status(self, resp: Any, where: str) -> None:
+    def _check_reconnect_status(self, resp: Any, where: str, *, backend_uuid: str) -> None:
         """`_check_status`, but a 403 reads by its media type: `text/html` is
         the Cloudflare edge block whether or not the page carries the markers
         `_looks_like_cloudflare` looks for, and `application/json` is a thread
-        that is gone, unless the session itself is dead."""
+        that is gone, unless the session itself is dead. A body other than
+        `{}` ends the gone message, since only `{}` has been seen."""
         if resp.status_code == 403:
             media = _media_type(resp)
             if media == "text/html":
                 raise AntiBotError(f"Cloudflare block on {where} (status 403)")
             if media == "application/json":
+                said = _body_excerpt(resp, redact=backend_uuid).strip()
                 with contextlib.suppress(Exception):
                     resp.close()
                 # An expired session may be refused the same way; the session
                 # endpoint is what tells the two apart, raising AuthError.
-                self.auth_session()
+                try:
+                    self.auth_session()
+                except (NetworkError, SchemaError) as e:
+                    raise SessionCheckError(
+                        f"reconnect on {where} was refused (status 403 application/json), "
+                        "and the session check that tells a gone thread from an expired "
+                        f"session failed: {e}"
+                    ) from e
+                reason = f"; the server said: {said}" if said and said != "{}" else ""
                 raise ThreadGoneError(
                     f"thread gone on {where} (status 403): deleted, expired "
-                    "(about 24 h after it started), or not this account's"
+                    f"(about 24 h after it started), or not this account's{reason}"
                 )
         self._check_status(resp, where)
 

@@ -20,6 +20,7 @@ from pplx_agent_tools.errors import (
     NetworkError,
     RateLimitError,
     SchemaError,
+    SessionCheckError,
     StreamDeadlineError,
     ThreadGoneError,
     exit_code,
@@ -235,3 +236,54 @@ def test_a_failed_post_is_a_network_error_without_the_uuid() -> None:
     with pytest.raises(NetworkError) as exc:
         list(client.sse_reconnect(UUID))
     assert UUID not in str(exc.value)
+
+
+class _ProbeFails(_Session):
+    """Refuses the reconnect with a JSON 403, then fails the session probe."""
+
+    def __init__(self, failure: str) -> None:
+        super().__init__(_Resp(403, headers={"content-type": LIVE_JSON}, content=b"{}"))
+        self._failure = failure
+
+    def get(self, url: str, **_kw: Any) -> _Resp:
+        self.gets.append(url)
+        if self._failure == "network":
+            raise ConnectionError("connection reset by peer")
+
+        class _NotJson(_Resp):
+            def json(self) -> Any:
+                raise ValueError("Expecting value")
+
+        return _NotJson(200, headers={"content-type": "text/html"})
+
+
+@pytest.mark.parametrize("failure", ["network", "not json"])
+def test_a_failed_session_check_on_a_json_403_is_its_own_error(failure: str) -> None:
+    client = Client({"any": "cookie"})
+    client._session = _ProbeFails(failure)  # type: ignore[assignment]
+    with pytest.raises(SessionCheckError) as exc:
+        list(client.sse_reconnect(UUID))
+    assert not isinstance(exc.value, (NetworkError, ThreadGoneError, AuthError))
+    assert exit_code(exc.value) == 4
+    message = str(exc.value)
+    assert "403" in message and "session" in message
+    assert UUID not in message
+
+
+def test_a_json_403_with_a_reason_is_gone_and_carries_the_reason() -> None:
+    body = b'{"detail":"Pro subscription required for thread ' + UUID.encode() + b'"}'
+    resp = _Resp(403, headers={"content-type": LIVE_JSON}, content=body)
+    client, _ = _client(resp, session_body=LIVE_SESSION)
+    with pytest.raises(ThreadGoneError) as exc:
+        list(client.sse_reconnect(UUID))
+    assert "Pro subscription required" in str(exc.value)
+    assert UUID not in str(exc.value)
+    assert resp.closed
+
+
+def test_an_empty_json_403_adds_no_reason() -> None:
+    resp = _Resp(403, headers={"content-type": LIVE_JSON}, content=b"{}")
+    client, _ = _client(resp, session_body=LIVE_SESSION)
+    with pytest.raises(ThreadGoneError) as exc:
+        list(client.sse_reconnect(UUID))
+    assert "{}" not in str(exc.value) and "said" not in str(exc.value)
