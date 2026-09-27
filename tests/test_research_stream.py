@@ -155,6 +155,68 @@ def test_an_undecodable_text_with_an_empty_projection_raises_the_decode_error() 
         run_research(client)
 
 
+# --- the shortfall verdict ---------------------------------------------------------------------
+
+
+def _verdict(run: ResearchRun) -> tuple[bool, list[str]]:
+    return _shortfall_verdict(
+        answer_len=len(run.answer), body_len=run.body_len, best=run.best, saw=run.saw
+    )
+
+
+def _p3_client() -> FakeClient:
+    initial = [*paced(P3_INITIAL), (26.0, NetworkError("reset"))]
+    reconnect = paced(fixture_items("p3-research-reconnect1"), start=30.0)
+    return FakeClient(FakeClock(), initials=[initial], reconnects=[reconnect])
+
+
+@pytest.mark.parametrize(
+    ("stem", "legacy"),
+    [
+        ("weather-nowcasting-apis", True),
+        ("ocio-fees-final-only", True),
+        ("p1-A", False),
+        ("p1-B", False),
+        ("p3", False),
+    ],
+)
+def test_a_completed_capture_is_not_flagged_short(stem: str, legacy: bool) -> None:
+    if stem == "p3":
+        client = _p3_client()
+    else:
+        client = FakeClient(FakeClock(), initials=[paced(fixture_items(stem, legacy=legacy))])
+    run = run_research(client)
+    assert run.state.saw_completed and run.consumer.text is not None
+    assert _verdict(run) == (False, [])
+
+
+def test_a_terminal_text_whose_report_body_is_shorter_than_the_streamed_one_is_flagged() -> None:
+    items = fixture_items("p1-A")
+    terminal = items[-1]["data"]
+    blocks = json.loads(terminal["text"])
+    cut_bodies = 0
+    for block in blocks:
+        if block.get("step_type") != "RESEARCH_ANSWER":
+            continue
+        for asset in block.get("assets") or []:
+            report = asset.get("research_report") or {}
+            body = report.get("source_content")
+            if isinstance(body, str):
+                report["source_content"] = body[: len(body) // 4]
+                cut_bodies += 1
+    assert cut_bodies == 1
+    cut = message({**terminal, "text": json.dumps(blocks)})
+    run = run_research(FakeClient(FakeClock(), initials=[paced([*items[:-1], cut])]))
+    assert run.state.saw_completed
+    assert run.body_len < run.consumer.report_high
+    flagged, warnings = _verdict(run)
+    assert flagged
+    assert warnings == [
+        f"kept snapshot's report body decodes to {run.body_len} chars but an earlier frame "
+        f"carried {run.consumer.report_high}; the report may be truncated"
+    ]
+
+
 # --- outcome to cutoff -------------------------------------------------------------------------
 
 

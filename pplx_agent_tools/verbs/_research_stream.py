@@ -428,6 +428,10 @@ def _salvage(
     """The answer from the newest decoded `text`, or else from the
     projections, whose sources are the run's retained list."""
     if consumer.text is not None:
+        # In diff mode only the terminal frame carries `text`, so the body
+        # the patches built is the one earlier measure it can fall short of.
+        best = {**consumer.best, "body": max(consumer.best["body"], consumer.report_high)}
+        saw = {**consumer.saw, "body": consumer.saw["body"] or consumer.report_high > 0}
         return ResearchRun(
             driver,
             store,
@@ -438,8 +442,8 @@ def _salvage(
             answer=consumer.answer,
             sources=consumer.sources,
             body_len=consumer.body_len,
-            best=dict(consumer.best),
-            saw=dict(consumer.saw),
+            best=best,
+            saw=saw,
             questions=consumer.questions,
             warnings=[],
         )
