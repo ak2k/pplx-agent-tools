@@ -52,8 +52,9 @@ Stall: TypeAlias = StallAfter | StallOff
 @final
 @dataclass(frozen=True, slots=True)
 class SettleAfterText:
-    """Ask: COMPLETED completes; after `text_completed`, wait at most
-    `settle_s` for it."""
+    """Ask: COMPLETED completes. After `text_completed`, wait `settle_s`
+    for it; each settle reconnect extends that wait by its backoff and its
+    grace, since no timer fires on a reopened conn before the grace ends."""
 
     settle_s: float
 

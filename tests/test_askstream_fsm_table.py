@@ -1058,6 +1058,25 @@ def test_settle_reconnects_without_a_snapshot_are_a_grace_apart() -> None:
         assert b - a >= ASK_RC.grace_s
 
 
+def test_a_settle_reconnect_extends_the_settle_wait_by_its_grace() -> None:
+    p = ASK_RC
+    s: fsm.State
+    s, _ = fsm.initial(p, 0.0)
+    s, _ = step(p, s, Opened(C1, 0.5))
+    s, _ = step(p, s, FrameIn(C1, 1.0, frame("pending", uuid=UUID, token=token(), context=CTX)))
+    s, _ = step(p, s, FrameIn(C1, 2.0, frame("text_complete")))
+    assert fsm.next_wake(p, s) == 2.0 + 15.0
+    s, _ = step(p, s, Tick(17.0))
+    assert isinstance(s, ReconnectBackoff)
+    s, eff = step(p, s, Tick(18.0))
+    assert [x.conn for x in eff if isinstance(x, Open)] == [C2]
+    s, _ = step(p, s, Opened(C2, 18.1))
+    # The next settle waits out the grace: 46.1 s after text_completed.
+    assert fsm.next_wake(p, s) == 18.1 + p.grace_s
+    assert fsm.due_class(p, s, 18.1 + p.grace_s - 0.001) == "none"
+    assert fsm.due_class(p, s, 18.1 + p.grace_s) == "settle"
+
+
 FLOOR_CASES: list[tuple[str, Policy, fsm.Phase]] = [
     ("settle", ASK_RC, TextComplete(10.0, 10.0)),
     ("first_content", ASK_RC, AwaitingFirst()),
