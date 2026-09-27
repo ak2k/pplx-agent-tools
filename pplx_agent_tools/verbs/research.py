@@ -201,12 +201,15 @@ def research(
     when either trips with a partial we return it with `stream_complete=False`
     and a warning naming which one (the agent contract is "always something plus
     a flag", exit 6). `keep_thread` preserves the incognito thread instead
-    of deleting it (default deletes). A dropped connection or total silence is
-    reconnected to the same thread within the call; one the reconnects cannot
-    recover keeps the thread whatever `keep_thread` says, and the result or
-    error names the `pplx resume` command for it. `profile` scopes the local
-    thread record and is named in that command. `observe` sees the finished
-    run (its block store and terminal text) before the result is built.
+    of deleting it (default deletes). A dropped connection, total silence, a
+    stall, a stream that ends before the report and one with no first content
+    in time are each reconnected to the same thread within the call. Whatever
+    `keep_thread` says, the thread is kept for resume only when the run ended
+    on a drop or total silence once the reconnects stopped, or when pplx could
+    not stop the run; the result or error then names the `pplx resume`
+    command for it. `profile` scopes the local thread record and is named in
+    that command. `observe` sees the finished run (its block store and
+    terminal text) before the result is built.
     """
     model_preference = model or _model_for_mode(mode)
     # Model Council never completes unless compare_model_preferences is set, so
