@@ -13,9 +13,11 @@ The rule, restated here rather than taken from production code:
 - A run that needed a terminate pplx could not send (no context_uuid or
   display_model) is reported as possibly still running: in the result's
   warnings, the error's message, or on stderr when an exception is in flight.
-- KEEP: research whose stream a drop or total silence cut sends neither leg
-  once its backend_uuid arrived, and says how to resume instead: the run goes
-  on server-side without a listener.
+- KEEP: research sends neither leg once its backend_uuid arrived, and says
+  how to resume instead, when a drop or total silence cut its stream, or when
+  it ended with no exception in flight and needed a terminate pplx could not
+  send or that failed: either way the run may go on server-side without a
+  listener, and its thread holds the report.
 
 Each cell runs a verb over the real `Client.sse_post`, `Client.terminate` and
 `Client.delete_thread` on a scripted session with a fake clock, and reads the
@@ -75,15 +77,24 @@ def _live(verb: str, end: str, text_completed: bool) -> bool:
     return not (over or (text_completed and (verb == "fetch" or settled_ask)))
 
 
-def _kept(verb: str, end: str, ids: str) -> bool:
+def _dropped(verb: str, end: str, ids: str) -> bool:
     return verb == "research" and end in ("drop", "silence") and ids != "none"
+
+
+def _kept(verb: str, end: str, text_completed: bool, ids: str) -> bool:
+    unstoppable = (
+        ids in ("no_context", "no_model")
+        and end not in ("oversize", "keyboard_interrupt")
+        and _live(verb, end, text_completed)
+    )
+    return _dropped(verb, end, ids) or (verb == "research" and unstoppable)
 
 
 def expected_legs(
     verb: str, end: str, text_completed: bool, ids: str, keep: bool
 ) -> tuple[bool, bool]:
     """(terminate, delete) from the rule in the module docstring."""
-    if _kept(verb, end, ids):
+    if _kept(verb, end, text_completed, ids):
         return False, False
     delete = ids in ("complete", "no_context", "no_model") and not keep
     terminable = ids in ("complete", "no_token")
@@ -92,8 +103,8 @@ def expected_legs(
 
 def expected_note(verb: str, end: str, text_completed: bool, ids: str) -> bool:
     """Whether the run is reported as possibly still running."""
-    kept = _kept(verb, end, ids)
-    return ids in ("no_context", "no_model") and _live(verb, end, text_completed) and not kept
+    dropped = _dropped(verb, end, ids)
+    return ids in ("no_context", "no_model") and _live(verb, end, text_completed) and not dropped
 
 
 _STILL_RUNNING = "may still be running on the server"
@@ -356,7 +367,7 @@ def _check_cell(
         told,
         err,
     )
-    assert ("pplx resume BU" in told) == _kept(verb, end, ids), told
+    assert ("pplx resume BU" in told) == _kept(verb, end, text_completed, ids), told
     return "terminate" in kinds, "delete" in kinds
 
 
@@ -399,6 +410,8 @@ def test_cleanup_table_over_every_end(clock: _Clock, capsys: pytest.CaptureFixtu
         ("fetch", "server_close", True, "complete", False, (False, True)),
         ("ask", "stall", False, "no_context", False, (False, True)),
         ("research", "stall", False, "complete", True, (True, False)),
+        ("research", "stall", False, "no_model", False, (False, False)),
+        ("research", "keyboard_interrupt", False, "no_model", False, (False, True)),
         ("ask", "rate_limit", False, "none", False, (False, False)),
         ("fetch", "drop", False, "no_token", False, (True, False)),
     ],
@@ -433,13 +446,16 @@ def test_cleanup_failures_never_replace_the_exception_in_flight(
     assert "terminate failed" in err and "cleanup failed" in err
 
 
-def test_a_failed_terminate_still_deletes_and_returns_the_partial(clock: _Clock) -> None:
-    session, outcome = _run(
-        clock, "research", "stall", False, "complete", False, cleanup_fails=True
-    )
+@pytest.mark.parametrize("verb", VERBS)
+def test_a_failed_terminate_returns_the_partial_and_research_keeps_the_thread(
+    clock: _Clock, verb: str
+) -> None:
+    session, outcome = _run(clock, verb, "stall", False, "complete", False, cleanup_fails=True)
     assert isinstance(outcome, dict)
     assert outcome["cut_by"] == "stall"
-    assert [c[0] for c in session.calls] == ["terminate", "delete"]
+    kept = verb == "research"
+    assert [c[0] for c in session.calls] == (["terminate"] if kept else ["terminate", "delete"])
+    assert (outcome.get("resume") == "pplx resume BU") == kept
 
 
 def test_the_undecodable_answer_is_one_curl_cffi_cannot_read() -> None:
@@ -509,7 +525,8 @@ def test_a_terminate_that_cannot_be_sent_is_a_result_warning(
 ) -> None:
     session, outcome = _run(clock, verb, "stall", False, ids, False)
     assert isinstance(outcome, dict), outcome
-    assert [c[0] for c in session.calls] == ["delete"]
+    # Research keeps the thread of a run it could not stop.
+    assert [c[0] for c in session.calls] == ([] if verb == "research" else ["delete"])
     assert any(_STILL_RUNNING in w and f"no {missing} arrived" in w for w in outcome["warnings"]), (
         outcome["warnings"]
     )
@@ -536,8 +553,8 @@ def test_an_interrupted_run_that_cannot_be_stopped_says_so_on_stderr(
 @pytest.mark.parametrize(
     ("ids", "answer", "legs", "clause"),
     [
-        ("no_context", lambda: _Plain(200), ["delete"], "no context uuid arrived"),
-        ("complete", lambda: _Plain(500), ["terminate", "delete"], "the request to stop it failed"),
+        ("no_context", lambda: _Plain(200), [], "no context uuid arrived"),
+        ("complete", lambda: _Plain(500), ["terminate"], "the request to stop it failed"),
     ],
     ids=["no context uuid", "terminate fails"],
 )
@@ -551,4 +568,5 @@ def test_undecodable_research_text_still_says_the_run_may_be_live(
     assert type(exc.value) is SchemaError
     assert "research text is not JSON" in str(exc.value)
     assert _STILL_RUNNING in str(exc.value) and clause in str(exc.value)
+    assert "pplx resume BU" in str(exc.value)
     assert [c[0] for c in session.calls] == legs

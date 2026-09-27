@@ -452,7 +452,9 @@ def test_research_repeating_its_snapshot_stalls_with_the_partial(
     assert out["stream_complete"] is False
     assert any("stalled: no new content for 240.0s" in w for w in out["warnings"])
     assert 240 < clock.now - 1000.0 <= 254
-    assert client.deleted == [("BU", "RW")]
+    # The frames name no context uuid, so pplx cannot stop the run, and
+    # research keeps its thread for `pplx resume` rather than delete it.
+    assert client.deleted == [] and out["resume"] == "pplx resume BU"
 
 
 PARTIAL_CHUNK = _chunk("partial answer")
@@ -677,7 +679,8 @@ def test_research_cut_with_only_the_initial_query_exits_network(
     assert rc == EXIT_NETWORK
     assert "no new content for 240.0s before the first content arrived" in cap.err
     assert "(no answer)" not in cap.out
-    assert client.deleted == [("BU", "RW")]
+    # Unstoppable without a context uuid, so the thread is kept (see above).
+    assert client.deleted == [] and "pplx resume BU" in cap.err
 
 
 def test_research_cut_with_sources_but_no_answer_is_a_partial(
@@ -691,7 +694,8 @@ def test_research_cut_with_sources_but_no_answer_is_a_partial(
     assert out["answer"] == ""
     assert [s["url"] for s in out["sources"]] == ["https://found"]
     assert out["cut_by"] == "stall"
-    assert client.deleted == [("BU", "RW")]
+    # Unstoppable without a context uuid, so the thread is kept (see above).
+    assert client.deleted == [] and out["resume"] == "pplx resume BU"
 
 
 def test_server_cut_names_no_bound(

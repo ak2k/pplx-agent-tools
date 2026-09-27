@@ -17,6 +17,7 @@ between snapshots, so nothing from the dropped run is merged in.
 from __future__ import annotations
 
 import json
+import sys
 from collections.abc import Callable
 from functools import partial
 from typing import Any
@@ -70,10 +71,12 @@ def resume(
     The local record in `store`, when there is one, supplies the
     read_write_token the delete needs and the mode and model the run asked
     for; without it the token comes from the frames. Cleanup is research's:
-    a COMPLETED thread is deleted unless `keep_thread`, a dropped connection
-    keeps it and names this command again, and a deadline, stall or interrupt
-    terminates and deletes it. `new_consumer` builds the consumer the frames
-    are read into.
+    a COMPLETED thread is deleted unless `keep_thread`, a run that may go on
+    (a drop, or a terminate that failed) keeps it and names this command
+    again, and a deadline or stall terminates and deletes it. Unlike
+    research, an exception (Ctrl-C included) keeps it too, since the thread
+    is the only copy of a report already paid for, and prints this command on
+    stderr. `new_consumer` builds the consumer the frames are read into.
     """
     record = store.load(backend_uuid)
     report = new_consumer()
@@ -94,9 +97,21 @@ def resume(
             stall_seconds=stall_seconds,
             progress=progress,
             opener=partial(client.sse_reconnect, backend_uuid),
+            keep_on_raise=True,
         )
     except ThreadGoneError:
         handle.settle("gone")
+        raise
+    except BaseException as e:
+        if state.kept and not state.deleted:
+            command = resume_command(backend_uuid, store.profile)
+            if isinstance(e, PplxError):
+                e.resume = command
+            print(
+                f"warning: the thread was kept: resume it with `{command}` within about "
+                "24 h of its start; do not re-run, which spends another research unit",
+                file=sys.stderr,
+            )
         raise
     kept = state.kept and not state.deleted
     if not kept and not keep_thread and state.backend_uuid and not state.read_write_token:

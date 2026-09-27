@@ -294,17 +294,20 @@ def read_report(
     stall_seconds: float | None,
     progress: bool,
     opener: Callable[..., Iterator[dict[str, Any]]] | None = None,
+    keep_on_raise: bool = False,
 ) -> None:
     """Drive one research stream into `on_event` under research's cleanup
     policy, keeping `handle`'s record current.
 
     The record is written before the frame that first names the thread is
     consumed, and settled from what cleanup did, so a process killed in
-    between leaves it `running`. A stream cut by a dropped connection or total
-    silence is neither terminated nor deleted (`state.kept`); every other end
-    is cleaned up as `release_on_exit` does for any ask-family run.
-    `opener` replaces the default POST of `body` to `endpoint` (see
-    `run_ask_stream`); `endpoint` then only names the stream in messages.
+    between leaves it `running`. A run that may go on server-side after the
+    read ends (a dropped connection, total silence, or a terminate that could
+    not be sent or failed) keeps its thread (`state.kept`, see
+    `release_on_exit`); every other end is cleaned up as for any ask-family
+    run, and so is an exception unless `keep_on_raise`. `opener` replaces the
+    default POST of `body` to `endpoint` (see `run_ask_stream`); `endpoint`
+    then only names the stream in messages.
     """
 
     def recording(event: dict[str, Any]) -> None:
@@ -313,7 +316,9 @@ def read_report(
 
     raised = True
     try:
-        with release_on_exit(client, state, keep_thread=keep_thread, keep_on_drop=True):
+        with release_on_exit(
+            client, state, keep_thread=keep_thread, keep_live=True, keep_on_raise=keep_on_raise
+        ):
             run_ask_stream(
                 client,
                 endpoint,
@@ -354,9 +359,9 @@ def _settled_status(state: AskStreamState) -> Status | None:
 
 def kept_warning(command: str) -> str:
     return (
-        "the connection was lost but the research run goes on server-side, so its "
-        f"thread was kept: get the finished report with `{command}` within about 24 h; "
-        "do not re-run, which spends another research unit"
+        "the research run may still be going on server-side, so its thread was kept: get "
+        f"the finished report with `{command}` within about 24 h; do not re-run, which "
+        "spends another research unit"
     )
 
 

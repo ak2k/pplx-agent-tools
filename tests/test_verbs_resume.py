@@ -24,6 +24,7 @@ from pplx_agent_tools.errors import (
     EXIT_OK,
     EXIT_PARTIAL,
     NetworkError,
+    SchemaError,
     StreamStallError,
     ThreadGoneError,
 )
@@ -189,6 +190,52 @@ def test_a_resume_that_stalls_terminates_and_deletes() -> None:
     assert client.terminated == [(UUID, pending["context_uuid"], "pplx_alpha")]
     assert client.deleted == [(UUID, TOKEN)]
     assert _status() == "deleted"
+
+
+def test_a_resume_stall_that_pplx_could_not_stop_keeps_the_thread() -> None:
+    _save()
+    pending = _payloads(WEATHER)[2]
+
+    class _Refusing(_Reconnect):
+        def terminate(self, entry_uuid: str, context_uuid: str, model_preference: str) -> bool:
+            super().terminate(entry_uuid, context_uuid, model_preference)
+            return False
+
+    client = _Refusing([pending], then=StreamStallError("stalled", 240.0))
+    result = resume(client, UUID, store=ThreadStore())
+    assert result.cut_by == "stall" and result.resume == f"pplx resume {UUID}"
+    assert len(client.terminated) == 1 and client.deleted == []
+    assert any("may still be running on the server" in w for w in result.warnings)
+    assert _status() == "kept"
+
+
+def test_an_interrupt_during_resume_keeps_the_thread_and_prints_the_command(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _save()
+    client = _Reconnect([_payloads(WEATHER)[2]], then=KeyboardInterrupt())
+    with pytest.raises(KeyboardInterrupt):
+        resume(client, UUID, store=ThreadStore())
+    assert client.terminated == [] and client.deleted == []
+    assert _status() == "kept"
+    err = capsys.readouterr().err
+    assert f"`pplx resume {UUID}`" in err
+    assert TOKEN not in err
+
+
+def test_any_error_during_resume_keeps_the_thread_and_names_the_command(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _save()
+    client = _Reconnect([_payloads(WEATHER)[2]], then=SchemaError("SSE stream exceeded"))
+    rc, out, err = _run(monkeypatch, capsys, [UUID, "-j"], client)
+    assert rc == EXIT_GENERIC
+    doc = json.loads(out)
+    assert doc["error"]["type"] == "SchemaError"
+    assert doc["resume"] == f"pplx resume {UUID}"
+    assert f"`pplx resume {UUID}`" in err
+    assert client.terminated == [] and client.deleted == []
+    assert _status() == "kept"
 
 
 def test_a_gone_thread_marks_the_record_and_is_not_offered_again() -> None:

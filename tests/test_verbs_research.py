@@ -68,6 +68,16 @@ def _snapshot(answer: str = "QUIC is a protocol. [1]") -> str:
     return json.dumps(blocks)
 
 
+# Ids a cut run can be terminated with, so cleanup goes on to delete it; a run
+# pplx cannot stop keeps its thread for `pplx resume`.
+_STOPPABLE = {
+    "backend_uuid": "BU",
+    "read_write_token": "RW",
+    "context_uuid": "CTX",
+    "display_model": "pplx_alpha",
+}
+
+
 class _FakeClient(_TestClientBase):
     """Yields canned research SSE events; records delete_thread calls."""
 
@@ -267,10 +277,7 @@ def test_research_keep_thread_skips_cleanup() -> None:
 
 def test_research_partial_on_deadline_returns_incomplete() -> None:
     # One snapshot arrives, then the stream trips the overall deadline.
-    client = _FakeClient(
-        [{"data": {"backend_uuid": "BU", "read_write_token": "RW", "text": _snapshot()}}],
-        raise_deadline=True,
-    )
+    client = _FakeClient([{"data": {**_STOPPABLE, "text": _snapshot()}}], raise_deadline=True)
     result = research(client, "q", timeout=30)
     assert result.stream_complete is False  # never saw COMPLETED
     assert result.answer == "QUIC is a protocol. [1]"  # partial answer still returned
@@ -596,13 +603,7 @@ def test_research_incomplete_when_stream_ends_at_text_completed() -> None:
     predicate treated this same stream as a clean finish (exit 0)."""
     client = _FakeClient(
         [
-            {
-                "data": {
-                    "backend_uuid": "BU",
-                    "read_write_token": "RW",
-                    "text": _snapshot("partial"),
-                }
-            },
+            {"data": {**_STOPPABLE, "text": _snapshot("partial")}},
             {"data": {"text": _snapshot("partial"), "text_completed": True}},
         ]
     )

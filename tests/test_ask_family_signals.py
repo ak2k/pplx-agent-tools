@@ -105,7 +105,11 @@ def test_no_first_content_is_cut_at_the_bound_with_its_own_message(
     assert f"no first content within {FIRST_CONTENT_S:.1f}s" in err
     assert "stall" not in err
     assert FIRST_CONTENT_S < clock.now - 1000.0 <= FIRST_CONTENT_S + 15
-    assert client.deleted == [("BU", "RW")]
+    # ENVELOPE names no context uuid, so pplx cannot stop the run, and research
+    # keeps its thread for `pplx resume` rather than delete it.
+    kept = verb == "research"
+    assert client.deleted == ([] if kept else [("BU", "RW")])
+    assert (out.get("resume") == "pplx resume BU") == kept
 
 
 # ---------- deadline before content ----------

@@ -283,8 +283,52 @@ def test_cleanup_records_its_keep_decision_in_the_state(raised: bool) -> None:
     )
     with (
         contextlib.suppress(KeyboardInterrupt),
-        release_on_exit(_Client(), state, keep_thread=False, keep_on_drop=True),
+        release_on_exit(_Client(), state, keep_thread=False, keep_live=True),
     ):
         if raised:
             raise KeyboardInterrupt
     assert (state.kept, state.deleted) == ((False, True) if raised else (True, False))
+
+
+class _RefusingTerminate(_StreamClient):
+    def terminate(self, entry_uuid: str, context_uuid: str, model_preference: str) -> bool:
+        super().terminate(entry_uuid, context_uuid, model_preference)
+        return False
+
+
+@pytest.mark.parametrize("terminate", ["refused", "unsendable"])
+def test_a_stall_cut_that_pplx_could_not_stop_keeps_the_thread(
+    clock: _Clock,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    terminate: str,
+) -> None:
+    ids = IDS if terminate == "refused" else {k: v for k, v in IDS.items() if k != "context_uuid"}
+    stall = [(15.0, HEARTBEAT) for _ in range(int(DEFAULT_STALL_SECONDS // 15) + 4)]
+    steps: list[Step] = [(0, _report("part", **ids)), *stall]
+    client = (_RefusingTerminate if terminate == "refused" else _StreamClient)(steps, clock)
+    rc = _run_cli(monkeypatch, cli_research.main, ["q", *LONG_DEADLINE, "--json"], client)
+    cap = capsys.readouterr()
+    assert rc == EXIT_PARTIAL
+    doc = json.loads(cap.out)
+    assert doc["cut_by"] == "stall" and doc["resume"] == RESUME
+    assert any("may still be running on the server" in w for w in doc["warnings"])
+    assert any(RESUME in w and "do not re-run" in w for w in doc["warnings"])
+    assert client.deleted == []
+    assert _status() == "kept"
+    assert TOKEN not in cap.out + cap.err
+
+
+def test_a_first_content_cut_that_pplx_could_not_stop_names_the_resume_command(
+    clock: _Clock, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    no_model = {k: v for k, v in IDS.items() if k != "display_model"}
+    steps: list[Step] = [(0, _frame({**no_model, "status": "PENDING"}))]
+    steps += [(15.0, HEARTBEAT) for _ in range(14)]
+    rc, out, _, client = _cli(monkeypatch, capsys, steps, clock, "--json")
+    assert rc == EXIT_NETWORK
+    doc = json.loads(out)
+    assert "no first content" in doc["error"]["message"]
+    assert doc["resume"] == RESUME and RESUME in doc["error"]["message"]
+    assert client.terminated == [] and client.deleted == []
+    assert _status() == "kept"
