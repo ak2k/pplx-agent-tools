@@ -29,6 +29,7 @@ from pplx_agent_tools.errors import (
     EXIT_PARTIAL,
     NetworkError,
     SchemaError,
+    StreamSilenceError,
     StreamStallError,
     ThreadGoneError,
 )
@@ -289,6 +290,50 @@ def test_a_gone_thread_loses_its_record_and_is_not_offered_again() -> None:
     assert _status() is None
     assert ThreadStore().pick_last().record is None
     assert client.deleted == [] and client.terminated == []
+
+
+class _FailsToOpen(_Reconnect):
+    """Resume's first `failures` opens raise `first` before any event; the
+    open after them streams `frames`."""
+
+    def __init__(self, frames: list[dict[str, Any]], first: NetworkError, failures: int) -> None:
+        super().__init__(frames)
+        self._first = first
+        self._failures = failures
+
+    def sse_reconnect(self, backend_uuid: str, **kwargs: Any) -> Iterator[dict[str, Any]]:  # type: ignore[override]
+        if len(self.reconnected) < self._failures:
+            self.reconnected.append(backend_uuid)
+            raise self._first
+        return super().sse_reconnect(backend_uuid, **kwargs)
+
+
+@pytest.mark.parametrize(
+    "first",
+    [NetworkError("reset"), StreamSilenceError("went silent", 90.0)],
+    ids=["drop", "silence"],
+)
+def test_a_first_open_that_fails_transiently_is_retried_like_a_later_drop(
+    first: NetworkError,
+) -> None:
+    _save()
+    client = _FailsToOpen([_completed(WEATHER)], first, failures=1)
+    result, held = resume(client, UUID, store=ThreadStore())
+    held.release()
+    assert client.reconnected == [UUID, UUID]
+    assert result.stream_complete and result.resume is None
+    assert client.deleted == [(UUID, TOKEN)]
+
+
+def test_first_opens_that_keep_failing_stop_at_the_reconnect_bound_and_keep_the_thread() -> None:
+    _save()
+    first = StreamSilenceError("went silent", 90.0)
+    client = _FailsToOpen([_completed(WEATHER)], first, failures=99)
+    with pytest.raises(StreamSilenceError):
+        resume(client, UUID, store=ThreadStore())
+    # The initial open and the three consecutive reconnects a drop may spend.
+    assert client.reconnected == [UUID] * 4
+    assert client.deleted == [] and _status() == "kept"
 
 
 class _GoneOnReconnect(_Reconnect):

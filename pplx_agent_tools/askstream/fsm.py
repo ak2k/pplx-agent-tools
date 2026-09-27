@@ -221,6 +221,8 @@ class Starting:
     conn: ConnId
     rl_attempts: int
     open_due_at: float
+    # Failed reattach opens, spent from the reconnect bounds.
+    rc_attempts: int = 0
 
 
 @final
@@ -231,6 +233,9 @@ class StartBackoff:
     until: float
     rl_attempts: int
     next_conn: ConnId
+    rc_attempts: int = 0
+    # A reattach retry spends no rate-limit attempt.
+    rate_limited: bool = True
 
 
 @final
@@ -299,6 +304,8 @@ class RateLimited:
 @dataclass(frozen=True, slots=True)
 class Transient:
     msg: str
+    # Kept so a run rejected on it raises what the transport raised.
+    err: NetworkError | None = None
 
 
 @final
@@ -596,8 +603,8 @@ def _failure_error(f: Failure) -> PplxError:
     match f:
         case RateLimited(retry_after):
             return RateLimitError("HTTP 429: rate limited", retry_after=retry_after)
-        case Transient(msg):
-            return NetworkError(msg)
+        case Transient(msg, err):
+            return NetworkError(msg) if err is None else err
         case Gone(status):
             return SchemaError(f"HTTP {status} on the initial request")
         case Fatal(err):
@@ -633,7 +640,7 @@ def _cut_before_first_byte(s: StartState) -> Done:
 
 def step_start(policy: Policy, s: StartState, e: Event, u: float) -> StartStep:
     if isinstance(e, Tick):
-        return _tick_start(policy, s, e.now)
+        return _tick_start(policy, s, e.now, u)
     match s:
         case StartBackoff():
             return s, ()
@@ -656,8 +663,8 @@ def _starting(policy: Policy, s: Starting, e: ConnEvent, u: float) -> StartStep:
                 cursor=None,
                 reconnectable="absent",
                 phase=AwaitingFirst(),
-                rc_consecutive=0,
-                rc_total=0,
+                rc_consecutive=s.rc_attempts,
+                rc_total=s.rc_attempts,
                 next_conn=ConnId(conn + 1),
             )
             return Streaming(live, conn, now, NoGrace()), ()
@@ -678,6 +685,11 @@ def _starting(policy: Policy, s: Starting, e: ConnEvent, u: float) -> StartStep:
                     s.started_at, s.deadline, now + delay, s.rl_attempts, ConnId(conn + 1)
                 )
                 return backoff, (notice,)
+            if isinstance(f, Transient):
+                failed = Notice("reconnect_failed", f"reconnect failed: {f.msg}")
+                retry = _retry_reattach(policy, s, now, u, (failed,))
+                if retry is not None:
+                    return retry
             return Done(Rejected(_failure_error(f)), NoIds()), ()
         # The per-conn reader emits Opened or OpenFailed before any body item.
         case FrameIn() | HeartbeatIn() | StreamEnded() | StreamBroke():
@@ -686,19 +698,53 @@ def _starting(policy: Policy, s: Starting, e: ConnEvent, u: float) -> StartStep:
             assert_never(e)
 
 
-def _tick_start(policy: Policy, s: StartState, now: float) -> StartStep:
+def _retry_reattach(
+    policy: Policy, s: Starting, now: float, u: float, effects: tuple[StartEffect, ...]
+) -> StartStep | None:
+    """A resume's failed first open, retried within the reconnect bounds as
+    a later drop would be; None when they or the time left refuse it. A
+    research POST is billed, so its policy never reattaches."""
+    rc = policy.reconnect
+    match rc:
+        case Bounded(consecutive, _):
+            allowed = policy.reattach and s.rc_attempts < consecutive
+        case Off():
+            allowed = False
+        case _:
+            assert_never(rc)
+    if not allowed or _remaining(s.deadline, now) < policy.min_useful_s:
+        return None
+    delay = reconnect_delay(policy, s.rc_attempts, None, u)
+    backoff = StartBackoff(
+        s.started_at,
+        s.deadline,
+        now + delay,
+        s.rl_attempts,
+        ConnId(s.conn + 1),
+        s.rc_attempts + 1,
+        rate_limited=False,
+    )
+    return backoff, (*effects, Notice("reconnect", "reconnecting"))
+
+
+def _tick_start(policy: Policy, s: StartState, now: float, u: float) -> StartStep:
     due = due_class(policy, s, now)
     match due:
         case "deadline":
             effects: tuple[StartEffect, ...] = (Close(s.conn),) if isinstance(s, Starting) else ()
             return _cut_before_first_byte(s), effects
         case "open_due" if isinstance(s, Starting):
+            timeout = Notice("open_timeout", "reconnect open timeout")
+            retry = _retry_reattach(policy, s, now, u, (Close(s.conn), timeout))
+            if retry is not None:
+                return retry
             err = NetworkError(f"no response headers within {policy.open_s:g}s")
             return Done(Rejected(err), NoIds()), (Close(s.conn),)
         case "backoff" if isinstance(s, StartBackoff):
             conn = s.next_conn
+            rl = s.rl_attempts + 1 if s.rate_limited else s.rl_attempts
             starting = Starting(
-                s.started_at, s.deadline, conn, s.rl_attempts + 1, now + policy.open_s
+                s.started_at, s.deadline, conn, rl, now + policy.open_s, s.rc_attempts
             )
             return starting, (Open(conn, InitialPost(), policy.low_speed_s),)
         case "open_due" | "backoff" | "settle" | "first_content" | "stall" | "silence" | "none":

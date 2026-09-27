@@ -410,6 +410,15 @@ def test_an_initial_network_failure_raises_as_no_content(e: NetworkError, expect
     assert str(caught.value) == expected
 
 
+@pytest.mark.parametrize("e", [NetworkError("reset"), StreamSilenceError("went silent", 90.0)])
+def test_a_failed_initial_post_is_never_sent_again(e: NetworkError) -> None:
+    """The POST is billed: a second one would start a second run."""
+    client = FakeClient(FakeClock(), initials=[[(0.5, e)], [(0.5, e)]])
+    with pytest.raises(NetworkError):
+        run_research(client)
+    assert [o.kind for o in client.opens] == ["initial"]
+
+
 def test_an_initial_rejection_raises_the_original_error() -> None:
     e = SchemaError("unexpected status 404")
     client = FakeClient(FakeClock(), initials=[[(0.5, e)]])

@@ -194,6 +194,7 @@ def research_stream(
     keep_thread: bool = False,
     keep_on_raise: bool = False,
     hold: bool = False,
+    reattach: bool = False,
     timeout: float | None = None,
     stall_seconds: float | None = None,
     progress: bool = False,
@@ -217,7 +218,9 @@ def research_stream(
     once the read ends. `keep_on_raise` keeps it, sending nothing, when the
     read raises, which otherwise terminates and deletes. `hold`
     sends no delete and leaves the record of a thread the read is done with,
-    for a caller that deletes it only once the report is out.
+    for a caller that deletes it only once the report is out. `reattach`
+    marks an opener that reattaches to a running thread, so a network
+    failure of its first open is retried within the reconnect bounds.
 
     `state` is filled in, when given, instead of a fresh one; the thread
     ids, `kept`, `deleted` and `gone` are set even when the read raises. `handle`
@@ -231,6 +234,7 @@ def research_stream(
         reconnect=RECONNECT,
         first_content=FirstContentWithin(FIRST_CONTENT_SECONDS),
         silence_s=RESEARCH_SILENCE_SECONDS,
+        reattach=reattach,
     )
     if isinstance(policy, PolicyError):
         raise ValueError(policy.reason)

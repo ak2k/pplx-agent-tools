@@ -145,6 +145,9 @@ class Policy:
     rate_limit_attempts: int
     min_useful_s: float
     limits: Limits
+    # The initial open reattaches to a running thread (resume), so a network
+    # failure there may be retried; a POST's failure never is.
+    reattach: bool = False
 
     @staticmethod
     def make(
@@ -163,6 +166,7 @@ class Policy:
         rate_limit_attempts: int = 3,
         min_useful_s: float = 5.0,
         limits: Limits = DEFAULT_LIMITS,
+        reattach: bool = False,
     ) -> Policy | PolicyError:
         seconds = {
             "silence_s": silence_s,
@@ -224,6 +228,7 @@ class Policy:
             rate_limit_attempts=rate_limit_attempts,
             min_useful_s=min_useful_s,
             limits=limits,
+            reattach=reattach,
         )
 
     @property
@@ -263,6 +268,7 @@ def for_verb(
     reconnect: Reconnect = OFF,
     first_content: FirstContent = FIRST_CONTENT_OFF,
     silence_s: float | None = None,
+    reattach: bool = False,
 ) -> Policy | PolicyError:
     """The measured defaults for one verb; None keeps the verb's default
     deadline or stall window, or `Policy.make`'s silence window."""
@@ -275,6 +281,7 @@ def for_verb(
         first_content=first_content,
         reconnect=reconnect,
         silence_s=SILENCE_S if silence_s is None else silence_s,
+        reattach=reattach,
     )
 
 

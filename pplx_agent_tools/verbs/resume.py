@@ -215,6 +215,7 @@ def resume(
             keep_thread=keep_thread,
             keep_on_raise=True,
             hold=True,
+            reattach=True,
             timeout=timeout,
             stall_seconds=stall_seconds,
             progress=progress,

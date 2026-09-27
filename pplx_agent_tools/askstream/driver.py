@@ -300,14 +300,15 @@ class Driver:
             return RateLimited(e.retry_after)
         if isinstance(e, ThreadGoneError):
             self.gone = True
-        # A failed initial open rejects the run either way; Fatal keeps the
-        # original error, where the FSM would rebuild one for a Transient or
-        # a Gone.
-        if isinstance(self.state, Starting):
+        # A failed initial open rejects the run, unless a reattach's network
+        # failure is retried; Fatal keeps the original error, where the FSM
+        # would rebuild one for a Gone.
+        retry = self._policy.reattach and isinstance(e, NetworkError)
+        if isinstance(self.state, Starting) and not retry:
             return Fatal(e)
         if isinstance(e, ThreadGoneError):
             return Gone(403)
-        return Transient(str(e)) if isinstance(e, NetworkError) else Fatal(e)
+        return Transient(str(e), e) if isinstance(e, NetworkError) else Fatal(e)
 
     def _first_result(self, conn: ConnId, now: float) -> None:
         if not self._opened and self._current() == conn:
