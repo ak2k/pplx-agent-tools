@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -22,6 +23,15 @@ settings.register_profile(
     "no-deadline", deadline=None, suppress_health_check=[HealthCheck.too_slow]
 )
 settings.load_profile("no-deadline")
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _private_state_home(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
+    """Research records its threads under $XDG_STATE_HOME; no test may write
+    to the real one, and a build sandbox may have no writable home at all."""
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("XDG_STATE_HOME", str(tmp_path_factory.mktemp("xdg-state")))
+        yield
 
 
 def pytest_configure(config: pytest.Config) -> None:

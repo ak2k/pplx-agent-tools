@@ -152,13 +152,13 @@ def save_cookies(
     dest = dest or default_cookies_path(profile)
     try:
         dest.parent.mkdir(parents=True, exist_ok=True)
-        _atomic_write_0600(dest, json.dumps(loadable, indent=2, sort_keys=True))
+        atomic_write_0600(dest, json.dumps(loadable, indent=2, sort_keys=True))
     except OSError as e:
         raise AuthError(f"cannot write cookie file: {dest}: {e.strerror}") from e
     return dest
 
 
-def _atomic_write_0600(dest: Path, content: str) -> None:
+def atomic_write_0600(dest: Path, content: str) -> None:
     """Write `content` to `dest` atomically with mode 0o600 from byte zero.
 
     `tempfile.NamedTemporaryFile` is backed by `mkstemp` on POSIX, which
