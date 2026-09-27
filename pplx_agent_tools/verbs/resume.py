@@ -44,7 +44,9 @@ def last_resumable(
 ) -> tuple[ThreadRecord, list[str]]:
     """The newest resumable record in `store`, for `--last`, and the notes
     the result should carry about how it was chosen. `query`, the exact
-    prompt the run was started with, narrows the choice to that run."""
+    prompt the run was started with, narrows the choice to that run; without
+    it, a newer run a live process is still reading makes this an error
+    rather than a pick of an older one."""
     try:
         pick = store.pick_last(prompt_hash=hash_prompt(query) if query is not None else None)
     except OSError as e:
@@ -57,6 +59,16 @@ def last_resumable(
         if pick.unreadable
         else []
     )
+    matching = " whose prompt matches --query exactly" if query is not None else ""
+    if pick.record is not None and query is None and pick.live:
+        # The live run is likely the caller's own; the older kept thread past it
+        # is then another run's, and resuming it would delete that run's report.
+        raise PplxError(
+            f"--last found {pick.live} newer research run(s) for profile {store.profile!r} "
+            "still being read by a live pplx process, and will not take an older thread "
+            "past them: pass --query with the exact prompt of the run to resume, or its "
+            f"uuid{error_notes(unreadable)}"
+        )
     if pick.record is not None:
         # In a fan-out the newest run is as likely another agent's as this one's.
         several = (
@@ -69,15 +81,18 @@ def last_resumable(
             else []
         )
         return pick.record, unreadable + several
-    live = (
-        [f"{pick.live} newer run(s) are still being read by a live pplx process"]
-        if pick.live
-        else []
-    )
-    matching = " whose prompt matches --query exactly" if query is not None else ""
+    if pick.live:
+        # Worded apart from the nothing-recorded error below, which tells an
+        # agent to re-run: here the run is going, and a re-run pays for it twice.
+        raise PplxError(
+            f"the {pick.live} research run(s) recorded for profile {store.profile!r} in the "
+            f"last 25 h{matching} are still being read by a live pplx process: wait for it "
+            "to finish, or pass the run's uuid; do not re-run, which spends another research "
+            f"unit{error_notes(unreadable)}"
+        )
     raise PplxError(
         f"no resumable research thread recorded for profile {store.profile!r} in the "
-        f"last 25 h{matching}{error_notes(live + unreadable)}"
+        f"last 25 h{matching}{error_notes(unreadable)}"
     )
 
 

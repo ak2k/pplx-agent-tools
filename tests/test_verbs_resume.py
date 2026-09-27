@@ -11,6 +11,7 @@ stall.
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Callable, Iterator
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -29,7 +30,7 @@ from pplx_agent_tools.errors import (
     StreamStallError,
     ThreadGoneError,
 )
-from pplx_agent_tools.handles import ThreadHandle, ThreadRecord, ThreadStore
+from pplx_agent_tools.handles import ThreadHandle, ThreadRecord, ThreadStore, hash_prompt
 from pplx_agent_tools.render import render_resume_json, render_resume_text
 from pplx_agent_tools.verbs.research import research
 from pplx_agent_tools.verbs.resume import resume
@@ -520,9 +521,60 @@ def test_cli_resume_last_query_with_no_match_is_a_clear_error(
     assert "no resumable research thread" in message and "--query" in message
 
 
-def test_the_query_hash_is_the_one_research_records() -> None:
-    from pplx_agent_tools.handles import hash_prompt
+def _live_run(uuid: str, prompt: str, *, age: timedelta) -> None:
+    """A research run another pplx process is still reading."""
+    ThreadStore().save(
+        ThreadRecord(
+            uuid,
+            datetime.now(timezone.utc) - age,
+            "running",
+            read_write_token=TOKEN,
+            prompt_sha256=hash_prompt(prompt),
+            pid=os.getppid(),
+        )
+    )
 
+
+def test_cli_resume_last_without_query_does_not_pass_a_newer_live_run(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _save(age=1.0, prompt_sha256=hash_prompt(ALPHA))
+    _live_run(OTHER, BETA, age=timedelta(minutes=5))
+    client = _ByUuid([])
+    rc, out, err = _run(monkeypatch, capsys, ["--last", "-j"], client)
+    assert rc == EXIT_GENERIC
+    assert client.reconnected == [] and client.deleted == []
+    message = json.loads(out)["error"]["message"]
+    assert "1 newer research run(s)" in message and "live pplx process" in message
+    assert "--query" in message and "uuid" in message
+    assert "no resumable research thread" not in message + err
+    assert _status() == "kept"
+    live = ThreadStore().load(OTHER)
+    assert live is not None and live.status == "running"
+
+    client = _ByUuid([])
+    rc, out, _ = _run(monkeypatch, capsys, ["--last", "--query", ALPHA, "-j"], client)
+    assert rc == EXIT_OK and client.reconnected == [UUID]
+    assert json.loads(out)["query"] == ALPHA
+
+
+@pytest.mark.parametrize("query", [[], ["--query", BETA]], ids=["last", "last-query"])
+def test_cli_resume_last_with_only_live_runs_says_wait_and_not_re_run(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], query: list[str]
+) -> None:
+    _live_run(OTHER, BETA, age=timedelta(minutes=5))
+    client = _ByUuid([])
+    rc, out, err = _run(monkeypatch, capsys, ["--last", *query, "-j"], client)
+    assert rc == EXIT_GENERIC and client.reconnected == []
+    message = json.loads(out)["error"]["message"]
+    assert "no resumable research thread" not in message + err
+    assert "still being read by a live pplx process" in message
+    assert "wait" in message and "uuid" in message
+    live = ThreadStore().load(OTHER)
+    assert live is not None and live.status == "running"
+
+
+def test_the_query_hash_is_the_one_research_records() -> None:
     prompt = "  Compare HTTP/3 adoption\nacross CDNs, 2026 — ünïcode  "
     ThreadHandle(ThreadStore(), prompt=prompt).observe(UUID, None)
     record = ThreadStore().load(UUID)
