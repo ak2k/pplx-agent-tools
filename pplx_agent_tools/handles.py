@@ -29,7 +29,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Literal, cast, get_args
 
-from .auth import DEFAULT_PROFILE, atomic_write_0600, resolve_profile
+from .auth import atomic_write_0600, resolve_profile
 
 # Incognito threads expire 24 h after they start; the extra hour keeps a record
 # a little past that so a resume near the edge still finds its token.
@@ -149,10 +149,13 @@ def _mtime(path: Path) -> datetime | None:
 
 
 def resume_command(backend_uuid: str, profile: str | None) -> str:
-    """The command that resumes `backend_uuid`, naming the profile unless it is the default."""
+    """The command that resumes `backend_uuid` under the resolved profile.
+
+    `default` is named too: without the flag the command would take
+    $PPLX_PROFILE from whatever shell runs it, which may be another account.
+    """
     name = resolve_profile(profile)
-    flag = "" if name == DEFAULT_PROFILE else f"--profile {shlex.quote(name)} "
-    return f"pplx resume {flag}{shlex.quote(backend_uuid)}"
+    return f"pplx resume --profile {shlex.quote(name)} {shlex.quote(backend_uuid)}"
 
 
 @dataclass(frozen=True)

@@ -109,7 +109,7 @@ def test_no_first_content_is_cut_at_the_bound_with_its_own_message(
     # keeps its thread for `pplx resume` rather than delete it.
     kept = verb == "research"
     assert client.deleted == ([] if kept else [("BU", "RW")])
-    assert (out.get("resume") == "pplx resume BU") == kept
+    assert (out.get("resume") == "pplx resume --profile default BU") == kept
 
 
 # ---------- deadline before content ----------

@@ -177,7 +177,7 @@ def test_a_resume_that_drops_keeps_the_thread_and_names_itself_again() -> None:
     pending = _payloads(WEATHER)[2]
     client = _Reconnect([pending], then=NetworkError("SSE stream failed mid-stream: reset"))
     result = resume(client, UUID, store=ThreadStore())
-    assert result.cut_by == "drop" and result.resume == f"pplx resume {UUID}"
+    assert result.cut_by == "drop" and result.resume == f"pplx resume --profile default {UUID}"
     assert client.deleted == [] and client.terminated == []
     assert _status() == "kept"
 
@@ -204,7 +204,7 @@ def test_a_resume_stall_that_pplx_could_not_stop_keeps_the_thread() -> None:
 
     client = _Refusing([pending], then=StreamStallError("stalled", 240.0))
     result = resume(client, UUID, store=ThreadStore())
-    assert result.cut_by == "stall" and result.resume == f"pplx resume {UUID}"
+    assert result.cut_by == "stall" and result.resume == f"pplx resume --profile default {UUID}"
     assert len(client.terminated) == 1 and client.deleted == []
     assert any("may still be running on the server" in w for w in result.warnings)
     assert _status() == "kept"
@@ -220,7 +220,7 @@ def test_an_interrupt_during_resume_keeps_the_thread_and_prints_the_command(
     assert client.terminated == [] and client.deleted == []
     assert _status() == "kept"
     err = capsys.readouterr().err
-    assert f"`pplx resume {UUID}`" in err
+    assert f"`pplx resume --profile default {UUID}`" in err
     assert TOKEN not in err
 
 
@@ -233,8 +233,8 @@ def test_any_error_during_resume_keeps_the_thread_and_names_the_command(
     assert rc == EXIT_GENERIC
     doc = json.loads(out)
     assert doc["error"]["type"] == "SchemaError"
-    assert doc["resume"] == f"pplx resume {UUID}"
-    assert f"`pplx resume {UUID}`" in err
+    assert doc["resume"] == f"pplx resume --profile default {UUID}"
+    assert f"`pplx resume --profile default {UUID}`" in err
     assert client.terminated == [] and client.deleted == []
     assert _status() == "kept"
 

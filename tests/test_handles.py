@@ -233,10 +233,10 @@ def test_an_unwritable_state_dir_is_one_warning_and_never_raises(
     assert capsys.readouterr().err == ""
 
 
-def test_resume_command_names_a_non_default_profile(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_resume_command_always_names_the_profile(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("PPLX_PROFILE", raising=False)
-    assert handles.resume_command(UUID, None) == f"pplx resume {UUID}"
-    assert handles.resume_command(UUID, "default") == f"pplx resume {UUID}"
+    assert handles.resume_command(UUID, None) == f"pplx resume --profile default {UUID}"
+    assert handles.resume_command(UUID, "default") == f"pplx resume --profile default {UUID}"
     assert handles.resume_command(UUID, "work") == f"pplx resume --profile work {UUID}"
     assert handles.resume_command(UUID, "my work") == f"pplx resume --profile 'my work' {UUID}"
     monkeypatch.setenv("PPLX_PROFILE", "env")

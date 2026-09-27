@@ -367,7 +367,7 @@ def _check_cell(
         told,
         err,
     )
-    assert ("pplx resume BU" in told) == _kept(verb, end, text_completed, ids), told
+    assert ("pplx resume --profile default BU" in told) == _kept(verb, end, text_completed, ids), told
     return "terminate" in kinds, "delete" in kinds
 
 
@@ -455,7 +455,7 @@ def test_a_failed_terminate_returns_the_partial_and_research_keeps_the_thread(
     assert outcome["cut_by"] == "stall"
     kept = verb == "research"
     assert [c[0] for c in session.calls] == (["terminate"] if kept else ["terminate", "delete"])
-    assert (outcome.get("resume") == "pplx resume BU") == kept
+    assert (outcome.get("resume") == "pplx resume --profile default BU") == kept
 
 
 def test_the_undecodable_answer_is_one_curl_cffi_cannot_read() -> None:
@@ -568,5 +568,5 @@ def test_undecodable_research_text_still_says_the_run_may_be_live(
     assert type(exc.value) is SchemaError
     assert "research text is not JSON" in str(exc.value)
     assert _STILL_RUNNING in str(exc.value) and clause in str(exc.value)
-    assert "pplx resume BU" in str(exc.value)
+    assert "pplx resume --profile default BU" in str(exc.value)
     assert [c[0] for c in session.calls] == legs

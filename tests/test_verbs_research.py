@@ -306,7 +306,7 @@ def test_research_midstream_network_error_keeps_thread_and_returns_the_partial()
     assert result.stream_complete is False
     assert result.cut_by == "drop"
     assert client.deleted == []
-    assert result.resume == "pplx resume BU"
+    assert result.resume == "pplx resume --profile default BU"
 
 
 def test_research_network_error_before_any_content_raises() -> None:
@@ -320,8 +320,8 @@ def test_research_network_error_before_any_content_raises() -> None:
     assert not isinstance(excinfo.value, StreamDeadlineError)
     assert exit_code(excinfo.value) == EXIT_NETWORK
     assert client.deleted == []
-    assert excinfo.value.resume == "pplx resume BU"
-    assert "pplx resume BU" in str(excinfo.value)
+    assert excinfo.value.resume == "pplx resume --profile default BU"
+    assert "pplx resume --profile default BU" in str(excinfo.value)
 
 
 def test_research_deadline_and_closed_empty_texts_are_distinguishable() -> None:

@@ -50,7 +50,7 @@ IDS = {
     "context_uuid": "CTX",
     "display_model": "pplx_alpha",
 }
-RESUME = f"pplx resume {UUID}"
+RESUME = f"pplx resume --profile default {UUID}"
 
 
 @pytest.fixture
@@ -157,6 +157,17 @@ def test_the_resume_command_names_a_non_default_profile(
     record = ThreadStore("work").load(UUID)
     assert record is not None and record.status == "kept"
     assert ThreadStore().load(UUID) is None
+
+
+def test_the_resume_command_names_the_default_profile_over_the_environment(
+    clock: _Clock, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("PPLX_PROFILE", "work")
+    steps: list[Step] = [(0, _report("kept part")), (0, DROP)]
+    _, out, _, _ = _cli(monkeypatch, capsys, steps, clock, "--json", "--profile", "default")
+    assert json.loads(out)["resume"] == f"pplx resume --profile default {UUID}"
+    record = ThreadStore("default").load(UUID)
+    assert record is not None and record.status == "kept"
 
 
 def test_a_drop_before_the_token_still_leaves_a_resumable_record(clock: _Clock) -> None:
