@@ -29,6 +29,9 @@ class PplxError(Exception):
 
     # Subclasses inherit their parent's code unless they set their own.
     exit_code: ClassVar[int] = EXIT_GENERIC
+    # The command that fetches the result of a run this failure left going
+    # server-side, for the --json error document; None when there is none.
+    resume: str | None = None
 
 
 class AuthError(PplxError):

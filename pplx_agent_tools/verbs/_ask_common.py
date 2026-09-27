@@ -21,6 +21,7 @@ import time
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from functools import partial
 from typing import Any, Literal
 from uuid import uuid4
 
@@ -95,6 +96,8 @@ class AskStreamState:
     # Set by `release_on_exit` when the run may outlive pplx: the terminate it
     # needed could not be sent, or failed. A retry would run alongside it.
     cleanup_warnings: list[str] = field(default_factory=list)
+    # Set by `release_on_exit` when the thread's delete succeeded.
+    deleted: bool = False
 
 
 def run_may_be_live(state: AskStreamState, *, raised: bool, settles_after_text: bool) -> bool:
@@ -111,9 +114,24 @@ def run_may_be_live(state: AskStreamState, *, raised: bool, settles_after_text: 
     return not (settles_after_text and state.text_completed and not raised)
 
 
+def ended_by_drop(state: AskStreamState) -> bool:
+    """Whether a dropped connection or total silence cut the stream. Both
+    leave the run going on the server, where a deadline or a stall is pplx
+    deciding to stop."""
+    cut = state.cutoff
+    if isinstance(cut, StreamSilenceError):
+        return True
+    return cut is not None and not isinstance(cut, StreamDeadlineError)
+
+
 @contextmanager
 def release_on_exit(
-    client: Client, state: AskStreamState, *, keep_thread: bool, settles_after_text: bool = False
+    client: Client,
+    state: AskStreamState,
+    *,
+    keep_thread: bool,
+    settles_after_text: bool = False,
+    keep_on_drop: bool = False,
 ) -> Iterator[None]:
     """Wrap `run_ask_stream`: on every exit, KeyboardInterrupt included,
     terminate the run if it may still be going, then delete its thread unless
@@ -125,16 +143,21 @@ def release_on_exit(
     terminate that was needed but could not be sent, or failed, is recorded in
     `state.cleanup_warnings` for the result or error to report; with an
     exception in flight there is neither, so they go to stderr.
+
+    `keep_on_drop` sends neither request when `ended_by_drop`: the run
+    finishes server-side without a listener, and its thread is how the caller
+    gets the result.
     """
     raised = True
     try:
         yield
         raised = False
     finally:
-        if run_may_be_live(state, raised=raised, settles_after_text=settles_after_text):
-            _stop_run(client, state)
-        if not keep_thread and state.backend_uuid and state.read_write_token:
-            client.delete_thread(state.backend_uuid, state.read_write_token)
+        if not (keep_on_drop and not raised and ended_by_drop(state)):
+            if run_may_be_live(state, raised=raised, settles_after_text=settles_after_text):
+                _stop_run(client, state)
+            if not keep_thread and state.backend_uuid and state.read_write_token:
+                state.deleted = client.delete_thread(state.backend_uuid, state.read_write_token)
         if raised:
             for warning in state.cleanup_warnings:
                 print(f"warning: {warning}", file=sys.stderr)
@@ -401,6 +424,7 @@ def run_ask_stream(
     is_progress: Callable[[dict[str, Any]], bool] | None = None,
     settle_seconds: float | None = None,
     silence_seconds: float = SILENCE_SECONDS,
+    opener: Callable[..., Iterator[dict[str, Any]]] | None = None,
 ) -> None:
     """Drive the SSE call with retry/deadline/stall guard, filling in `state`.
 
@@ -430,6 +454,10 @@ def run_ask_stream(
     `silence_seconds` sizes the transport's abort on a stream that sends no
     bytes at all (see `Client.sse_post`); the first-content bound is
     `FIRST_CONTENT_SECONDS` for every verb.
+
+    `opener`, called with `sse_post`'s bound keywords only, opens the stream
+    in place of POSTing `body` to `endpoint` (e.g. `Client.sse_reconnect`
+    bound to a thread); `endpoint` then only names the stream in messages.
     """
     overall_deadline = (time.monotonic() + timeout) if timeout else None
 
@@ -466,6 +494,7 @@ def run_ask_stream(
                 is_progress=is_progress,
                 settle_seconds=settle_seconds,
                 silence_seconds=silence_seconds,
+                opener=opener,
             )
             break
         except StreamStallError as e:
@@ -583,11 +612,12 @@ def _drive_one(
     is_progress: Callable[[dict[str, Any]], bool] | None,
     settle_seconds: float | None,
     silence_seconds: float,
+    opener: Callable[..., Iterator[dict[str, Any]]] | None,
 ) -> None:
     event_count = 0
     window = stall_seconds
     settling = False
-    # Passed only when used, so `sse_post` overrides without the parameter keep working.
+    # Passed only when used, so openers without the parameter keep working.
     extra: dict[str, Any] = {}
     if settle_seconds is not None:
         extra["stall_window"] = lambda: window
@@ -606,10 +636,9 @@ def _drive_one(
             return True
 
         is_progress = settle_or_progress
+    open_stream = opener if opener is not None else partial(client.sse_post, endpoint, body)
     try:
-        for event in client.sse_post(
-            endpoint,
-            body,
+        for event in open_stream(
             max_total_seconds=remaining_seconds,
             stall_seconds=stall_seconds,
             is_progress=is_progress,

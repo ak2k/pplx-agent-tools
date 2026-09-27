@@ -283,10 +283,11 @@ def test_research_deadline_before_any_content_raises() -> None:
         research(client, "q", timeout=30)
 
 
-def test_research_midstream_network_error_reaps_thread_and_returns_the_partial() -> None:
+def test_research_midstream_network_error_keeps_thread_and_returns_the_partial() -> None:
     """A research run is minutes long, so a transport failure part-way through
     is a likely exit — and the thread ids are already in hand when it happens.
-    What accumulated is returned as a drop cut rather than thrown away."""
+    What accumulated is returned as a drop cut rather than thrown away, and the
+    thread is kept: the run finishes server-side for `pplx resume`."""
     client = _FakeClient(
         [{"data": {"backend_uuid": "BU", "read_write_token": "RW", "text": _snapshot()}}],
         raise_network=True,
@@ -297,7 +298,8 @@ def test_research_midstream_network_error_reaps_thread_and_returns_the_partial()
     assert result.answer
     assert result.stream_complete is False
     assert result.cut_by == "drop"
-    assert client.deleted == [("BU", "RW")]
+    assert client.deleted == []
+    assert result.resume == "pplx resume BU"
 
 
 def test_research_network_error_before_any_content_raises() -> None:
@@ -310,7 +312,9 @@ def test_research_network_error_before_any_content_raises() -> None:
 
     assert not isinstance(excinfo.value, StreamDeadlineError)
     assert exit_code(excinfo.value) == EXIT_NETWORK
-    assert client.deleted == [("BU", "RW")]
+    assert client.deleted == []
+    assert excinfo.value.resume == "pplx resume BU"
+    assert "pplx resume BU" in str(excinfo.value)
 
 
 def test_research_deadline_and_closed_empty_texts_are_distinguishable() -> None:

@@ -531,32 +531,38 @@ def render_research_text(result: ResearchResult) -> str:
     if result.downgraded:
         parts.append("")
         parts.append(_downgrade_marker(result.served_model))
+    if result.resume:
+        parts.append("")
+        parts.append(
+            f"thread kept: the run continues server-side; get the report with: {result.resume}"
+        )
     return "\n".join(parts)
 
 
+def _research_payload(result: ResearchResult) -> dict[str, Any]:
+    return {
+        "query": result.query,
+        "mode": result.mode,
+        "answer": result.answer,
+        "sources": [
+            {
+                "url": s.url,
+                **({"title": s.title} if s.title else {}),
+                **({"snippet": s.snippet} if s.snippet else {}),
+            }
+            for s in result.sources
+        ],
+        "stream_complete": result.stream_complete,
+        "cut_by": result.cut_by,
+        "content_shortfall": result.content_shortfall,
+        "clarifying_questions": list(result.clarifying_questions),
+        "downgraded": result.downgraded,
+        "resume": result.resume,
+    }
+
+
 def render_research_json(result: ResearchResult) -> dict[str, Any]:
-    return envelope(
-        "research",
-        {
-            "query": result.query,
-            "mode": result.mode,
-            "answer": result.answer,
-            "sources": [
-                {
-                    "url": s.url,
-                    **({"title": s.title} if s.title else {}),
-                    **({"snippet": s.snippet} if s.snippet else {}),
-                }
-                for s in result.sources
-            ],
-            "stream_complete": result.stream_complete,
-            "cut_by": result.cut_by,
-            "content_shortfall": result.content_shortfall,
-            "clarifying_questions": list(result.clarifying_questions),
-            "downgraded": result.downgraded,
-        },
-        warnings=result.warnings,
-    )
+    return envelope("research", _research_payload(result), warnings=result.warnings)
 
 
 def _hit_to_json(hit: Hit) -> dict[str, Any]:

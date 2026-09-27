@@ -342,7 +342,8 @@ def test_a_drop_after_content_returns_the_partial_as_a_drop_cut(
     assert out["cut_by"] == "drop"
     assert "kept part" in json.dumps(out)
     assert any("failed mid-stream" in w for w in out["warnings"])
-    assert client.deleted == [("BU", "RW")]
+    # Research keeps the thread of a dropped run for `pplx resume`.
+    assert client.deleted == ([] if verb == "research" else [("BU", "RW")])
 
 
 @pytest.mark.parametrize("verb", _CLI)

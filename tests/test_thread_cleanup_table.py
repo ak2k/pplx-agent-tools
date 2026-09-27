@@ -13,6 +13,9 @@ The rule, restated here rather than taken from production code:
 - A run that needed a terminate pplx could not send (no context_uuid or
   display_model) is reported as possibly still running: in the result's
   warnings, the error's message, or on stderr when an exception is in flight.
+- KEEP: research whose stream a drop or total silence cut sends neither leg
+  once its backend_uuid arrived, and says how to resume instead: the run goes
+  on server-side without a listener.
 
 Each cell runs a verb over the real `Client.sse_post`, `Client.terminate` and
 `Client.delete_thread` on a scripted session with a fake clock, and reads the
@@ -72,10 +75,16 @@ def _live(verb: str, end: str, text_completed: bool) -> bool:
     return not (over or (text_completed and (verb == "fetch" or settled_ask)))
 
 
+def _kept(verb: str, end: str, ids: str) -> bool:
+    return verb == "research" and end in ("drop", "silence") and ids != "none"
+
+
 def expected_legs(
     verb: str, end: str, text_completed: bool, ids: str, keep: bool
 ) -> tuple[bool, bool]:
     """(terminate, delete) from the rule in the module docstring."""
+    if _kept(verb, end, ids):
+        return False, False
     delete = ids in ("complete", "no_context", "no_model") and not keep
     terminable = ids in ("complete", "no_token")
     return terminable and _live(verb, end, text_completed), delete
@@ -83,7 +92,8 @@ def expected_legs(
 
 def expected_note(verb: str, end: str, text_completed: bool, ids: str) -> bool:
     """Whether the run is reported as possibly still running."""
-    return ids in ("no_context", "no_model") and _live(verb, end, text_completed)
+    kept = _kept(verb, end, ids)
+    return ids in ("no_context", "no_model") and _live(verb, end, text_completed) and not kept
 
 
 _STILL_RUNNING = "may still be running on the server"
@@ -346,6 +356,7 @@ def _check_cell(
         told,
         err,
     )
+    assert ("pplx resume BU" in told) == _kept(verb, end, ids), told
     return "terminate" in kinds, "delete" in kinds
 
 
@@ -466,7 +477,9 @@ def test_an_undecodable_cleanup_answer_keeps_the_salvaged_partial(clock: _Clock,
     assert isinstance(outcome, dict), outcome
     assert outcome["cut_by"] == "drop"
     assert "partial" in json.dumps(outcome)
-    assert [c[0] for c in session.calls] == ["terminate", "delete"]
+    # Research keeps a dropped run's thread, so it sends no cleanup to fail.
+    legs = [] if verb == "research" else ["terminate", "delete"]
+    assert [c[0] for c in session.calls] == legs
 
 
 def test_both_cleanup_requests_share_one_short_timeout(clock: _Clock) -> None:
@@ -478,7 +491,9 @@ def test_both_cleanup_requests_share_one_short_timeout(clock: _Clock) -> None:
 
 @pytest.mark.parametrize("verb", VERBS)
 def test_a_failed_terminate_is_a_result_warning(clock: _Clock, verb: str) -> None:
-    _, outcome = _run(clock, verb, "drop", False, "complete", False, cleanup_fails=True)
+    # Research sends no terminate on a drop, so its row is a stall.
+    end = "stall" if verb == "research" else "drop"
+    _, outcome = _run(clock, verb, end, False, "complete", False, cleanup_fails=True)
     assert isinstance(outcome, dict), outcome
     assert any(
         _STILL_RUNNING in w and "the request to stop it failed" in w for w in outcome["warnings"]
