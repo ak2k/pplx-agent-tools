@@ -11,9 +11,24 @@ from dataclasses import dataclass
 from typing import final
 
 from pplx_agent_tools.askstream.drift import Drift, name_of
-from pplx_agent_tools.askstream.frames import EndOfStream, Frame, Heartbeat, decode_frame
+from pplx_agent_tools.askstream.frames import (
+    EndOfStream,
+    Frame,
+    Heartbeat,
+    decode_frame,
+    decode_object,
+    unparseable,
+)
+from pplx_agent_tools.askstream.jsonval import measure, weight
 
-__all__ = ["KNOWN_EVENTS", "SSE_FIELDS", "SseFields", "decode_event", "parse_fields"]
+__all__ = [
+    "KNOWN_EVENTS",
+    "SSE_FIELDS",
+    "SseFields",
+    "decode_event",
+    "decode_parsed",
+    "parse_fields",
+]
 
 SSE_FIELDS = frozenset({"data", "event", "id", "retry"})
 KNOWN_EVENTS = frozenset({"message", "end_of_stream"})
@@ -57,4 +72,32 @@ def decode_event(block: str) -> tuple[Frame, tuple[Drift, ...]]:
     if fields.data is None:
         return (EndOfStream() if fields.event == "end_of_stream" else Heartbeat()), drift
     frame, more = decode_frame(fields.data)
+    return frame, drift + more
+
+
+def decode_parsed(event: str | None, data: object) -> tuple[Frame, tuple[Drift, ...]]:
+    """One event as the transport yields it, `data` already through its JSON
+    parser (or left as text when that failed). An object or array payload
+    decodes as `decode_event` would decode its text; None data is a
+    heartbeat and str data is `syntax`, since the transport yields those
+    for a JSON `null` or string too. Never raises."""
+    drift: tuple[Drift, ...] = ()
+    if event is not None and event not in KNOWN_EVENTS:
+        drift = (Drift("unknown_sse_event", name_of(event)),)
+    if data is None:
+        return (EndOfStream() if event == "end_of_stream" else Heartbeat()), drift
+    if isinstance(data, str):
+        frame, more = unparseable("syntax", len(data))
+        return frame, drift + more
+    m = measure(data)
+    if m is None:
+        # The transport's parser accepts NaN and unbounded nesting; the text
+        # decoder refuses the first as syntax and the second as depth.
+        deep = measure(data, max_depth=2**62) is not None
+        frame, more = unparseable("depth" if deep else "syntax", 0)
+        return frame, drift + more
+    if not isinstance(m.value, dict):
+        frame, more = unparseable("not_object", weight(m.value))
+        return frame, drift + more
+    frame, more = decode_object(m.value, m.weight)
     return frame, drift + more

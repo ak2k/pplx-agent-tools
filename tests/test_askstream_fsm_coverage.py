@@ -189,7 +189,7 @@ def test_product_size_is_computed_from_the_axes() -> None:
     )
     n_events = len(event_axis())
     assert len(set(cells)) == len(cells) == n_states * len(COMPLETION_CLASSES) * n_events
-    assert len(cells) == 1728  # today's value, recorded in plan §3.8
+    assert len(cells) == 1800  # pinned so an axis change is a deliberate edit
 
 
 def test_classifiers_return_the_axis_classes() -> None:
@@ -223,8 +223,11 @@ def _policy(rng: random.Random, completion_cls: type) -> Policy:
     cap = deadline.t if isinstance(deadline, At) else 600.0
     p = Policy.make(
         deadline=deadline,
-        # Mostly on: T24 cells need the stall term to come first.
-        stall=rng.choice([StallAfter(rng.uniform(5, cap))] * 3 + [StallOff()]),
+        # Mostly on: T24 cells need the stall term to come first. The short
+        # windows let it precede the settle term in TextComplete.
+        stall=rng.choice(
+            [StallAfter(rng.uniform(5, cap)), StallAfter(rng.uniform(5, 60))] * 2 + [StallOff()]
+        ),
         completion=completion,
         answer_paths="ask_text_or_workflow",
         first_content=rng.choice([FirstContentOff(), FirstContentWithin(rng.uniform(1, 120))]),
@@ -284,7 +287,8 @@ def _state(rng: random.Random, p: Policy, k: type, ph: type | None) -> fsm.State
     reason = rng.choice(REASONS)
     target = ReconnectTarget(fsm.ids_uuid(ids) if not isinstance(ids, NoIds) else UUID)
     if k is Streaming:
-        grace = rng.choice([NoGrace(), GraceUntil(started + rng.uniform(0, 400))])
+        until = started + rng.uniform(0, 400)
+        grace = rng.choice([NoGrace(), GraceUntil(until), GraceUntil(until, progressed=True)])
         return Streaming(lv, conn, started + rng.uniform(0, 400), grace)
     if k is Reconnecting:
         return Reconnecting(lv, conn, target, reason, started + rng.uniform(0, 400))
@@ -642,7 +646,10 @@ def _chk_t15_t16(
     progress = e.s.change == "progress"
     assert s2.conn == s.conn
     assert s2.last_byte_at == e.now
-    assert s2.grace == s.grace
+    if progress and isinstance(s.grace, GraceUntil):
+        assert s2.grace == GraceUntil(s.grace.t, progressed=True)
+    else:
+        assert s2.grace == s.grace
     assert lv2.phase == expected_phase(p, lv, e.s, e.now)
     assert lv2.ids == expected_ids(lv.ids, e.s)
     assert lv2.rc_consecutive == (0 if progress else lv.rc_consecutive)
@@ -684,10 +691,14 @@ def _chk_t19(
     assert eff == (Close(s.conn),)
 
 
+BROKE_REASONS: dict[str, fsm.ReconnectReason] = {"transport": "drop", "silence": "silence"}
+
+
 def _chk_t20(
     p: Policy, s: fsm.State, e: fsm.Event, s2: fsm.State, eff: tuple[fsm.Effect, ...]
 ) -> None:
-    _chk_streamed_r("drop")(p, s, e, s2, eff)
+    assert isinstance(e, StreamBroke)
+    _chk_streamed_r(BROKE_REASONS[e.kind])(p, s, e, s2, eff)
 
 
 def _chk_t21(
@@ -737,6 +748,10 @@ def _chk_t12(
     p: Policy, s: fsm.State, e: fsm.Event, s2: fsm.State, eff: tuple[fsm.Effect, ...]
 ) -> None:
     assert isinstance(s, ReconnectBackoff)
+    if _remaining(s.live.deadline, e.now) < p.min_useful_s:
+        assert s2 == Done(expected_fallback(p, s.reason, s.live), s.live.ids)
+        assert eff == ()
+        return
     assert isinstance(s2, Reconnecting)
     conn = s.live.next_conn
     assert (s2.conn, s2.target, s2.reason, s2.open_due_at) == (
@@ -758,8 +773,10 @@ def _chk_tick_r(reason: fsm.ReconnectReason) -> Check:
         p: Policy, s: fsm.State, e: fsm.Event, s2: fsm.State, eff: tuple[fsm.Effect, ...]
     ) -> None:
         assert isinstance(s, Streaming)
-        # I26: a timer never reconnects before a new conn's grace ends.
-        if isinstance(s.grace, GraceUntil):
+        # I26: a timer never reconnects before a new conn's grace ends,
+        # except stall and silence once that conn has made progress.
+        idle = reason in ("stall", "silence")
+        if isinstance(s.grace, GraceUntil) and not (idle and s.grace.progressed):
             assert e.now >= s.grace.t
         _check_r(p, s.live, s.conn, reason, e.now, s2, eff)
 
@@ -887,7 +904,11 @@ RULES: list[Rule] = [
         lambda c: _conn_cur(c, Streaming, (StreamBroke,)) and c[4] in ("oversize", "cap"),
         _chk_t19,
     ),
-    Row("T20", lambda c: _conn_cur(c, Streaming, (StreamBroke,)) and c[4] == "transport", _chk_t20),
+    Row(
+        "T20",
+        lambda c: _conn_cur(c, Streaming, (StreamBroke,)) and c[4] in ("transport", "silence"),
+        _chk_t20,
+    ),
     Row("T21", lambda c: _tick(c, (Starting, StartBackoff, *LIVE_KINDS), ("deadline",)), _chk_t21),
     Row("T6", lambda c: _tick(c, (Starting,), ("open_due",)), _chk_t6),
     Row("T7", lambda c: _tick(c, (StartBackoff,), ("backoff",)), _chk_t7),

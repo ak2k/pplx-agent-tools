@@ -184,6 +184,7 @@ def _hash(v: JsonValue) -> int:
 
 class BlockStore:
     __slots__ = (
+        "_answer_high",
         "_answer_paths",
         "_dead",
         "_diff_mode",
@@ -193,9 +194,12 @@ class BlockStore:
         "_probe",
         "_reconnect_pending",
         "_report_high",
+        "_rewound",
         "_seen",
         "_seen_text",
+        "_seen_urls",
         "_sources",
+        "_sources_high",
         "_sources_weight",
         "_track_all",
         "budget",
@@ -218,9 +222,13 @@ class BlockStore:
         self._fields: dict[FieldKey, FieldState] = {}
         self._seen: dict[FieldKey, _Seen] = {}
         self._seen_text = _Seen()
+        self._seen_urls = _Seen()
         self._report_high = 0
+        self._answer_high = 0
+        self._sources_high = 0
         self._diff_mode = False
         self._reconnect_pending = False
+        self._rewound: set[str] = set()
         self._dead: CapExceeded | None = None
         self._drift_once: set[Drift] = set()
         # Charged like a tracked field: it outlives the `web_results` document
@@ -248,8 +256,14 @@ class BlockStore:
         self._readable()
         return self._sources
 
+    @property
+    def rewound(self) -> frozenset[str]:
+        """The projections, `answer` or `report_body`, that a reconnect
+        snapshot restated without text the run already held."""
+        return frozenset(self._rewound)
+
     def seen_sizes(self) -> tuple[int, ...]:
-        return (len(self._seen_text), *(len(s) for s in self._seen.values()))
+        return (len(self._seen_text), len(self._seen_urls), *(len(s) for s in self._seen.values()))
 
     # --- write side -----------------------------------------------------------
 
@@ -284,6 +298,7 @@ class BlockStore:
         drift: list[Drift] = []
         progress = frame.text is not None and self._seen_text.add(hash(frame.text))
         report_touched = False
+        sources_before = self._sources
         for u in frame.blocks:
             if isinstance(u, BlockMalformed):
                 self._malformed(u)
@@ -300,15 +315,21 @@ class BlockStore:
             cls = classify_field(_field_name(u.key))
             report_touched = report_touched or cls == "report_asset"
             progress = progress or (r and cls == "content")
+        report_grew = False
         if report_touched:
             n = len(report_body(self))
             if n > self._report_high:
                 self._report_high = n
-                progress = True
+                report_grew = True
+        progress = progress or report_grew
+        new_source = self._sources is not sources_before and self._note_urls()
 
         parity = None
         if before is not None and kind is not None:
-            parity = self._parity(kind, before, self._project(), drift)
+            after = self._project()
+            parity = self._parity(kind, before, after, drift)
+            if kind == "reconnect":
+                progress = self._past_high_water(before, after) or report_grew or new_source
         if terminal:
             _, ambiguous = answer(self, self._answer_paths)
             drift += self._once(ambiguous + projection_missing(self))
@@ -476,9 +497,26 @@ class BlockStore:
         self._sources, self._sources_weight = held, w
         return None
 
+    def _note_urls(self) -> bool:
+        """Adds the run's source URLs to those it has seen; True when any is
+        new, which a snapshot restating the same number of sources can hold."""
+        # A list, not a generator: `any` must not stop before every URL is added.
+        return any([self._seen_urls.add(hash(s.url)) for s in self._sources])
+
     def _drop(self, key: FieldKey, weight: int) -> None:
         self._fields.pop(key, None)
         self.budget.total_weight -= weight
+
+    def _past_high_water(self, before: _Projected, after: _Projected) -> bool:
+        """Whether a reconnect snapshot took the answer or the source list
+        past the longest the run has held. The snapshot restates what the run
+        already sent, in values that need not match it (step ids renumber),
+        so a changed field alone is not progress."""
+        answer_high = max(self._answer_high, len(before.answer.streamed))
+        sources_high = max(self._sources_high, len(before.urls))
+        self._answer_high = max(answer_high, len(after.answer.streamed))
+        self._sources_high = max(sources_high, len(after.urls))
+        return self._answer_high > answer_high or self._sources_high > sources_high
 
     def _project(self) -> _Projected:
         ans, _ = answer(self, self._answer_paths)
@@ -508,6 +546,8 @@ class BlockStore:
         for name, verdict in verdicts:
             if verdict == "mismatch":
                 drift += self._once((Drift("projection_mismatch", name_of(name)),))
+                if kind == "reconnect":
+                    self._rewound.add(name)
         return p
 
 

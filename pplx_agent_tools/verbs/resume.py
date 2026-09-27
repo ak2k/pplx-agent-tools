@@ -9,31 +9,26 @@ Reconnecting creates no thread, so this verb is stateless in the sense of
 CLAUDE.md's endpoint principle; deleting the thread afterward is the same
 cleanup research does, but only once the report is out (`HeldThread`).
 
-The stream is read by the research driver and consumer (`read_report`,
-`SnapshotReport`), fresh for every resume: the server renumbers step ids
-between snapshots, so nothing from the dropped run is merged in.
+The stream is read by research's driver (`research_stream`), fresh for
+every resume: the server renumbers step ids between snapshots, so nothing
+from the dropped run is merged in. A drop is reconnected within the call,
+as for research.
 """
 
 from __future__ import annotations
 
 import json
 import sys
-from collections.abc import Callable, Sequence
-from functools import partial
+from collections.abc import Sequence
 from typing import Any
 
+from ..askstream.driver import reconnecting
 from ..errors import PplxError, ThreadGoneError, ThreadRecordsError
 from ..handles import ThreadHandle, ThreadRecord, ThreadStore, hash_prompt, resume_command
 from ..wire import RECONNECT_PATH, Client, thread_ref
 from ._ask_common import AskStreamState, error_notes
-from .research import (
-    _COUNCIL_MODEL,
-    DEFAULT_MODE,
-    ResearchResult,
-    SnapshotReport,
-    finish_report,
-    read_report,
-)
+from ._research_stream import research_stream
+from .research import _COUNCIL_MODEL, DECODER, DEFAULT_MODE, ResearchResult, finish_report
 
 # The user-facing mode a served model stands for, for a thread with no record.
 _MODEL_MODE = {"pplx_alpha": "research", _COUNCIL_MODEL: "agentic_research"}
@@ -122,14 +117,18 @@ class HeldThread:
         self.command = command
 
     def release(self) -> None:
-        """The report is out: delete the thread unless it was kept or
-        `keep_thread`, then remove its record."""
+        """The report is out: delete the thread unless it was kept, is gone
+        or `keep_thread`, then remove its record."""
         state = self._state
         if state.kept:
             return
         before = list(self._handle.warnings)
         try:
-            if not self._keep_thread and state.backend_uuid and state.read_write_token:
+            if (
+                not (self._keep_thread or state.gone)
+                and state.backend_uuid
+                and state.read_write_token
+            ):
                 state.deleted = self._client.delete_thread(
                     state.backend_uuid, state.read_write_token
                 )
@@ -139,7 +138,9 @@ class HeldThread:
 
     def keep(self, error: BaseException | None = None) -> None:
         """The report did not get out: mark the record `kept` and name the
-        command on stderr and on `error`."""
+        command on stderr and on `error`. A gone thread has nothing to keep."""
+        if self._state.gone:
+            return
         before = list(self._handle.warnings)
         self._handle.keep()
         if isinstance(error, PplxError):
@@ -167,7 +168,6 @@ def resume(
     timeout: float | None = None,
     stall_seconds: float | None = None,
     progress: bool = False,
-    new_consumer: Callable[[], SnapshotReport] = SnapshotReport,
     notes: Sequence[str] = (),
     prompt: str | None = None,
 ) -> tuple[ResearchResult, HeldThread]:
@@ -183,10 +183,12 @@ def resume(
     failed) keeps its thread and names this command again, and a deadline or
     stall terminates it. An exception (Ctrl-C included), a report that does
     not decode, or no content at all keeps the thread and its record and
-    prints this command on stderr. `new_consumer` builds the consumer the
-    frames are read into. `notes` lead the result's warnings. `prompt`, the
-    run's prompt when the caller knows it, stands in for a snapshot that does
-    not echo it.
+    prints this command on stderr, unless the server reported the thread gone
+    (at the open or on a reconnect): nothing is then sent, kept or named, and
+    with nothing read the error is `ThreadGoneError`. `notes` lead the
+    result's warnings.
+    `prompt`, the run's prompt when the caller knows it, stands in for a
+    snapshot that does not echo it.
     """
     notes = list(notes)
     unread = False
@@ -198,30 +200,33 @@ def resume(
             f"the record of this thread under {store.directory} could not be read "
             f"({_reason(e)}); resuming without it"
         )
-    report = new_consumer()
     state = AskStreamState(read_write_token=record.read_write_token if record else None)
     handle = ThreadHandle(store, record=record)
     where = RECONNECT_PATH + thread_ref(backend_uuid)
     command = resume_command(backend_uuid, store.profile)
     held = HeldThread(client, state, handle, command=command, keep_thread=keep_thread)
     try:
-        read_report(
+        run = research_stream(
             client,
-            state,
-            handle,
-            report.on_event,
+            reconnecting(client, backend_uuid),
+            DECODER,
             endpoint=where,
-            body={},
             label="resume",
             keep_thread=keep_thread,
+            keep_on_raise=True,
+            hold=True,
+            reattach=True,
             timeout=timeout,
             stall_seconds=stall_seconds,
             progress=progress,
-            opener=partial(client.sse_reconnect, backend_uuid),
-            keep_on_raise=True,
-            hold=True,
+            state=state,
+            handle=handle,
         )
-        if not state.kept and not keep_thread and state.backend_uuid and not state.read_write_token:
+        if (
+            not (state.kept or state.gone or keep_thread)
+            and state.backend_uuid
+            and not state.read_write_token
+        ):
             why = (
                 "its record could not be read and the stream sent no read_write_token"
                 if unread
@@ -235,12 +240,11 @@ def resume(
             state.display_model or "", DEFAULT_MODE
         )
         result = finish_report(
-            report,
-            state,
+            run,
             handle,
             label="resume",
             endpoint=where,
-            query=_initial_query(report.text) or prompt or "",
+            query=_initial_query(run.consumer.text) or prompt or "",
             mode=mode,
             requested_model=None if model == _COUNCIL_MODEL else model,
             timeout=timeout,

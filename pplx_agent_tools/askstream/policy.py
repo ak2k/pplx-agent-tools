@@ -52,8 +52,9 @@ Stall: TypeAlias = StallAfter | StallOff
 @final
 @dataclass(frozen=True, slots=True)
 class SettleAfterText:
-    """Ask: COMPLETED completes; after `text_completed`, wait at most
-    `settle_s` for it."""
+    """Ask: COMPLETED completes. After `text_completed`, wait `settle_s`
+    for it; each settle reconnect extends that wait by its backoff and its
+    grace, since settle never fires on a reopened conn before the grace ends."""
 
     settle_s: float
 
@@ -112,6 +113,7 @@ RATE_LIMIT_DEFAULT_S = 5.0  # a 429 without retry-after
 RATE_LIMIT_CAP_S = 60.0  # a hostile retry-after cannot park the run longer
 JITTER_LOW = 0.85
 JITTER_HIGH = 1.15  # parallel callers do not wake in lockstep
+SILENCE_S = 25.0
 
 OFF = Off()
 FIRST_CONTENT_OFF = FirstContentOff()
@@ -143,6 +145,9 @@ class Policy:
     rate_limit_attempts: int
     min_useful_s: float
     limits: Limits
+    # The initial open reattaches to a running thread (resume), so a network
+    # failure there may be retried; a POST's failure never is.
+    reattach: bool = False
 
     @staticmethod
     def make(
@@ -152,7 +157,7 @@ class Policy:
         completion: Completion,
         answer_paths: AnswerPaths,
         first_content: FirstContent = FIRST_CONTENT_OFF,
-        silence_s: float = 25.0,
+        silence_s: float = SILENCE_S,
         open_s: float = 30.0,
         grace_s: float = 30.0,
         reconnect: Reconnect = OFF,
@@ -161,6 +166,7 @@ class Policy:
         rate_limit_attempts: int = 3,
         min_useful_s: float = 5.0,
         limits: Limits = DEFAULT_LIMITS,
+        reattach: bool = False,
     ) -> Policy | PolicyError:
         seconds = {
             "silence_s": silence_s,
@@ -222,6 +228,7 @@ class Policy:
             rate_limit_attempts=rate_limit_attempts,
             min_useful_s=min_useful_s,
             limits=limits,
+            reattach=reattach,
         )
 
     @property
@@ -260,9 +267,11 @@ def for_verb(
     stall: Stall | None = None,
     reconnect: Reconnect = OFF,
     first_content: FirstContent = FIRST_CONTENT_OFF,
+    silence_s: float | None = None,
+    reattach: bool = False,
 ) -> Policy | PolicyError:
     """The measured defaults for one verb; None keeps the verb's default
-    deadline or stall window."""
+    deadline or stall window, or `Policy.make`'s silence window."""
     default_deadline, default_stall, completion, answer_paths = _DEFAULTS[verb]
     return Policy.make(
         deadline=default_deadline if deadline is None else deadline,
@@ -271,6 +280,8 @@ def for_verb(
         answer_paths=answer_paths,
         first_content=first_content,
         reconnect=reconnect,
+        silence_s=SILENCE_S if silence_s is None else silence_s,
+        reattach=reattach,
     )
 
 
@@ -289,7 +300,11 @@ def rate_limit_delay(retry_after: float | None, remaining: float, u: float) -> f
 def reconnect_delay(policy: Policy, consecutive: int, retry_after: float | None, u: float) -> float:
     """Backoff before reconnect attempt `consecutive + 1`; a 429 waits at
     least its (capped) retry-after."""
-    delay = min(policy.backoff_cap_s, policy.backoff_base_s * 2.0**consecutive * jitter(u))
+    # Past 2**64 every delay is at the cap anyway, and a float power of a
+    # large count overflows.
+    delay = min(
+        policy.backoff_cap_s, policy.backoff_base_s * 2.0 ** min(consecutive, 64) * jitter(u)
+    )
     if retry_after is not None:
         delay = max(delay, min(max(retry_after, 0.0), RATE_LIMIT_CAP_S))
     return delay

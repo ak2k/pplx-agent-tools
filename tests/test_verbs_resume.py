@@ -29,15 +29,18 @@ from pplx_agent_tools.errors import (
     EXIT_PARTIAL,
     NetworkError,
     SchemaError,
+    StreamSilenceError,
     StreamStallError,
     ThreadGoneError,
 )
 from pplx_agent_tools.handles import ThreadHandle, ThreadRecord, ThreadStore, hash_prompt
 from pplx_agent_tools.render import render_resume_json, render_resume_text
+from pplx_agent_tools.verbs import _research_stream
 from pplx_agent_tools.verbs.research import research
 from pplx_agent_tools.verbs.resume import resume
 
-from ._doubles import _TestClientBase
+from ._doubles import FakeTime, _TestClientBase
+from ._driver import fixture_items
 from .test_fixture_replay_research import (
     FIXTURES,
     SENTINEL_BACKEND_UUID,
@@ -57,6 +60,11 @@ def state_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("XDG_STATE_HOME", str(home))
     monkeypatch.delenv("PPLX_PROFILE", raising=False)
     return home
+
+
+@pytest.fixture(autouse=True)
+def _fake_time(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(_research_stream, "time", FakeTime())
 
 
 def _payloads(path: Path) -> list[dict[str, Any]]:
@@ -196,8 +204,10 @@ def test_a_resume_that_drops_keeps_the_thread_and_names_itself_again() -> None:
 def test_a_resume_that_stalls_terminates_and_deletes() -> None:
     _save()
     pending = _payloads(WEATHER)[2]
-    client = _Reconnect([pending], then=StreamStallError("stalled", 240.0))
-    result, held = resume(client, UUID, store=ThreadStore())
+    client = _Reconnect([pending], then=StreamStallError("stalled", 60.0))
+    # The driver's own stall timer decides the cut, so the bound must come due
+    # before research's 90 s silence window.
+    result, held = resume(client, UUID, store=ThreadStore(), stall_seconds=60.0)
     held.release()
     assert result.cut_by == "stall" and result.resume is None
     assert client.terminated == [(UUID, pending["context_uuid"], "pplx_alpha")]
@@ -214,8 +224,8 @@ def test_a_resume_stall_that_pplx_could_not_stop_keeps_the_thread() -> None:
             super().terminate(entry_uuid, context_uuid, model_preference)
             return False
 
-    client = _Refusing([pending], then=StreamStallError("stalled", 240.0))
-    result, held = resume(client, UUID, store=ThreadStore())
+    client = _Refusing([pending], then=StreamStallError("stalled", 60.0))
+    result, held = resume(client, UUID, store=ThreadStore(), stall_seconds=60.0)
     held.release()
     assert result.cut_by == "stall" and result.resume == f"pplx resume --profile default {UUID}"
     assert len(client.terminated) == 1 and client.deleted == []
@@ -280,6 +290,99 @@ def test_a_gone_thread_loses_its_record_and_is_not_offered_again() -> None:
     assert _status() is None
     assert ThreadStore().pick_last().record is None
     assert client.deleted == [] and client.terminated == []
+
+
+class _FailsToOpen(_Reconnect):
+    """Resume's first `failures` opens raise `first` before any event; the
+    open after them streams `frames`."""
+
+    def __init__(self, frames: list[dict[str, Any]], first: NetworkError, failures: int) -> None:
+        super().__init__(frames)
+        self._first = first
+        self._failures = failures
+
+    def sse_reconnect(self, backend_uuid: str, **kwargs: Any) -> Iterator[dict[str, Any]]:  # type: ignore[override]
+        if len(self.reconnected) < self._failures:
+            self.reconnected.append(backend_uuid)
+            raise self._first
+        return super().sse_reconnect(backend_uuid, **kwargs)
+
+
+@pytest.mark.parametrize(
+    "first",
+    [NetworkError("reset"), StreamSilenceError("went silent", 90.0)],
+    ids=["drop", "silence"],
+)
+def test_a_first_open_that_fails_transiently_is_retried_like_a_later_drop(
+    first: NetworkError,
+) -> None:
+    _save()
+    client = _FailsToOpen([_completed(WEATHER)], first, failures=1)
+    result, held = resume(client, UUID, store=ThreadStore())
+    held.release()
+    assert client.reconnected == [UUID, UUID]
+    assert result.stream_complete and result.resume is None
+    assert client.deleted == [(UUID, TOKEN)]
+
+
+def test_first_opens_that_keep_failing_stop_at_the_reconnect_bound_and_keep_the_thread() -> None:
+    _save()
+    first = StreamSilenceError("went silent", 90.0)
+    client = _FailsToOpen([_completed(WEATHER)], first, failures=99)
+    with pytest.raises(StreamSilenceError):
+        resume(client, UUID, store=ThreadStore())
+    # The initial open and the three consecutive reconnects a drop may spend.
+    assert client.reconnected == [UUID] * 4
+    assert client.deleted == [] and _status() == "kept"
+
+
+class _GoneOnReconnect(_Reconnect):
+    """Resume's own open streams `frames` and drops; the in-call reconnect
+    after it is refused as gone."""
+
+    def __init__(self, frames: list[dict[str, Any]]) -> None:
+        super().__init__(frames, then=NetworkError("SSE stream failed mid-stream: reset"))
+
+    def sse_reconnect(self, backend_uuid: str, **kwargs: Any) -> Iterator[dict[str, Any]]:  # type: ignore[override]
+        if self.reconnected:
+            self.reconnected.append(backend_uuid)
+            raise ThreadGoneError("thread gone on reconnect (status 403)")
+        return super().sse_reconnect(backend_uuid, **kwargs)
+
+
+def _p3() -> list[dict[str, Any]]:
+    return [item["data"] for item in fixture_items("p3-research-initial")]
+
+
+def test_a_thread_gone_on_the_in_call_reconnect_is_not_deleted_or_kept_after_the_report(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _save()
+    client = _GoneOnReconnect(_p3())
+    result, held = resume(client, UUID, store=ThreadStore())
+    assert result.sources and result.resume is None
+    assert _status() is None
+    held.release()
+    held.keep(OSError(32, "Broken pipe"))
+    assert client.reconnected == [UUID, UUID]
+    assert client.deleted == [] and client.terminated == []
+    assert _status() is None
+    assert "thread was kept" not in capsys.readouterr().err
+
+
+def test_a_thread_gone_on_the_in_call_reconnect_with_nothing_read_says_re_run(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _save()
+    client = _GoneOnReconnect(_p3()[:1])
+    with pytest.raises(ThreadGoneError) as raised:
+        resume(client, UUID, store=ThreadStore())
+    assert raised.value.resume is None
+    assert "re-run" in str(raised.value) and "pplx resume" not in str(raised.value)
+    assert client.reconnected == [UUID, UUID]
+    assert client.deleted == [] and client.terminated == []
+    assert _status() is None
+    assert "thread was kept" not in capsys.readouterr().err
 
 
 def test_resume_renders_as_its_own_verb_and_names_the_query() -> None:

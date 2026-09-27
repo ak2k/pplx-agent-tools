@@ -382,7 +382,7 @@ def test_parse_cursor() -> None:
 # --- AST scans: `.reveal()` and `._v` -------------------------------------------------------
 
 # The one place the raw token may be read: the delete request body.
-_REVEAL_ALLOWED = {("pplx_agent_tools/wire.py", "AsyncTransport", "delete")}
+_REVEAL_ALLOWED = {("pplx_agent_tools/askstream/driver.py", None, "delete")}
 _V_ALLOWED = {"pplx_agent_tools/askstream/ids.py"}
 _TOKEN_SLOTS = {"_v", "_pad"}
 
@@ -432,18 +432,22 @@ def test_reveal_and_private_value_scans() -> None:
 def test_scans_detect_violations() -> None:
     src = (
         "def f(t):\n    return t.reveal()\n"
-        "class AsyncTransport:\n    def delete(self, r):\n        return r.token.reveal()\n"
+        "def delete(c, r):\n    return r.token.reveal()\n"
+        "class C:\n    def delete(self, r):\n        return r.token.reveal()\n"
         "x = tok._v\n"
         "y = tok._pad\n"
     )
     assert _violations("pplx_agent_tools/other.py", src) == [
         "pplx_agent_tools/other.py:2: .reveal()",
-        "pplx_agent_tools/other.py:5: .reveal()",
-        "pplx_agent_tools/other.py:6: ._v",
-        "pplx_agent_tools/other.py:7: ._pad",
+        "pplx_agent_tools/other.py:4: .reveal()",
+        "pplx_agent_tools/other.py:7: .reveal()",
+        "pplx_agent_tools/other.py:8: ._v",
+        "pplx_agent_tools/other.py:9: ._pad",
     ]
-    assert _violations("pplx_agent_tools/wire.py", src) == [
-        "pplx_agent_tools/wire.py:2: .reveal()",
-        "pplx_agent_tools/wire.py:6: ._v",
-        "pplx_agent_tools/wire.py:7: ._pad",
+    driver = "pplx_agent_tools/askstream/driver.py"
+    assert _violations(driver, src) == [
+        f"{driver}:2: .reveal()",
+        f"{driver}:7: .reveal()",
+        f"{driver}:8: ._v",
+        f"{driver}:9: ._pad",
     ]

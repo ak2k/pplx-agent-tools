@@ -9,11 +9,19 @@ Ticks at `next_wake`, and clock jumps.
 from __future__ import annotations
 
 import math
+from collections import Counter
 from typing import Any
 
 from hypothesis import HealthCheck, settings
 from hypothesis import strategies as st
-from hypothesis.stateful import RuleBasedStateMachine, initialize, invariant, precondition, rule
+from hypothesis.stateful import (
+    RuleBasedStateMachine,
+    initialize,
+    invariant,
+    precondition,
+    rule,
+    run_state_machine_as_test,
+)
 
 from pplx_agent_tools.askstream import fsm, trace
 from pplx_agent_tools.askstream.cleanup import (
@@ -104,25 +112,37 @@ def policies(draw: st.DrawFn) -> Policy:
         first_content=draw(
             st.sampled_from([FirstContentOff(), FirstContentWithin(90.0), FirstContentWithin(4.0)])
         ),
-        reconnect=draw(st.sampled_from([Off(), Bounded(3, 6), Bounded(3, 8), Bounded(1, 2)])),
+        # Off last: Hypothesis favors the first element, which would pull
+        # the draw below 3:1 toward the policy that never reconnects.
+        reconnect=draw(st.sampled_from([Bounded(3, 6), Bounded(3, 8), Bounded(1, 2), Off()])),
         silence_s=draw(st.sampled_from([25.0, 8.0])),
     )
     assert not isinstance(p, PolicyError)
     return p
 
 
+# Reconnects need ids, so most frames carry both a uuid and a token.
+TOKENS = st.sampled_from([token()] * 8 + [token("second-token-ABCDEFGHIJKLMNOPQR"), None])
 FRAMES = st.builds(
     FrameSummary,
     stage=st.sampled_from(
         ["pending"] * 5 + ["text_complete"] * 2 + ["completed", "failed", "other"]
     ),
     change=st.sampled_from(["progress", "progress", "idle"]),
-    uuid=st.sampled_from([UUID, UUID, None, UUID2]),
-    token=st.sampled_from([token(), None, token("second-token-ABCDEFGHIJKLMNOPQR")]),
+    uuid=st.sampled_from([UUID] * 8 + [UUID2, None]),
+    token=TOKENS,
     cursor=st.none(),
     context=st.sampled_from([None, CTX]),
     reconnectable=st.sampled_from(["yes", "absent", "absent", "no"]),
     raw_status=st.sampled_from([None, "FAILED"]),
+)
+FIRST_FRAME = st.builds(
+    FrameSummary,
+    stage=st.just("pending"),
+    change=st.just("progress"),
+    uuid=st.just(UUID),
+    token=TOKENS,
+    context=st.sampled_from([CTX, None]),
 )
 FAILURES = st.one_of(
     st.builds(RateLimited, st.none() | st.floats(0, 90)),
@@ -132,6 +152,9 @@ FAILURES = st.one_of(
 )
 STEP = st.floats(0, 6)
 U = st.floats(0, 1, exclude_max=True)
+TIMER_DUES = ("settle", "first_content", "stall", "silence")
+# How far the generated histories reach into reconnects, summed over examples.
+COUNTS: Counter[str] = Counter()
 
 
 def _rank(ids: fsm.Ids) -> int:
@@ -162,8 +185,14 @@ class LifecycleModel(RuleBasedStateMachine):
         self.p: Policy
         self.s: fsm.State
 
-    @initialize(p=policies(), t0=st.floats(0, 1e6))
-    def start(self, p: Policy, t0: float) -> None:
+    @initialize(
+        p=policies(),
+        t0=st.floats(0, 1e6),
+        open_now=st.sampled_from([True] * 3 + [False]),
+        dt=STEP,
+        first=FIRST_FRAME,
+    )
+    def start(self, p: Policy, t0: float, open_now: bool, dt: float, first: FrameSummary) -> None:
         self.p = p
         self.s, eff = fsm.initial(p, t0)
         self.t0 = self.now = t0
@@ -180,7 +209,14 @@ class LifecycleModel(RuleBasedStateMachine):
         self.last_progress = t0
         self.saw_429 = False
         self.reopened_at: float | None = None
+        self.reopen_progressed = False
         assert eff == (Open(ConnId(1), InitialPost(), p.low_speed_s),)
+        # Swarm testing disables each rule for about half the examples, so a
+        # run that must wait for `open_result` and then `frames` rarely holds
+        # the ids a reconnect needs. Initialize rules are never disabled.
+        if open_now:
+            self._apply(Opened(ConnId(1), self._advance(dt)), 0.0)
+            self._apply(FrameIn(ConnId(1), self.now, first), 0.0)
 
     # --- event sources ---------------------------------------------------------------------------
 
@@ -192,16 +228,22 @@ class LifecycleModel(RuleBasedStateMachine):
     def _cur(self) -> int | None:
         return fsm.current_conn(self.s)
 
-    @precondition(
-        lambda self: (
-            isinstance(self.s, (Starting, Reconnecting)) and self._cur() not in self.results
-        )
-    )
+    def _awaiting_open(self) -> bool:
+        return isinstance(self.s, (Starting, Reconnecting)) and self._cur() not in self.results
+
+    @precondition(_awaiting_open)
     @rule(dt=STEP, fail=st.integers(0, 4), f=FAILURES, u=U)
     def open_result(self, dt: float, fail: int, f: fsm.Failure, u: float) -> None:
         c = ConnId(self._cur() or 0)
         now = self._advance(dt)
         self._apply(OpenFailed(c, now, f) if fail == 0 else Opened(c, now), u)
+
+    # A second way to open, so swarm testing rarely leaves a reconnect with
+    # no way to reach its new conn before the open timeout.
+    @precondition(_awaiting_open)
+    @rule(dt=STEP, u=U)
+    def open_ok(self, dt: float, u: float) -> None:
+        self._apply(Opened(ConnId(self._cur() or 0), self._advance(dt)), u)
 
     def _can_body(self) -> bool:
         return isinstance(self.s, Streaming) and self.s.conn in self.opened
@@ -220,7 +262,7 @@ class LifecycleModel(RuleBasedStateMachine):
         self._apply(HeartbeatIn(ConnId(self._cur() or 0), self._advance(dt)), u)
 
     @precondition(_can_body)
-    @rule(dt=STEP, kind=st.sampled_from(["end", "transport", "oversize", "cap"]), u=U)
+    @rule(dt=STEP, kind=st.sampled_from(["end", "transport", "silence", "oversize", "cap"]), u=U)
     def stream_end(self, dt: float, kind: str, u: float) -> None:
         c, now = ConnId(self._cur() or 0), self._advance(dt)
         self._apply(StreamEnded(c, now) if kind == "end" else StreamBroke(c, now, kind, "m"), u)  # pyright: ignore[reportArgumentType]
@@ -305,6 +347,7 @@ class LifecycleModel(RuleBasedStateMachine):
                     assert not self.went_live  # I6
                 else:
                     self.reconnect_opens += 1
+                    COUNTS["reconnect_opens"] += 1
         assert self.initial_posts <= p.rate_limit_attempts  # I6
         if isinstance(p.reconnect, Bounded):  # I7
             assert self.reconnect_opens <= p.reconnect.total
@@ -351,13 +394,21 @@ class LifecycleModel(RuleBasedStateMachine):
                 lp2 = _lp(s2)
                 assert lp2 is not None
                 self.last_progress = lp2
-        # I26: no timer reconnects within grace_s of a reconnect opening.
+        # I26: no settle or first-content reconnect within grace_s of a
+        # reconnect opening, and no stall or silence one before the new conn
+        # has made progress.
         if current and isinstance(e, Opened) and isinstance(before, Reconnecting):
-            self.reopened_at = e.now
+            self.reopened_at, self.reopen_progressed = e.now, False
+        if current and isinstance(e, FrameIn) and isinstance(before, Streaming):
+            self.reopen_progressed |= e.s.change == "progress"
         due = fsm.due_class(p, before, e.now) if isinstance(e, Tick) else "none"
-        timer_r = due in ("settle", "first_content", "stall", "silence")
+        timer_r = due in ("settle", "first_content") or (
+            due in ("stall", "silence") and not self.reopen_progressed
+        )
         if timer_r and isinstance(before, Streaming) and self.reopened_at is not None:
             assert e.now >= self.reopened_at + p.grace_s
+        if due in TIMER_DUES and isinstance(before, Streaming) and self.reopened_at is not None:
+            COUNTS["post_reopen_timer_ticks"] += 1
         # I8: never early, and bounded late when every Tick came on time.
         if isinstance(before, Streaming) and due == "stall":
             lp = _lp(before)
@@ -396,6 +447,17 @@ class LifecycleModel(RuleBasedStateMachine):
         if isinstance(o, Cut) and o.cause == "first_content":  # I10
             assert isinstance(before, (Streaming, Reconnecting, ReconnectBackoff))
             assert isinstance(before.live.phase, AwaitingFirst)
+        # The trigger the driver reports matches the fallback that ended the run.
+        trigger = fsm.ended_by(p, before, e)
+        if isinstance(o, Lost):
+            assert trigger == "drop"
+        if isinstance(o, EndedEarly) and o.by == "server":
+            assert trigger == "eof"
+        if isinstance(o, Cut):
+            allowed = {"deadline": {None}, "first_content": {"first_content"}}.get(
+                o.cause, {"stall", "silence", "settle"}
+            )
+            assert trigger in allowed
         live_before = (
             before.live if isinstance(before, (Streaming, Reconnecting, ReconnectBackoff)) else None
         )
@@ -466,3 +528,18 @@ LifecycleModel.TestCase.settings = settings(
     suppress_health_check=[HealthCheck.too_slow, HealthCheck.filter_too_much],
 )
 TestLifecycleModel = LifecycleModel.TestCase
+
+
+def test_the_histories_reach_reconnects() -> None:
+    """The reconnect invariants above hold vacuously unless the histories
+    reach reconnects. The seed is fixed so the count cannot flake; post-reopen
+    timer ticks are too few at this size for a floor that survives a change
+    to the generator."""
+    COUNTS.clear()
+    run_state_machine_as_test(
+        LifecycleModel,
+        settings=settings(
+            LifecycleModel.TestCase.settings, max_examples=100, derandomize=True, database=None
+        ),
+    )
+    assert COUNTS["reconnect_opens"] >= 10

@@ -10,7 +10,7 @@ it.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TypeAlias, final
+from typing import Literal, TypeAlias, final
 
 from typing_extensions import assert_never
 
@@ -21,6 +21,7 @@ from pplx_agent_tools.askstream.fsm import (
     NoIds,
     ReconnectBackoff,
     Reconnecting,
+    ReconnectReason,
     StartBackoff,
     Starting,
     State,
@@ -62,11 +63,17 @@ class TerminateNotNeeded:
     """The run is over on the server, or no thread was created."""
 
 
+Missing = Literal["context uuid", "display model"]
+
+
 @final
 @dataclass(frozen=True, slots=True)
 class TerminateUnsupported:
     """A run that may still be going, without the context uuid or the
-    display model the request needs."""
+    display model the request needs; `missing` names the context uuid
+    whenever it is absent."""
+
+    missing: Missing
 
 
 @final
@@ -132,8 +139,10 @@ def _terminate(ids: Ids, display_model: str | None) -> TerminateLeg:
         case NoIds():
             return TerminateNotNeeded()
         case UuidOnly() | Known():
-            if ids.context is None or display_model is None:
-                return TerminateUnsupported()
+            if ids.context is None:
+                return TerminateUnsupported("context uuid")
+            if display_model is None:
+                return TerminateUnsupported("display model")
             return Terminate(TerminateRef(ids_uuid(ids), ids.context, display_model))
         case _:
             assert_never(ids)
@@ -164,3 +173,16 @@ def cleanup_plan(
     ids = _ids(last)
     terminate = _terminate(ids, display_model) if _run_may_be_live(last) else TerminateNotNeeded()
     return terminate, _delete(ids, keep_thread)
+
+
+def kept_on_loss(last: State, trigger: ReconnectReason | None, gone: bool) -> bool:
+    """Whether a run that ended is kept, with no terminate and no delete, so
+    it can be resumed: it was lost to a drop or silence the reconnects could
+    not recover, whichever guard refused them, and its thread exists and is
+    not gone. An interrupt of a Live state is never kept."""
+    return (
+        isinstance(last, Done)
+        and trigger in ("drop", "silence")
+        and not gone
+        and not isinstance(last.ids, NoIds)
+    )

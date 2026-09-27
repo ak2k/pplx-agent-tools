@@ -13,6 +13,7 @@ from __future__ import annotations
 import contextlib
 import errno
 import json
+from collections.abc import Iterator
 from types import SimpleNamespace
 from typing import Any
 
@@ -20,17 +21,15 @@ import pytest
 from curl_cffi import CurlECode
 
 from pplx_agent_tools import cli_research, handles, wire
-from pplx_agent_tools.errors import EXIT_NETWORK, EXIT_PARTIAL, NetworkError
+from pplx_agent_tools.askstream.driver import ConnBounds
+from pplx_agent_tools.errors import EXIT_NETWORK, EXIT_PARTIAL
 from pplx_agent_tools.handles import ThreadStore
 from pplx_agent_tools.render import render_research_json, render_research_text
-from pplx_agent_tools.verbs._ask_common import (
-    DEFAULT_STALL_SECONDS,
-    AskStreamState,
-    release_on_exit,
-)
-from pplx_agent_tools.verbs.research import research
+from pplx_agent_tools.verbs import _research_stream
+from pplx_agent_tools.verbs._ask_common import DEFAULT_STALL_SECONDS, AskStreamState
+from pplx_agent_tools.verbs.research import DECODER, ENDPOINT, research
 
-from ._doubles import _TestClientBase
+from ._doubles import CTX
 from .test_stall_guard import (
     HEARTBEAT,
     LONG_DEADLINE,
@@ -47,7 +46,7 @@ TOKEN = "SECRET-RW-TOKEN-7f3a"
 IDS = {
     "backend_uuid": UUID,
     "read_write_token": TOKEN,
-    "context_uuid": "CTX",
+    "context_uuid": CTX,
     "display_model": "pplx_alpha",
 }
 RESUME = f"pplx resume --profile default {UUID}"
@@ -57,6 +56,9 @@ RESUME = f"pplx resume --profile default {UUID}"
 def clock(monkeypatch: pytest.MonkeyPatch) -> _Clock:
     c = _Clock()
     monkeypatch.setattr(wire, "time", SimpleNamespace(monotonic=c.monotonic, time=lambda: 1.7e9))
+    monkeypatch.setattr(
+        _research_stream, "time", SimpleNamespace(monotonic=c.monotonic, sleep=c.sleep)
+    )
     return c
 
 
@@ -220,7 +222,7 @@ def test_every_other_cut_still_terminates_and_deletes(clock: _Clock, end: str) -
         assert result.resume is None
         assert result.cut_by == ("deadline" if end == "deadline" else "stall")
         assert not any("pplx resume" in w for w in result.warnings)
-    assert client.terminated == [(UUID, "CTX", "pplx_alpha")]
+    assert client.terminated == [(UUID, CTX, "pplx_alpha")]
     assert client.deleted == [(UUID, TOKEN)]
     assert _status() is None
 
@@ -261,18 +263,15 @@ def test_an_unwritable_state_dir_on_a_kept_run_still_names_the_resume_command(
     assert any(RESUME in w for w in result.warnings)
 
 
-def test_an_interrupt_after_a_drop_cut_deletes_and_is_not_offered_to_last(
+def _interrupt(seconds: float) -> None:
+    raise KeyboardInterrupt
+
+
+def test_an_interrupt_while_reconnecting_after_a_drop_deletes_and_is_not_offered_to_last(
     clock: _Clock, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from pplx_agent_tools.verbs import research as research_mod
-
-    real = research_mod.run_ask_stream
-
-    def cut_then_interrupt(*args: Any, **kwargs: Any) -> None:
-        real(*args, **kwargs)  # returns with the drop as the cutoff
-        raise KeyboardInterrupt
-
-    monkeypatch.setattr(research_mod, "run_ask_stream", cut_then_interrupt)
+    # Ctrl-C in the backoff before the first reconnect.
+    monkeypatch.setattr(_research_stream.time, "sleep", _interrupt)
     client = _StreamClient([(0, _report("part")), (0, DROP)], clock)
     with pytest.raises(KeyboardInterrupt):
         research(client, "q")
@@ -281,24 +280,25 @@ def test_an_interrupt_after_a_drop_cut_deletes_and_is_not_offered_to_last(
 
 
 @pytest.mark.parametrize("raised", [False, True])
-def test_cleanup_records_its_keep_decision_in_the_state(raised: bool) -> None:
-    class _Client(_TestClientBase):
-        def delete_thread(self, entry_uuid: str, read_write_token: str) -> bool:  # type: ignore[override]
-            return True
+def test_cleanup_records_its_keep_decision_in_the_state(
+    clock: _Clock, monkeypatch: pytest.MonkeyPatch, raised: bool
+) -> None:
+    if raised:
+        monkeypatch.setattr(_research_stream.time, "sleep", _interrupt)
+    client = _StreamClient([(0, _report("part")), (0, DROP)], clock)
 
-    state = AskStreamState(
-        backend_uuid=UUID,
-        read_write_token=TOKEN,
-        context_uuid="CTX",
-        display_model="pplx_alpha",
-        cutoff=NetworkError("drop"),
-    )
-    with (
-        contextlib.suppress(KeyboardInterrupt),
-        release_on_exit(_Client(), state, keep_thread=False, keep_live=True),
-    ):
-        if raised:
-            raise KeyboardInterrupt
+    def post(b: ConnBounds) -> Iterator[dict[str, Any]]:
+        return client.sse_post(
+            ENDPOINT,
+            {},
+            max_total_seconds=b.max_total_seconds,
+            stall_seconds=b.stall_seconds,
+            silence_seconds=b.silence_seconds,
+        )
+
+    state = AskStreamState()
+    with contextlib.suppress(KeyboardInterrupt):
+        _research_stream.research_stream(client, post, DECODER, endpoint=ENDPOINT, state=state)
     assert (state.kept, state.deleted) == ((False, True) if raised else (True, False))
 
 

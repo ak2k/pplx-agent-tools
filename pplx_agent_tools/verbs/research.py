@@ -13,15 +13,20 @@ docs/wire/perplexity-ask-research.md), with two important differences:
      server-side without a listener, so its thread is kept for `pplx resume`
      (verbs/resume.py), and a local record (handles.py) lets a client killed
      outright find it again.
-  2. Schematized response. Unlike copilot mode's incremental `markdown_block`
-     chunks, research streams full-snapshot frames whose `text` field is a JSON
-     list of `{step_type, content, uuid}` blocks. The FINAL block's
-     `content.answer` holds only a short *cover note* ("I've compiled…, the full
-     report includes…"); the report itself is a RESEARCH_ANSWER block asset
+  2. Schematized response. Research's `text` is a JSON list of
+     `{step_type, content, uuid}` blocks. The FINAL block's `content.answer`
+     holds only a short *cover note* ("I've compiled…, the full report
+     includes…"); the report itself is a RESEARCH_ANSWER block asset
      (`assets[].research_report.source_content`), so the answer we return is the
      cover note followed by that body. Sources accumulate across SEARCH_RESULTS
-     blocks' `content.web_results`. The latest PARSEABLE snapshot's decode is what
-     we return.
+     blocks' `content.web_results`.
+  3. Diff mode. The request asks for block patches instead of repeated
+     snapshots (`send_back_text_in_streaming_api: false`), which makes the
+     download about a tenth of the size; `text` then arrives only on the
+     COMPLETED frame. The stream runs under the lifecycle driver
+     (verbs/_research_stream.py), which reconnects a dropped or silent stream
+     to the same thread inside the call, and answers a run cut before COMPLETED
+     from the patched blocks.
 
 Deep research takes ~90-120s for a focused question and far longer for a broad
 one (multi-round, hundreds of sources); the verb supports the same `--timeout` /
@@ -37,11 +42,12 @@ from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from ..errors import PplxError, SchemaError, ThreadGoneError
+from ..askstream.driver import ConnBounds
+from ..askstream.fsm import AUTH_NOTICE
+from ..errors import PplxError, SchemaError
 from ..handles import ThreadHandle, ThreadStore, resume_command
 from ..wire import Client
 from ._ask_common import (
-    RESEARCH_SILENCE_SECONDS,
     AskStreamState,
     Source,
     base_ask_params,
@@ -50,11 +56,14 @@ from ._ask_common import (
     cutoff_warnings,
     downgrade_verdict,
     error_notes,
-    no_content_error,
-    release_on_exit,
-    run_ask_stream,
-    status_completed,
     to_source,
+)
+from ._research_stream import (
+    Decoder,
+    ResearchRun,
+    ended_on_auth,
+    raise_if_empty,
+    research_stream,
 )
 
 ENDPOINT = "/rest/sse/perplexity_ask"
@@ -83,6 +92,41 @@ _MODE_MODEL = {
 # `compare_model_preferences` is set (the web always sends it); with the trio it
 # completes in ~80s and returns a FINAL block in the usual shape.
 _DEFAULT_COUNCIL_MODELS = ["gpt55_thinking", "claude48opusthinking", "gemini31pro_high"]
+
+# The web client's list. A shorter one does not shrink the report's
+# whole-string replaces, it only moves them into workflow_block
+# (docs/wire/ask-diff-mode.md, P1 (b)).
+_BLOCK_USE_CASES = [
+    "answer_modes",
+    "media_items",
+    "knowledge_cards",
+    "inline_entity_cards",
+    "place_widgets",
+    "finance_widgets",
+    "sports_widgets",
+    "news_widgets",
+    "shopping_widgets",
+    "jobs_widgets",
+    "search_result_widgets",
+    "inline_images",
+    "inline_assets",
+    "placeholder_cards",
+    "diff_blocks",
+    "inline_knowledge_cards",
+    "entity_group_v2",
+    "refinement_filters",
+    "canvas_mode",
+    "maps_preview",
+    "answer_tabs",
+    "price_comparison_widgets",
+    "preserve_latex",
+    "in_context_suggestions",
+    "pending_followups",
+    "inline_claims",
+    "unified_assets",
+    "workflow_steps",
+    "workflow_widgets",
+]
 
 
 def _model_for_mode(mode: str) -> str:
@@ -133,79 +177,6 @@ class ResearchResult:
     resume: str | None = None
 
 
-def _text_changed() -> Callable[[dict[str, Any]], bool]:
-    """The stall-guard progress predicate for research's snapshot stream."""
-    seen: set[int] = set()
-
-    # Snapshot frames repeat (or replay older ones) while working or hung; only a
-    # snapshot never seen before counts.
-    def is_progress(event: dict[str, Any]) -> bool:
-        data = event.get("data")
-        text = data.get("text") if isinstance(data, dict) else None
-        if not isinstance(text, str) or hash(text) in seen:
-            return False
-        seen.add(hash(text))
-        return True
-
-    return is_progress
-
-
-@dataclass
-class SnapshotReport:
-    """The research consumer: folds full-snapshot frames into the newest
-    report that decoded. `on_event` is the whole interface a stream driver
-    needs, so another consumer can stand in for it.
-
-    The kept snapshot is the newest one that DECODED — an unparseable frame
-    never replaces it, so a garbage terminal repaint costs a warning instead
-    of the whole ~2-minute run. `best_body` is the high-water mark used to
-    detect a late frame repainting a *smaller* report: the report BODY,
-    because cover note and body share one decoded answer and a repaint that
-    grows the cover while losing body would otherwise read as growth. Raw
-    frame length is no use either — the terminal repaint carries more sources
-    and envelope fields than earlier frames, so it is raw-larger even when its
-    body shrank. `best_total` is the fallback for streams that never carry a
-    body block. Decoding every snapshot costs ~0.3s over an 800-frame stream.
-    """
-
-    text: str | None = None
-    answer: str = ""
-    sources: list[ResearchSource] = field(default_factory=list)
-    body_len: int = 0
-    questions: list[str] | None = None
-    best_body: int = 0
-    best_total: int = 0
-    saw_body: bool = False
-    last_frame_decoded: bool = False
-    last_raw: str | None = None
-
-    def on_event(self, event: dict[str, Any]) -> None:
-        data = event.get("data")
-        if not isinstance(data, dict) or not isinstance(data.get("text"), str):
-            return
-        text: str = data["text"]
-        self.last_raw = text
-        try:
-            cover_parts, report_parts, sources, questions = _decode_parts(text)
-        except SchemaError:
-            self.last_frame_decoded = False
-            return
-        # The body measure is the report asset itself, NOT what survives the
-        # join's cover dedupe: a cover note that quotes the report in full would
-        # otherwise measure zero and read as a total loss of the report.
-        body = "\n\n".join(report_parts).strip()
-        self.text = text
-        self.answer = _join_answer(cover_parts, report_parts)
-        self.sources = sources
-        self.body_len = len(body)
-        self.questions = questions
-        self.last_frame_decoded = True
-        if body:
-            self.saw_body = True
-        self.best_body = max(self.best_body, len(body))
-        self.best_total = max(self.best_total, len(self.answer))
-
-
 def research(
     client: Client,
     query: str,
@@ -218,6 +189,7 @@ def research(
     stall_seconds: float | None = None,
     progress: bool = False,
     profile: str | None = None,
+    observe: Callable[[ResearchRun], None] | None = None,
 ) -> ResearchResult:
     """Run a deep-research query through the ask endpoint in `mode`.
 
@@ -229,14 +201,15 @@ def research(
     when either trips with a partial we return it with `stream_complete=False`
     and a warning naming which one (the agent contract is "always something plus
     a flag", exit 6). `keep_thread` preserves the incognito thread instead
-    of deleting it (default deletes). A dropped connection or total silence
-    keeps the thread whatever `keep_thread` says, and the result or error
-    names the `pplx resume` command for it. `profile` scopes the local thread
-    record and is named in that command.
-
-    Research streams full-snapshot frames, so we keep the *latest* `text` rather
-    than concatenating deltas; the retry/deadline/heartbeat plumbing is shared
-    (`_ask_common.run_ask_stream`).
+    of deleting it (default deletes). A dropped connection, total silence, a
+    stall, a stream that ends before the report and one with no first content
+    in time are each reconnected to the same thread within the call. Whatever
+    `keep_thread` says, the thread is kept for resume only when the run ended
+    on a drop or total silence once the reconnects stopped, or when pplx could
+    not stop the run; the result or error then names the `pplx resume`
+    command for it. `profile` scopes the local thread record and is named in
+    that command. `observe` sees the finished run (its block store and
+    terminal text) before the result is built.
     """
     model_preference = model or _model_for_mode(mode)
     # Model Council never completes unless compare_model_preferences is set, so
@@ -249,26 +222,41 @@ def research(
         # other model so a stray --council-models doesn't ride along on a research req.
         council_models = None
     body = _build_research_body(query, model_preference, council_models=council_models)
-    report = SnapshotReport()
-    state = AskStreamState()
     handle = ThreadHandle(ThreadStore(profile), prompt=query, mode=mode, model=model_preference)
-    read_report(
-        client,
-        state,
-        handle,
-        report.on_event,
-        endpoint=ENDPOINT,
-        body=body,
-        label="research",
-        keep_thread=keep_thread,
-        timeout=timeout,
-        stall_seconds=stall_seconds,
-        progress=progress,
-    )
-    kept = state.backend_uuid if state.kept and not state.deleted else None
+
+    def post(b: ConnBounds) -> Iterator[dict[str, Any]]:
+        return client.sse_post(
+            ENDPOINT,
+            body,
+            max_total_seconds=b.max_total_seconds,
+            stall_seconds=b.stall_seconds,
+            silence_seconds=b.silence_seconds,
+        )
+
+    state = AskStreamState()
+    try:
+        run = research_stream(
+            client,
+            post,
+            DECODER,
+            endpoint=ENDPOINT,
+            keep_thread=keep_thread,
+            timeout=timeout,
+            stall_seconds=stall_seconds,
+            progress=progress,
+            state=state,
+            handle=handle,
+            observe=observe,
+        )
+    except PplxError as e:
+        # A rejection with nothing to salvage, of a run cleanup kept.
+        if state.kept and state.backend_uuid:
+            e.resume = resume_command(state.backend_uuid, profile)
+            print(f"warning: {kept_warning(e.resume)}", file=sys.stderr)
+        raise
+    kept = run.state.backend_uuid if run.state.kept else None
     return finish_report(
-        report,
-        state,
+        run,
         handle,
         label="research",
         endpoint=ENDPOINT,
@@ -280,92 +268,6 @@ def research(
     )
 
 
-def read_report(
-    client: Client,
-    state: AskStreamState,
-    handle: ThreadHandle,
-    on_event: Callable[[dict[str, Any]], None],
-    *,
-    endpoint: str,
-    body: dict[str, Any],
-    label: str,
-    keep_thread: bool,
-    timeout: float | None,
-    stall_seconds: float | None,
-    progress: bool,
-    opener: Callable[..., Iterator[dict[str, Any]]] | None = None,
-    keep_on_raise: bool = False,
-    hold: bool = False,
-) -> None:
-    """Drive one research stream into `on_event` under research's cleanup
-    policy, keeping `handle`'s record current.
-
-    The record is written before the frame that first names the thread is
-    consumed, and settled from what cleanup did, so a process killed in
-    between leaves it `running`. A run that may go on server-side after the
-    read ends (a dropped connection, total silence, or a terminate that could
-    not be sent or failed) keeps its thread (`state.kept`, see
-    `release_on_exit`); every other end is cleaned up as for any ask-family
-    run, and so is an exception unless `keep_on_raise`. `opener` replaces the
-    default POST of `body` to `endpoint` (see `run_ask_stream`); `endpoint`
-    then only names the stream in messages. `hold` sends no delete and leaves
-    the record of a thread the read is done with, for a caller that deletes
-    and removes them only once the report is out.
-    """
-
-    def recording(event: dict[str, Any]) -> None:
-        handle.observe(state.backend_uuid, state.read_write_token)
-        on_event(event)
-
-    raised = True
-    gone = False
-    try:
-        with release_on_exit(
-            client,
-            state,
-            keep_thread=keep_thread or hold,
-            keep_live=True,
-            keep_on_raise=keep_on_raise,
-        ):
-            run_ask_stream(
-                client,
-                endpoint,
-                body,
-                state,
-                on_event=recording,
-                timeout=timeout,
-                stall_seconds=stall_seconds,
-                progress=progress,
-                label=label,
-                is_complete=status_completed,
-                is_progress=_text_changed(),
-                silence_seconds=RESEARCH_SILENCE_SECONDS,
-                opener=opener,
-            )
-        raised = False
-    except ThreadGoneError:
-        gone = True
-        raise
-    finally:
-        _settle(handle, state, gone=gone, hold=hold)
-        if raised:
-            # An exception in flight has no result or error text of ours to carry these.
-            for warning in handle.warnings:
-                print(f"warning: {warning}", file=sys.stderr)
-
-
-def _settle(handle: ThreadHandle, state: AskStreamState, *, gone: bool, hold: bool) -> None:
-    """Bring the record in line with what cleanup did: kept while the thread
-    can be resumed, removed once it is deleted, gone or finished with (unless
-    `hold`), and left as it was when no frame named the thread."""
-    if gone or state.deleted:
-        handle.forget()
-    elif state.kept:
-        handle.keep()
-    elif state.backend_uuid is not None and not hold:
-        handle.forget()
-
-
 def kept_warning(command: str) -> str:
     return (
         "the research run may still be going on server-side, so its thread was kept: get "
@@ -375,8 +277,7 @@ def kept_warning(command: str) -> str:
 
 
 def finish_report(
-    report: SnapshotReport,
-    state: AskStreamState,
+    run: ResearchRun,
     handle: ThreadHandle,
     *,
     label: str,
@@ -388,8 +289,8 @@ def finish_report(
     resume: str | None,
     notes: Sequence[str] = (),
 ) -> ResearchResult:
-    """The result of a stream `read_report` drove into `report`, or the error
-    for one that yielded nothing usable.
+    """The result of a research `run`, or the error for one that yielded
+    nothing usable.
 
     `requested_model` is judged against the model the frames named (None skips
     the downgrade check). `resume`, set when the thread was kept, reaches the
@@ -397,8 +298,8 @@ def finish_report(
     attribute, so an agent reading either document finds it. `notes` lead
     the warnings, or end the error's text, like those.
     """
+    state = run.state
     lead = [*notes, kept_warning(resume)] if resume else list(notes)
-    error_tail = lead + state.cleanup_warnings + handle.warnings
     try:
         if state.failed:
             raise SchemaError(
@@ -406,37 +307,23 @@ def finish_report(
                 f"reject model_preference — check model↔mode compatibility via `pplx models`"
                 f"{error_notes(handle.warnings)}"
             )
-
-        if report.text is None:
-            if report.last_raw is not None:
-                # Text arrived but no frame ever parsed — the decode error is the
-                # honest diagnosis, so re-raise it rather than reporting no content.
-                _raise_undecodable(report.last_raw, error_tail)
-            raise no_content_error(
-                label=label,
-                endpoint=endpoint,
-                timeout=timeout,
-                cutoff=state.cutoff,
-                warnings=error_tail,
-            )
-
-        if not state.saw_completed and not report.answer and not report.sources:
-            # A cut stream whose only snapshot is the empty INITIAL_QUERY step has
-            # nothing to salvage; report it as a retryable cutoff, as `ask` does.
-            # Questions the run asked before the cut go in the error, so the retry
-            # can answer them.
-            raise no_content_error(
-                label=label,
-                endpoint=endpoint,
-                timeout=timeout,
-                cutoff=state.cutoff,
-                warnings=_clarifying_warnings(report.questions, no_answer=True) + error_tail,
-            )
+        raise_if_empty(
+            run,
+            DECODER,
+            label=label,
+            endpoint=endpoint,
+            timeout=timeout,
+            notes=[*lead, *state.cleanup_warnings, *handle.warnings],
+        )
     except PplxError as e:
         e.resume = resume
         raise
-    content_shortfall, warnings = _shortfall_verdict(report)
-    warnings += _clarifying_warnings(report.questions)
+    content_shortfall, warnings = _shortfall_verdict(
+        answer_len=len(run.answer), body_len=run.body_len, best=run.best, saw=run.saw
+    )
+    if run.unread:
+        content_shortfall, warnings = True, run.unread + warnings
+    warnings += _clarifying_warnings(run.questions)
     downgraded: bool | None = None
     if requested_model is not None:
         downgraded, downgrade_warnings = downgrade_verdict(state, requested_model)
@@ -444,8 +331,8 @@ def finish_report(
 
     return ResearchResult(
         query=query,
-        answer=report.answer,
-        sources=report.sources,
+        answer=run.answer,
+        sources=run.sources,
         mode=mode,
         stream_complete=state.saw_completed,
         cut_by=cutoff_cause(state),
@@ -453,15 +340,27 @@ def finish_report(
         content_shortfall=content_shortfall,
         warnings=cutoff_warnings(state)
         + lead
+        + _auth_warnings(run, resume)
+        + run.warnings
         + warnings
         + state.cleanup_warnings
         + handle.warnings,
-        clarifying_questions=report.questions or [],
-        clarifying_unreadable=report.questions is not None and not report.questions,
+        clarifying_questions=run.questions or [],
+        clarifying_unreadable=run.questions is not None and not run.questions,
         downgraded=downgraded,
         served_model=state.display_model,
         resume=resume,
     )
+
+
+def _auth_warnings(run: ResearchRun, resume: str | None) -> list[str]:
+    """The cause of a partial whose reconnect was refused for expired cookies,
+    which has no cut_by: its resume command is refused the same way until
+    they are refreshed."""
+    if not ended_on_auth(run.outcome):
+        return []
+    then = f", then get the report with `{resume}`" if resume else ""
+    return [f"the stream ended early because a reconnect was refused: {AUTH_NOTICE}{then}"]
 
 
 def _clarifying_warnings(questions: list[str] | None, *, no_answer: bool = False) -> list[str]:
@@ -476,7 +375,9 @@ def _clarifying_warnings(questions: list[str] | None, *, no_answer: bool = False
     return []
 
 
-def _shortfall_verdict(report: SnapshotReport) -> tuple[bool, list[str]]:
+def _shortfall_verdict(
+    *, answer_len: int, body_len: int, best: dict[str, int], saw: dict[str, bool]
+) -> tuple[bool, list[str]]:
     """Did the kept snapshot lose content? → (flag, warnings).
 
     Judged on the report BODY whenever any frame carried one, since the cover
@@ -484,33 +385,23 @@ def _shortfall_verdict(report: SnapshotReport) -> tuple[bool, list[str]]:
     no body to compare and falls back to the whole decoded answer.
     """
     warnings: list[str] = []
-    answer_len = len(report.answer)
-    if report.saw_body:
-        if report.body_len < report.best_body:
+    if saw["body"]:
+        if body_len < best["body"]:
             warnings.append(
-                f"kept snapshot's report body decodes to {report.body_len} chars but an earlier "
-                f"frame carried {report.best_body}; the report may be truncated"
+                f"kept snapshot's report body decodes to {body_len} chars but an earlier "
+                f"frame carried {best['body']}; the report may be truncated"
             )
-    elif answer_len < report.best_total:
+    elif answer_len < best["total"]:
         warnings.append(
             f"kept snapshot decodes to {answer_len} chars but an earlier frame "
-            f"carried {report.best_total}; the report may be truncated"
+            f"carried {best['total']}; the report may be truncated"
         )
-    if not report.last_frame_decoded:
+    if not saw["last_frame_decoded"]:
         warnings.append(
             "the last frame of the stream failed to decode; returning the newest "
             f"parseable snapshot ({answer_len} chars), which may be truncated"
         )
     return bool(warnings), warnings
-
-
-def _raise_undecodable(text: str, warnings: Sequence[str]) -> None:
-    """Raise the decode error for `text`, ending with `warnings`: cleanup has
-    already run by then, so a run it could not stop is named here."""
-    try:
-        decode_research_text(text)
-    except SchemaError as e:
-        raise SchemaError(f"{e}{error_notes(warnings)}") from e
 
 
 def decode_research_text(text: str) -> tuple[str, list[ResearchSource]]:
@@ -684,6 +575,11 @@ def _build_research_body(
     history. `council_models` (Model Council only) picks the cross-checked trio
     via `compare_model_preferences`; omitted → Perplexity's default trio."""
     params = base_ask_params(query, model_preference=model_preference)
+    params["send_back_text_in_streaming_api"] = False
+    params["supported_block_use_cases"] = list(_BLOCK_USE_CASES)
     if council_models:
         params["compare_model_preferences"] = list(council_models)
     return {"query_str": query, "params": params}
+
+
+DECODER = Decoder(_decode_parts, _join_answer, lambda q: _clarifying_warnings(q, no_answer=True))

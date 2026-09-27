@@ -53,8 +53,11 @@ __all__ = [
     "Reconnectable",
     "Stage",
     "Unparseable",
+    "UnparseableReason",
     "decode_frame",
+    "decode_object",
     "known_usage",
+    "unparseable",
 ]
 
 # Derived once per frame from (status, text_completed).
@@ -394,6 +397,20 @@ def _ask_frame(d: dict[str, JsonValue], size: int, drift: list[Drift]) -> AskFra
     )
 
 
+def unparseable(reason: UnparseableReason, size: int) -> tuple[Frame, tuple[Drift, ...]]:
+    return Unparseable(reason, size), (Drift("unparseable_frame", name_of(reason)),)
+
+
+def decode_object(d: dict[str, JsonValue], size: int) -> tuple[Frame, tuple[Drift, ...]]:
+    """Decode one parsed, validated `data` object of `size` units. Never
+    raises. `{}` ends the stream."""
+    if not d:
+        return EndOfStream(), ()
+    drift: list[Drift] = []
+    frame = _ask_frame(d, size, drift)
+    return frame, tuple(drift)
+
+
 def decode_frame(raw: str) -> tuple[Frame, tuple[Drift, ...]]:
     """Decode one `data` payload. Never raises. `{}` ends the stream;
     anything that is not a JSON object nested at most 128 deep is
@@ -402,9 +419,5 @@ def decode_frame(raw: str) -> tuple[Frame, tuple[Drift, ...]]:
     value = loads(raw)
     if isinstance(value, JsonError) or not isinstance(value, dict):
         reason: UnparseableReason = value.reason if isinstance(value, JsonError) else "not_object"
-        return Unparseable(reason, size), (Drift("unparseable_frame", name_of(reason)),)
-    if not value:
-        return EndOfStream(), ()
-    drift: list[Drift] = []
-    frame = _ask_frame(value, size, drift)
-    return frame, tuple(drift)
+        return unparseable(reason, size)
+    return decode_object(value, size)

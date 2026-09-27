@@ -15,9 +15,10 @@ The rule, restated here rather than taken from production code:
   warnings, the error's message, or on stderr when an exception is in flight.
 - KEEP: research sends neither leg once its backend_uuid arrived, and says
   how to resume instead, when a drop or total silence cut its stream, or when
-  it ended with no exception in flight and needed a terminate pplx could not
-  send or that failed: either way the run may go on server-side without a
-  listener, and its thread holds the report.
+  it ended with no exception in flight (a rejection such as an oversized
+  event is not one) and needed a terminate pplx could not send or that
+  failed: either way the run may go on server-side without a listener, and
+  its thread holds the report.
 
 Each cell runs a verb over the real `Client.sse_post`, `Client.terminate` and
 `Client.delete_thread` on a scripted session with a fake clock, and reads the
@@ -40,13 +41,14 @@ from curl_cffi.requests.exceptions import RequestException
 from pplx_agent_tools import wire
 from pplx_agent_tools.errors import NetworkError, RateLimitError, SchemaError
 from pplx_agent_tools.render import render_ask_json, render_fetch_json, render_research_json
+from pplx_agent_tools.verbs import _research_stream
 from pplx_agent_tools.verbs._ask_common import COPILOT_STALL_SECONDS, DEFAULT_STALL_SECONDS
 from pplx_agent_tools.verbs.ask import ask
 from pplx_agent_tools.verbs.fetch import fetch
 from pplx_agent_tools.verbs.research import research
 from pplx_agent_tools.wire import Client
 
-from ._doubles import _TestClientBase
+from ._doubles import BU, CTX, _TestClientBase
 
 VERBS = ("ask", "research", "fetch")
 STREAM_ENDS = (
@@ -64,6 +66,9 @@ STREAM_ENDS = (
 EARLY_ENDS = ("rate_limit", "pre_first_byte")
 IDS = ("complete", "no_context", "no_model", "no_token", "none")
 MODEL = {"ask": "turbo", "research": "pplx_alpha", "fetch": "turbo"}
+# Research's driver takes only UUID-shaped thread ids.
+UUID = {"ask": "BU", "research": BU, "fetch": "BU"}
+CONTEXT = {"ask": "CTX", "research": CTX, "fetch": "CTX"}
 DEADLINE = 100.0
 _TERMINATE_PATH = "/rest/sse/perplexity_terminate"
 _OVERSIZE_CAP = 512
@@ -84,7 +89,7 @@ def _dropped(verb: str, end: str, ids: str) -> bool:
 def _kept(verb: str, end: str, text_completed: bool, ids: str) -> bool:
     unstoppable = (
         ids in ("no_context", "no_model")
-        and end not in ("oversize", "keyboard_interrupt")
+        and end != "keyboard_interrupt"
         and _live(verb, end, text_completed)
     )
     return _dropped(verb, end, ids) or (verb == "research" and unstoppable)
@@ -108,7 +113,7 @@ def expected_note(verb: str, end: str, text_completed: bool, ids: str) -> bool:
 
 
 _STILL_RUNNING = "may still be running on the server"
-_RESUME = "pplx resume --profile default BU"
+_RESUME = f"pplx resume --profile default {BU}"
 
 
 # ---------- scripted transport ----------
@@ -120,6 +125,9 @@ class _Clock:
 
     def monotonic(self) -> float:
         return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.now += seconds
 
 
 class _SseResp:
@@ -207,15 +215,18 @@ class _CleanupClient(_TestClientBase):
 def clock(monkeypatch: pytest.MonkeyPatch) -> _Clock:
     c = _Clock()
     monkeypatch.setattr(wire, "time", SimpleNamespace(monotonic=c.monotonic, time=lambda: 1.7e9))
+    monkeypatch.setattr(
+        _research_stream, "time", SimpleNamespace(monotonic=c.monotonic, sleep=c.sleep)
+    )
     monkeypatch.setattr(wire, "_MAX_SSE_BUFFER_BYTES", _OVERSIZE_CAP)
     return c
 
 
 def _ids(verb: str, ids: str) -> dict[str, str]:
     full = {
-        "backend_uuid": "BU",
+        "backend_uuid": UUID[verb],
         "read_write_token": "RW",
-        "context_uuid": "CTX",
+        "context_uuid": CONTEXT[verb],
         "display_model": MODEL[verb],
     }
     drop = {
@@ -355,20 +366,27 @@ def _check_cell(
         assert timeout < wire.DEFAULT_TIMEOUT
         if kind == "terminate":
             assert body == {
-                "entry_uuid": "BU",
-                "context_uuid": "CTX",
+                "entry_uuid": UUID[verb],
+                "context_uuid": CONTEXT[verb],
                 "model_preference": MODEL[verb],
                 "terminate_requested_at_ms": 1_700_000_000_000,
             }
             assert headers == {"X-Perplexity-Request-Reason": "thread-floating-footer"}
         else:
-            assert body == {"entry_uuid": "BU", "read_write_token": "RW"}
+            assert body == {"entry_uuid": UUID[verb], "read_write_token": "RW"}
     told = json.dumps(outcome) if isinstance(outcome, dict) else str(outcome)
     assert (_STILL_RUNNING in told + err) == expected_note(verb, end, text_completed, ids), (
         told,
         err,
     )
-    assert (_RESUME in told) == _kept(verb, end, text_completed, ids), told
+    kept = _kept(verb, end, text_completed, ids)
+    # An error raised before the result is built names the command on
+    # stderr only; the error document carries `resume` either way.
+    assert (_RESUME in told + err) == kept, (told, err)
+    resume = (
+        outcome.get("resume") if isinstance(outcome, dict) else getattr(outcome, "resume", None)
+    )
+    assert (resume == _RESUME) == kept, resume
     return "terminate" in kinds, "delete" in kinds
 
 
@@ -413,6 +431,7 @@ def test_cleanup_table_over_every_end(clock: _Clock, capsys: pytest.CaptureFixtu
         ("research", "stall", False, "complete", True, (True, False)),
         ("research", "stall", False, "no_model", False, (False, False)),
         ("research", "keyboard_interrupt", False, "no_model", False, (False, True)),
+        ("research", "oversize", False, "no_model", False, (False, False)),
         ("ask", "rate_limit", False, "none", False, (False, False)),
         ("fetch", "drop", False, "no_token", False, (True, False)),
     ],
@@ -480,10 +499,10 @@ def test_an_undecodable_cleanup_answer_never_replaces_the_interrupt(
     assert isinstance(outcome, KeyboardInterrupt), outcome
     assert [c[0] for c in session.calls] == ["terminate", "delete"]
     err = capsys.readouterr().err
-    ref = wire.thread_ref("BU")
+    ref = wire.thread_ref(UUID[verb])
     assert f"terminate failed: thread {ref} returned 502" in err
     assert f"cleanup failed: DELETE thread {ref} returned 502" in err
-    assert "BU" not in err
+    assert UUID[verb] not in err
 
 
 @pytest.mark.parametrize("verb", VERBS)

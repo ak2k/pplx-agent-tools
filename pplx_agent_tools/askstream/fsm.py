@@ -6,6 +6,11 @@ as each event's `now`, and the one random input, the backoff jitter draw
 `u` in [0, 1), is passed in. The FSM sees a `FrameSummary`, never block
 contents.
 
+A conn event is applied as it comes, whatever timer is due at its `now`, so
+the driver must step every due `Tick` before a conn event at that `now`.
+Otherwise a COMPLETED frame that arrives past the deadline or a stall window
+completes a run the timer had already ended.
+
 The start phase (`Starting`, `StartBackoff`) is the only one that can emit
 `Open[InitialPost]`; `step_live`'s return type admits only
 `Open[ReconnectTarget]`, so no second billed POST can follow the first
@@ -181,9 +186,13 @@ class NoGrace:
 @dataclass(frozen=True, slots=True)
 class GraceUntil:
     """A reconnect opened; no timer that could reconnect again fires before
-    `t`, so the new conn always has a chance to deliver its snapshot."""
+    `t`, so the new conn always has a chance to deliver its snapshot. Once
+    the new conn has `progressed`, stall and silence count from its frames
+    and no longer wait for `t`; settle and first-content, which count from
+    before the reconnect, still do."""
 
     t: float
+    progressed: bool = False
 
 
 Grace: TypeAlias = NoGrace | GraceUntil
@@ -212,6 +221,8 @@ class Starting:
     conn: ConnId
     rl_attempts: int
     open_due_at: float
+    # Failed reattach opens, spent from the reconnect bounds.
+    rc_attempts: int = 0
 
 
 @final
@@ -222,6 +233,9 @@ class StartBackoff:
     until: float
     rl_attempts: int
     next_conn: ConnId
+    rc_attempts: int = 0
+    # A reattach retry spends no rate-limit attempt.
+    rate_limited: bool = True
 
 
 @final
@@ -290,6 +304,8 @@ class RateLimited:
 @dataclass(frozen=True, slots=True)
 class Transient:
     msg: str
+    # Kept so a run rejected on it raises what the transport raised.
+    err: NetworkError | None = None
 
 
 @final
@@ -305,7 +321,7 @@ class Fatal:
 
 
 Failure: TypeAlias = RateLimited | Transient | Gone | Fatal
-BrokeKind = Literal["transport", "oversize", "cap"]
+BrokeKind = Literal["transport", "silence", "oversize", "cap"]
 
 
 @final
@@ -352,6 +368,9 @@ class StreamBroke:
     now: float
     kind: BrokeKind
     msg: str
+    # A cap's frame, read for its ids only: it may be the first to name the
+    # thread, and cleanup needs them to stop the run.
+    capped: FrameSummary | None = None
 
 
 @final
@@ -434,7 +453,7 @@ def timers(policy: Policy, s: State) -> list[tuple[DueTag, float]]:
         case StartBackoff() | ReconnectBackoff():
             out.append(("backoff", s.until))
         case Streaming(live, _, last_byte_at, grace):
-            floor = grace.t if isinstance(grace, GraceUntil) else float("-inf")
+            floor, idle_floor = _grace_floors(grace)
             phase = live.phase
             match phase:
                 case AwaitingFirst():
@@ -452,11 +471,23 @@ def timers(policy: Policy, s: State) -> list[tuple[DueTag, float]]:
             ):
                 out.append(("first_content", max(live.started_at + policy.first_content.s, floor)))
             if isinstance(policy.stall, StallAfter):
-                out.append(("stall", max(last_progress + policy.stall.s, floor)))
-            out.append(("silence", max(last_byte_at + policy.silence_s, floor)))
+                out.append(("stall", max(last_progress + policy.stall.s, idle_floor)))
+            out.append(("silence", max(last_byte_at + policy.silence_s, idle_floor)))
         case _:
             assert_never(s)
     return out
+
+
+def _grace_floors(grace: Grace) -> tuple[float, float]:
+    """The earliest a settle or first-content timer, and a stall or silence
+    timer, may fire on this conn."""
+    match grace:
+        case GraceUntil(t, progressed):
+            return t, float("-inf") if progressed else t
+        case NoGrace():
+            return float("-inf"), float("-inf")
+        case _:
+            assert_never(grace)
 
 
 def due_class(policy: Policy, s: State, now: float) -> DueTag:
@@ -572,8 +603,8 @@ def _failure_error(f: Failure) -> PplxError:
     match f:
         case RateLimited(retry_after):
             return RateLimitError("HTTP 429: rate limited", retry_after=retry_after)
-        case Transient(msg):
-            return NetworkError(msg)
+        case Transient(msg, err):
+            return NetworkError(msg) if err is None else err
         case Gone(status):
             return SchemaError(f"HTTP {status} on the initial request")
         case Fatal(err):
@@ -609,7 +640,7 @@ def _cut_before_first_byte(s: StartState) -> Done:
 
 def step_start(policy: Policy, s: StartState, e: Event, u: float) -> StartStep:
     if isinstance(e, Tick):
-        return _tick_start(policy, s, e.now)
+        return _tick_start(policy, s, e.now, u)
     match s:
         case StartBackoff():
             return s, ()
@@ -632,8 +663,8 @@ def _starting(policy: Policy, s: Starting, e: ConnEvent, u: float) -> StartStep:
                 cursor=None,
                 reconnectable="absent",
                 phase=AwaitingFirst(),
-                rc_consecutive=0,
-                rc_total=0,
+                rc_consecutive=s.rc_attempts,
+                rc_total=s.rc_attempts,
                 next_conn=ConnId(conn + 1),
             )
             return Streaming(live, conn, now, NoGrace()), ()
@@ -654,6 +685,11 @@ def _starting(policy: Policy, s: Starting, e: ConnEvent, u: float) -> StartStep:
                     s.started_at, s.deadline, now + delay, s.rl_attempts, ConnId(conn + 1)
                 )
                 return backoff, (notice,)
+            if isinstance(f, Transient):
+                failed = Notice("reconnect_failed", f"reconnect failed: {f.msg}")
+                retry = _retry_reattach(policy, s, now, u, (failed,))
+                if retry is not None:
+                    return retry
             return Done(Rejected(_failure_error(f)), NoIds()), ()
         # The per-conn reader emits Opened or OpenFailed before any body item.
         case FrameIn() | HeartbeatIn() | StreamEnded() | StreamBroke():
@@ -662,19 +698,53 @@ def _starting(policy: Policy, s: Starting, e: ConnEvent, u: float) -> StartStep:
             assert_never(e)
 
 
-def _tick_start(policy: Policy, s: StartState, now: float) -> StartStep:
+def _retry_reattach(
+    policy: Policy, s: Starting, now: float, u: float, effects: tuple[StartEffect, ...]
+) -> StartStep | None:
+    """A resume's failed first open, retried within the reconnect bounds as
+    a later drop would be; None when they or the time left refuse it. A
+    research POST is billed, so its policy never reattaches."""
+    rc = policy.reconnect
+    match rc:
+        case Bounded(consecutive, _):
+            allowed = policy.reattach and s.rc_attempts < consecutive
+        case Off():
+            allowed = False
+        case _:
+            assert_never(rc)
+    if not allowed or _remaining(s.deadline, now) < policy.min_useful_s:
+        return None
+    delay = reconnect_delay(policy, s.rc_attempts, None, u)
+    backoff = StartBackoff(
+        s.started_at,
+        s.deadline,
+        now + delay,
+        s.rl_attempts,
+        ConnId(s.conn + 1),
+        s.rc_attempts + 1,
+        rate_limited=False,
+    )
+    return backoff, (*effects, Notice("reconnect", "reconnecting"))
+
+
+def _tick_start(policy: Policy, s: StartState, now: float, u: float) -> StartStep:
     due = due_class(policy, s, now)
     match due:
         case "deadline":
             effects: tuple[StartEffect, ...] = (Close(s.conn),) if isinstance(s, Starting) else ()
             return _cut_before_first_byte(s), effects
         case "open_due" if isinstance(s, Starting):
+            timeout = Notice("open_timeout", "reconnect open timeout")
+            retry = _retry_reattach(policy, s, now, u, (Close(s.conn), timeout))
+            if retry is not None:
+                return retry
             err = NetworkError(f"no response headers within {policy.open_s:g}s")
             return Done(Rejected(err), NoIds()), (Close(s.conn),)
         case "backoff" if isinstance(s, StartBackoff):
             conn = s.next_conn
+            rl = s.rl_attempts + 1 if s.rate_limited else s.rl_attempts
             starting = Starting(
-                s.started_at, s.deadline, conn, s.rl_attempts + 1, now + policy.open_s
+                s.started_at, s.deadline, conn, rl, now + policy.open_s, s.rc_attempts
             )
             return starting, (Open(conn, InitialPost(), policy.low_speed_s),)
         case "open_due" | "backoff" | "settle" | "first_content" | "stall" | "silence" | "none":
@@ -791,7 +861,10 @@ def _frame_in(policy: Policy, s: Streaming, fs: FrameSummary, now: float) -> Liv
         phase=_advance_phase(policy, live, fs, now),
         rc_consecutive=0 if progress else live.rc_consecutive,
     )
-    return Streaming(nxt, s.conn, now, s.grace), ()
+    grace = s.grace
+    if progress and isinstance(grace, GraceUntil):
+        grace = GraceUntil(grace.t, progressed=True)
+    return Streaming(nxt, s.conn, now, grace), ()
 
 
 def step_live(policy: Policy, s: LiveState, e: Event, u: float) -> LiveStep:
@@ -883,10 +956,14 @@ def _broke(policy: Policy, live: Live, e: StreamBroke, u: float) -> LiveStep:
     match e.kind:
         case "transport":
             return _reconnect_or_fallback(policy, live, e.conn, "drop", e.now, u)
+        # The transport's own silence abort means what the silence timer means.
+        case "silence":
+            return _reconnect_or_fallback(policy, live, e.conn, "silence", e.now, u)
         case "oversize":
             return Done(Rejected(SchemaError(e.msg)), live.ids), (Close(e.conn),)
         case "cap":
-            return Done(Rejected(ResourceLimitError(e.msg)), live.ids), (Close(e.conn),)
+            ids = live.ids if e.capped is None else merge_ids(live.ids, e.capped)
+            return Done(Rejected(ResourceLimitError(e.msg)), ids), (Close(e.conn),)
         case _:
             assert_never(e.kind)
 
@@ -901,6 +978,9 @@ def _tick_live(policy: Policy, s: LiveState, now: float, u: float) -> LiveStep:
             notice = Notice("open_timeout", "reconnect open timeout")
             return _reconnect_or_fallback(policy, live, s.conn, s.reason, now, u, notices=(notice,))
         case "backoff" if isinstance(s, ReconnectBackoff):
+            # The backoff itself can use up the time the guard saw.
+            if _remaining(live.deadline, now) < policy.min_useful_s:
+                return Done(fallback(policy, s.reason, live), live.ids), ()
             conn = live.next_conn
             nxt = replace(live, next_conn=ConnId(conn + 1))
             state = Reconnecting(nxt, conn, s.target, s.reason, now + policy.open_s)
@@ -928,6 +1008,43 @@ def step(policy: Policy, s: State, e: Event, u: float) -> Step:
             return step_live(policy, s, e, u)
         case _:
             assert_never(s)
+
+
+_BROKE_TRIGGERS: dict[BrokeKind, ReconnectReason] = {"transport": "drop", "silence": "silence"}
+_TIMER_TRIGGERS: dict[DueTag, ReconnectReason] = {
+    "settle": "settle",
+    "first_content": "first_content",
+    "stall": "stall",
+    "silence": "silence",
+}
+
+
+def ended_by(policy: Policy, before: State, e: Event) -> ReconnectReason | None:
+    """For the step from `before` on `e` that reached `Done`: the reconnect
+    trigger whose fallback ended the run, or None when the run ended some
+    other way. Cleanup reads it, since a thread lost to a drop or silence is
+    worth keeping whichever guard refused the reconnect."""
+    match before:
+        case Reconnecting() | ReconnectBackoff():
+            deadline = isinstance(e, Tick) and due_class(policy, before, e.now) == "deadline"
+            return None if deadline else before.reason
+        case Streaming():
+            pass
+        case Starting() | StartBackoff() | Done():
+            return None
+        case _:
+            assert_never(before)
+    match e:
+        case StreamBroke(kind=kind):
+            return _BROKE_TRIGGERS.get(kind)
+        case StreamEnded():
+            return "eof"
+        case Tick(now):
+            return _TIMER_TRIGGERS.get(due_class(policy, before, now))
+        case Opened() | OpenFailed() | FrameIn() | HeartbeatIn():
+            return None
+        case _:
+            assert_never(e)
 
 
 # --- classification for the coverage test and the trace ------------------------------------------

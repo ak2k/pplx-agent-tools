@@ -315,6 +315,8 @@ class ThreadHandle:
         self._claimed = False
         # Whether a file for the thread may exist, so removal is worth trying.
         self._on_disk = record is not None
+        # Set once cleanup has said nothing is left to resume.
+        self._forgotten = False
         self.warnings: list[str] = []
 
     def observe(self, backend_uuid: str | None, read_write_token: str | None) -> None:
@@ -350,13 +352,17 @@ class ThreadHandle:
             self._write(replace(record, read_write_token=read_write_token))
 
     def keep(self) -> None:
-        """Mark the record `kept`: the thread was left going on purpose."""
+        """Mark the record `kept`: the thread was left going on purpose. A
+        no-op once `forget` has run, which is final."""
+        if self._forgotten:
+            return
         if self._record is not None and self._record.status != "kept":
             self._write(replace(self._record, status="kept"))
 
     def forget(self) -> None:
         """Remove the record: the thread was deleted, is gone, or pplx is done
         with it, so there is nothing left to resume."""
+        self._forgotten = True
         if self._record is None or not self._on_disk:
             return
         try:

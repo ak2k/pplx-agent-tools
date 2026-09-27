@@ -19,6 +19,7 @@ import pytest
 from curl_cffi import CurlECode
 
 from pplx_agent_tools import cli_ask, cli_fetch, cli_research, wire
+from pplx_agent_tools.askstream.policy import JITTER_HIGH
 from pplx_agent_tools.errors import EXIT_NETWORK, EXIT_PARTIAL, StreamDeadlineError
 from pplx_agent_tools.render import (
     render_ask_json,
@@ -28,6 +29,7 @@ from pplx_agent_tools.render import (
     render_research_json,
     render_research_text,
 )
+from pplx_agent_tools.verbs import _research_stream
 from pplx_agent_tools.verbs._ask_common import (
     COPILOT_STALL_SECONDS,
     DEFAULT_STALL_SECONDS,
@@ -37,12 +39,13 @@ from pplx_agent_tools.verbs.ask import ask
 from pplx_agent_tools.verbs.fetch import fetch
 from pplx_agent_tools.verbs.research import research
 
-from ._doubles import _TestClientBase
+from ._doubles import BU, CTX, _TestClientBase
 from .test_stall_guard import (
     ENVELOPE,
     HEARTBEAT,
     INITIAL_QUERY,
     LONG_DEADLINE,
+    RESEARCH_ENVELOPE,
     Step,
     _chunk,
     _Clock,
@@ -69,11 +72,18 @@ _CLI: dict[str, tuple[Callable[[list[str]], int], list[str]]] = {
 def clock(monkeypatch: pytest.MonkeyPatch) -> _Clock:
     c = _Clock()
     monkeypatch.setattr(wire, "time", SimpleNamespace(monotonic=c.monotonic, time=lambda: 1.7e9))
+    monkeypatch.setattr(
+        _research_stream, "time", SimpleNamespace(monotonic=c.monotonic, sleep=c.sleep)
+    )
     return c
 
 
 def _content(verb: str, text: str) -> bytes:
     return _snapshot(text) if verb == "research" else _chunk(text)
+
+
+def _envelope(verb: str) -> bytes:
+    return RESEARCH_ENVELOPE if verb == "research" else ENVELOPE
 
 
 def _cli_json(
@@ -98,18 +108,23 @@ def _cli_json(
 def test_no_first_content_is_cut_at_the_bound_with_its_own_message(
     clock: _Clock, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], verb: str
 ) -> None:
-    steps: list[Step] = [(0, ENVELOPE), *_heartbeats(600)]
+    steps: list[Step] = [(0, _envelope(verb)), *_heartbeats(600)]
     rc, out, err, client = _cli_json(monkeypatch, capsys, verb, steps, clock)
     assert rc == EXIT_NETWORK
     assert out["error"]["exit_code"] == EXIT_NETWORK
     assert f"no first content within {FIRST_CONTENT_S:.1f}s" in err
     assert "stall" not in err
-    assert FIRST_CONTENT_S < clock.now - 1000.0 <= FIRST_CONTENT_S + 15
+    kept = verb == "research"
+    if kept:
+        # Research's driver sees the bound on its own timer, then cuts once
+        # three reconnects fail, after backoffs of 1, 2 and 4 s with jitter.
+        assert FIRST_CONTENT_S <= clock.now - 1000.0 <= FIRST_CONTENT_S + 7 * JITTER_HIGH
+    else:
+        assert FIRST_CONTENT_S < clock.now - 1000.0 <= FIRST_CONTENT_S + 15
     # ENVELOPE names no context uuid, so pplx cannot stop the run, and research
     # keeps its thread for `pplx resume` rather than delete it.
-    kept = verb == "research"
     assert client.deleted == ([] if kept else [("BU", "RW")])
-    assert (out.get("resume") == "pplx resume --profile default BU") == kept
+    assert (out.get("resume") == f"pplx resume --profile default {BU}") == kept
 
 
 # ---------- deadline before content ----------
@@ -117,11 +132,10 @@ def test_no_first_content_is_cut_at_the_bound_with_its_own_message(
 
 def _non_content_progress(verb: str, i: int) -> bytes:
     """A frame the verb's progress rule counts that still carries no content."""
-    ids = {"backend_uuid": "BU", "read_write_token": "RW"}
     if verb == "research":
         step = {"step_type": "INITIAL_QUERY", "content": {"query": f"q{i}"}}
-        return _frame({**ids, "text": json.dumps([step])})
-    return _frame({**ids, "blocks": [{"plan": i}]})
+        return _frame({"backend_uuid": BU, "read_write_token": "RW", "text": json.dumps([step])})
+    return _frame({"backend_uuid": "BU", "read_write_token": "RW", "blocks": [{"plan": i}]})
 
 
 @pytest.mark.parametrize("verb", _CLI)
@@ -149,7 +163,7 @@ def test_a_deadline_before_content_says_when_progress_last_came(
     elif scenario == "echo only":
         steps = [(0, _non_content_progress(verb, 0)), *_heartbeats(300)]
     else:
-        steps = [(0, ENVELOPE), *_heartbeats(300)]
+        steps = [(0, _envelope(verb)), *_heartbeats(300)]
     rc, out, err, _ = _cli_json(monkeypatch, capsys, verb, steps, clock, "--timeout", timeout)
     assert rc == EXIT_NETWORK
     assert out["error"]["exit_code"] == EXIT_NETWORK
@@ -192,7 +206,7 @@ def test_a_deadline_before_content_says_which_retry_fits(
         steps += _heartbeats(300)
     else:
         # Under the 90 s first-content bound, so the deadline is what cuts.
-        steps, timeout = [(0, ENVELOPE), *_heartbeats(300)], "60"
+        steps, timeout = [(0, _envelope(verb)), *_heartbeats(300)], "60"
     rc, out, err, _ = _cli_json(monkeypatch, capsys, verb, steps, clock, "--timeout", timeout)
     assert rc == EXIT_NETWORK
     assert advice in out["error"]["message"]
@@ -312,7 +326,7 @@ def test_research_alone_gets_a_silence_window_past_a_clarifying_wait(
 def test_silence_before_content_exits_network_saying_no_bytes(
     clock: _Clock, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], verb: str
 ) -> None:
-    steps: list[Step] = [(0, ENVELOPE), (40, _curl_error(CurlECode.OPERATION_TIMEDOUT))]
+    steps: list[Step] = [(0, _envelope(verb)), (40, _curl_error(CurlECode.OPERATION_TIMEDOUT))]
     rc, out, err, _ = _cli_json(monkeypatch, capsys, verb, steps, clock)
     assert rc == EXIT_NETWORK
     assert out["error"]["exit_code"] == EXIT_NETWORK
@@ -334,6 +348,9 @@ def test_research_that_sends_no_bytes_is_a_silence_cut_not_a_first_content_cut(
 
 # ---------- drop salvage ----------
 
+# Research reconnects in the call first, and names the last reconnect's failure.
+_RECONNECT_FAILED = "no reconnect scripted"
+
 
 @pytest.mark.parametrize("verb", _CLI)
 def test_a_drop_after_content_returns_the_partial_as_a_drop_cut(
@@ -345,7 +362,8 @@ def test_a_drop_after_content_returns_the_partial_as_a_drop_cut(
     assert out["stream_complete"] is False
     assert out["cut_by"] == "drop"
     assert "kept part" in json.dumps(out)
-    assert any("failed mid-stream" in w for w in out["warnings"])
+    named = _RECONNECT_FAILED if verb == "research" else "failed mid-stream"
+    assert any(named in w for w in out["warnings"])
     # Research keeps the thread of a dropped run for `pplx resume`.
     assert client.deleted == ([] if verb == "research" else [("BU", "RW")])
 
@@ -365,11 +383,11 @@ def test_a_drop_after_content_names_itself_on_stdout(
 def test_a_drop_before_content_still_exits_network(
     clock: _Clock, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], verb: str
 ) -> None:
-    steps: list[Step] = [(0, ENVELOPE), (0, _curl_error(CurlECode.RECV_ERROR))]
+    steps: list[Step] = [(0, _envelope(verb)), (0, _curl_error(CurlECode.RECV_ERROR))]
     rc, out, err, _ = _cli_json(monkeypatch, capsys, verb, steps, clock)
     assert rc == EXIT_NETWORK
     assert out["error"]["type"] == "NetworkError"
-    assert "mid-stream" in err
+    assert (_RECONNECT_FAILED if verb == "research" else "mid-stream") in err
 
 
 # ---------- downgrade ----------
@@ -462,8 +480,9 @@ _REQUESTED = {"ask": "turbo", "research": "pplx_alpha", "fetch": "turbo"}
 def _served_by(verb: str, models: list[str | None]) -> list[dict[str, Any]]:
     """Frames whose `display_model` walks through `models`, then COMPLETED."""
     events: list[dict[str, Any]] = []
+    uuid = BU if verb == "research" else "BU"
     for i, m in enumerate(models):
-        data: dict[str, Any] = {"backend_uuid": "BU", "read_write_token": "RW", "status": "PENDING"}
+        data: dict[str, Any] = {"backend_uuid": uuid, "read_write_token": "RW", "status": "PENDING"}
         if m is not None:
             data["display_model"] = m
         if verb == "research":
@@ -474,7 +493,7 @@ def _served_by(verb: str, models: list[str | None]) -> list[dict[str, Any]]:
                 {"intended_usage": "ask_text", "markdown_block": {"chunks": [f"c{i} "]}}
             ]
         events.append({"data": data})
-    events.append({"data": {"backend_uuid": "BU", "status": "COMPLETED"}})
+    events.append({"data": {"backend_uuid": uuid, "status": "COMPLETED"}})
     return events
 
 
@@ -561,7 +580,7 @@ def test_a_run_without_clarifying_questions_says_nothing_about_them() -> None:
 def _clarifying_run(content: Any) -> list[dict[str, Any]]:
     step = {"step_type": "RESEARCH_CLARIFYING_QUESTIONS", "content": content}
     final = {"step_type": "FINAL", "content": {"answer": json.dumps({"answer": "report"})}}
-    ids = {"backend_uuid": "BU", "read_write_token": "RW"}
+    ids = {"backend_uuid": BU, "read_write_token": "RW"}
     return [
         {"data": {**ids, "text": json.dumps([step, final])}},
         {"data": {"status": "COMPLETED"}},
@@ -599,7 +618,7 @@ def test_malformed_clarifying_entries_are_skipped() -> None:
     events = [
         {
             "data": {
-                "backend_uuid": "BU",
+                "backend_uuid": BU,
                 "read_write_token": "RW",
                 "text": json.dumps([step, final]),
             }
@@ -633,9 +652,9 @@ def test_a_run_cut_while_asking_clarifying_questions_names_them_in_the_error(
 ) -> None:
     step = {"step_type": "RESEARCH_CLARIFYING_QUESTIONS", "content": content}
     ids = {
-        "backend_uuid": "BU",
+        "backend_uuid": BU,
         "read_write_token": "RW",
-        "context_uuid": "CTX",
+        "context_uuid": CTX,
         "display_model": "pplx_alpha",
     }
     steps: list[Step] = [
@@ -653,7 +672,7 @@ def test_a_run_cut_while_asking_clarifying_questions_names_them_in_the_error(
         assert fragment in err
     # pplx cut the run and stopped it, so it did not go on with default answers.
     assert "default answers" not in message
-    assert client.terminated == [("BU", "CTX", "pplx_alpha")]
+    assert client.terminated == [(BU, CTX, "pplx_alpha")]
 
 
 # ---------- UI-wait flags ----------

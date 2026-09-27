@@ -45,6 +45,7 @@ from typing import Any, ClassVar
 
 import pytest
 
+from pplx_agent_tools.verbs import _research_stream
 from pplx_agent_tools.verbs._ask_common import event_marks_completed
 from pplx_agent_tools.verbs.research import decode_research_text, research
 from tests._account_metadata import (
@@ -61,7 +62,7 @@ from tests._account_metadata import (
     sliced,
     stray_uuids,
 )
-from tests._doubles import _TestClientBase
+from tests._doubles import FakeTime, _TestClientBase
 
 FIXTURES = Path(__file__).parent / "fixtures" / "research"
 SANITIZER_SCRIPT = Path(__file__).parent.parent / "scripts" / "re-sanitize-research-fixture.py"
@@ -109,6 +110,11 @@ class FixtureClient(_TestClientBase):
     def delete_thread(self, entry_uuid: str, read_write_token: str) -> bool:  # type: ignore[override]
         self.deleted.append((entry_uuid, read_write_token))
         return True
+
+
+@pytest.fixture(autouse=True)
+def _fake_time(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(_research_stream, "time", FakeTime())
 
 
 @pytest.fixture

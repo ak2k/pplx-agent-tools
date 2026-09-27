@@ -19,6 +19,7 @@ from pplx_agent_tools.askstream.cleanup import (
     TerminateRef,
     TerminateUnsupported,
     cleanup_plan,
+    kept_on_loss,
 )
 from pplx_agent_tools.askstream.fsm import (
     Done,
@@ -81,8 +82,10 @@ def _expected_delete(ids: fsm.Ids, keep: bool) -> object:
 def _expected_terminate(ids: fsm.Ids, model: str | None) -> object:
     if isinstance(ids, NoIds):
         return TerminateNotNeeded()
-    if ids.context is None or model is None:
-        return TerminateUnsupported()
+    if ids.context is None:
+        return TerminateUnsupported("context uuid")
+    if model is None:
+        return TerminateUnsupported("display model")
     return Terminate(TerminateRef(UUID, ids.context, model))
 
 
@@ -122,6 +125,43 @@ def test_before_first_byte_nothing(keep: bool) -> None:
         Done(Cut("deadline", 540.0, 0), NoIds()),
     ):
         assert cleanup_plan(s, keep, MODEL) == (TerminateNotNeeded(), DeleteNotNeeded())
+
+
+@pytest.mark.parametrize(
+    ("last", "trigger", "gone", "kept"),
+    [
+        (Done(Lost("stream dropped"), KNOWN), "drop", False, True),
+        (Done(Cut("stall", 240.0, 3), KNOWN), "silence", False, True),
+        (Done(EndedEarly(1, "auth"), UuidOnly(UUID, CTX)), "drop", False, True),
+        (Done(Lost("stream dropped"), NoIds()), "drop", False, False),
+        (Done(Lost("stream dropped"), KNOWN), "drop", True, False),
+        (Done(Cut("deadline", 3600.0, 1), KNOWN), None, False, False),
+        (Done(Cut("stall", 240.0, 1), KNOWN), "stall", False, False),
+        (Done(EndedEarly(1, "server"), KNOWN), "eof", False, False),
+        (Done(Cut("first_content", 90.0, 0), KNOWN), "first_content", False, False),
+        (Done(Completed(1), KNOWN), None, False, False),
+        (streaming(live(ids=KNOWN)), None, False, False),
+        (ReconnectBackoff(live(ids=KNOWN), 5.0, ReconnectTarget(UUID), "drop"), None, False, False),
+    ],
+)
+def test_kept_on_loss(
+    last: fsm.State, trigger: fsm.ReconnectReason | None, gone: bool, kept: bool
+) -> None:
+    assert kept_on_loss(last, trigger, gone) is kept
+
+
+@pytest.mark.parametrize("gone", [False, True])
+@pytest.mark.parametrize("trigger", [None, *get_args(fsm.ReconnectReason)])
+@pytest.mark.parametrize("ids", IDS)
+def test_kept_on_loss_enumerated(
+    ids: fsm.Ids, trigger: fsm.ReconnectReason | None, gone: bool
+) -> None:
+    """A loss to a drop or silence keeps a thread that exists and is not gone;
+    an interrupted Live state never does."""
+    expected = trigger in ("drop", "silence") and not isinstance(ids, NoIds) and not gone
+    assert kept_on_loss(Done(Lost("x"), ids), trigger, gone) is expected
+    for state in _live_states(ids):
+        assert kept_on_loss(state, trigger, gone) is False
 
 
 def test_plan_never_prints_the_token() -> None:

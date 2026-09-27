@@ -217,6 +217,19 @@ def test_handle_writes_at_the_first_id_and_adds_the_token_later(state_home: Path
     assert store.load(UUID) is None and list(store.directory.iterdir()) == []
 
 
+@pytest.mark.parametrize("status", ["running", "kept"])
+def test_a_forgotten_record_is_never_kept_again(state_home: Path, status: str) -> None:
+    store = ThreadStore()
+    record = ThreadRecord(UUID, datetime.now(timezone.utc), status, read_write_token=TOKEN)  # type: ignore[arg-type]
+    store.save(record)
+    handle = ThreadHandle(store, record=record)
+    handle.observe(UUID, TOKEN)
+    handle.forget()
+    handle.keep()
+    assert store.load(UUID) is None and list(store.directory.iterdir()) == []
+    assert handle.warnings == []
+
+
 def test_an_unwritable_state_dir_is_one_warning_and_never_raises(
     state_home: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
