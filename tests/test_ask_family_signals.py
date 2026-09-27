@@ -105,7 +105,11 @@ def test_no_first_content_is_cut_at_the_bound_with_its_own_message(
     assert f"no first content within {FIRST_CONTENT_S:.1f}s" in err
     assert "stall" not in err
     assert FIRST_CONTENT_S < clock.now - 1000.0 <= FIRST_CONTENT_S + 15
-    assert client.deleted == [("BU", "RW")]
+    # ENVELOPE names no context uuid, so pplx cannot stop the run, and research
+    # keeps its thread for `pplx resume` rather than delete it.
+    kept = verb == "research"
+    assert client.deleted == ([] if kept else [("BU", "RW")])
+    assert (out.get("resume") == "pplx resume --profile default BU") == kept
 
 
 # ---------- deadline before content ----------
@@ -342,7 +346,8 @@ def test_a_drop_after_content_returns_the_partial_as_a_drop_cut(
     assert out["cut_by"] == "drop"
     assert "kept part" in json.dumps(out)
     assert any("failed mid-stream" in w for w in out["warnings"])
-    assert client.deleted == [("BU", "RW")]
+    # Research keeps the thread of a dropped run for `pplx resume`.
+    assert client.deleted == ([] if verb == "research" else [("BU", "RW")])
 
 
 @pytest.mark.parametrize("verb", _CLI)

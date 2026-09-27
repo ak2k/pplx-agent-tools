@@ -29,6 +29,9 @@ class PplxError(Exception):
 
     # Subclasses inherit their parent's code unless they set their own.
     exit_code: ClassVar[int] = EXIT_GENERIC
+    # The command that fetches the result of a run this failure left going
+    # server-side, for the --json error document; None when there is none.
+    resume: str | None = None
 
 
 class AuthError(PplxError):
@@ -107,6 +110,32 @@ class AntiBotError(PplxError):
     """Cloudflare challenge or similar bot block. Agent retry: investigate, don't auto-retry. Exit 5."""
 
     exit_code = EXIT_ANTI_BOT
+
+
+class ThreadGoneError(PplxError):
+    """The thread no longer exists for this account: deleted, expired, or not this account's.
+
+    A retry cannot bring it back. Exit 1.
+    """
+
+    exit_code = EXIT_GENERIC
+
+
+class SessionCheckError(PplxError):
+    """A reconnect was refused with a JSON 403, and the session check that
+    tells a gone thread from an expired session failed, so which it is is
+    unknown. Not a NetworkError, which a stream reads as a dropped connection.
+    Retry after a backoff. Exit 4.
+    """
+
+    exit_code = EXIT_NETWORK
+
+
+class ThreadRecordsError(PplxError):
+    """The local records of research threads could not be read, so `--last`
+    cannot tell whether one is resumable. Fix the directory, or resume by
+    uuid; a re-run would spend a unit on a run that may be recorded. Exit 1.
+    """
 
 
 class SchemaError(PplxError):

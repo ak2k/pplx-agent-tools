@@ -78,15 +78,28 @@ def _emit_error(name: str, err: PplxError, args: Namespace) -> int:
     `_verb`) so a consumer can branch on the presence of an `error` key.
     """
     print(f"pplx {name}: {err}", file=sys.stderr)
-    return _emit_error_envelope(name, type(err).__name__, str(err), exit_code(err), args)
+    return _emit_error_envelope(
+        name, type(err).__name__, str(err), exit_code(err), args, resume=err.resume
+    )
 
 
 def _emit_error_envelope(
-    name: str, type_name: str, message: str, code: int, args: Namespace
+    name: str,
+    type_name: str,
+    message: str,
+    code: int,
+    args: Namespace,
+    *,
+    resume: str | None = None,
 ) -> int:
+    """`resume`, when set, sits beside `error` under the key the success
+    document uses, so one lookup finds it in either."""
     if getattr(args, "json", False):
         error_obj = {"type": type_name, "message": message, "exit_code": code}
-        print(json.dumps(envelope(name, {"error": error_obj}), indent=2))
+        payload: dict[str, object] = {"error": error_obj}
+        if resume is not None:
+            payload["resume"] = resume
+        print(json.dumps(envelope(name, payload), indent=2))
     return code
 
 

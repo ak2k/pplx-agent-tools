@@ -155,6 +155,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             timeout=timeout,
             stall_seconds=stall_seconds,
             progress=progress,
+            profile=args.profile,
         ),
         render_text=render_research_text,
         render_json=render_research_json,
