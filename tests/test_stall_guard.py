@@ -19,6 +19,7 @@ from curl_cffi import CurlECode
 from curl_cffi.requests.exceptions import RequestException
 
 from pplx_agent_tools import cli_ask, cli_fetch, cli_research, cli_runner, wire
+from pplx_agent_tools.askstream.policy import JITTER_HIGH
 from pplx_agent_tools.errors import (
     EXIT_NETWORK,
     EXIT_PARTIAL,
@@ -61,7 +62,7 @@ from pplx_agent_tools.verbs.ask import (
 from pplx_agent_tools.verbs.fetch import FetchResult, fetch
 from pplx_agent_tools.verbs.research import ResearchResult, research
 
-from ._doubles import _TestClientBase
+from ._doubles import BU, _TestClientBase
 
 HEARTBEAT = b": ping\n\n"
 # (seconds to advance the fake clock, then the chunk to deliver or exception to raise)
@@ -72,10 +73,10 @@ def _frame(data: dict[str, Any]) -> bytes:
     return f"data: {json.dumps(data)}\n\n".encode()
 
 
-def _chunk(text: str) -> bytes:
+def _chunk(text: str, *, uuid: str = "BU") -> bytes:
     return _frame(
         {
-            "backend_uuid": "BU",
+            "backend_uuid": uuid,
             "read_write_token": "RW",
             "blocks": [{"intended_usage": "ask_text", "markdown_block": {"chunks": [text]}}],
         }
@@ -84,12 +85,12 @@ def _chunk(text: str) -> bytes:
 
 def _snapshot(answer: str) -> bytes:
     final = {"step_type": "FINAL", "content": {"answer": json.dumps({"answer": answer})}}
-    return _frame({"backend_uuid": "BU", "read_write_token": "RW", "text": json.dumps([final])})
+    return _frame({"backend_uuid": BU, "read_write_token": "RW", "text": json.dumps([final])})
 
 
 def _research_steps(*steps: dict[str, Any]) -> bytes:
     """A research snapshot made of the given blocks, without a FINAL answer."""
-    return _frame({"backend_uuid": "BU", "read_write_token": "RW", "text": json.dumps(steps)})
+    return _frame({"backend_uuid": BU, "read_write_token": "RW", "text": json.dumps(steps)})
 
 
 INITIAL_QUERY = {"step_type": "INITIAL_QUERY", "content": {"query": "q"}}
@@ -103,6 +104,8 @@ COMPLETED = _frame({"status": "COMPLETED"})
 LONG_DEADLINE = ["--timeout", "1800"]
 # A data frame with no `blocks`: the bulk of a live ask stream.
 ENVELOPE = _frame({"backend_uuid": "BU", "read_write_token": "RW", "status": "PENDING"})
+# The same for research, whose driver takes only a UUID-shaped thread id.
+RESEARCH_ENVELOPE = _frame({"backend_uuid": BU, "read_write_token": "RW", "status": "PENDING"})
 
 
 class _Clock:
@@ -448,10 +451,12 @@ def test_research_repeating_its_snapshot_stalls_with_the_partial(
     assert "partial report" in out["answer"]
     assert out["stream_complete"] is False
     assert any("stalled: no new content for 240.0s" in w for w in out["warnings"])
-    assert 240 < clock.now - 1000.0 <= 254
+    # Seen on the first frame past the bound, then cut once three reconnects
+    # fail, after backoffs of 1, 2 and 4 s with jitter.
+    assert 240 < clock.now - 1000.0 <= 254 + 7 * JITTER_HIGH
     # The frames name no context uuid, so pplx cannot stop the run, and
     # research keeps its thread for `pplx resume` rather than delete it.
-    assert client.deleted == [] and out["resume"] == "pplx resume --profile default BU"
+    assert client.deleted == [] and out["resume"] == f"pplx resume --profile default {BU}"
 
 
 PARTIAL_CHUNK = _chunk("partial answer")
@@ -677,7 +682,7 @@ def test_research_cut_with_only_the_initial_query_exits_network(
     assert "no new content for 240.0s before the first content arrived" in cap.err
     assert "(no answer)" not in cap.out
     # Unstoppable without a context uuid, so the thread is kept (see above).
-    assert client.deleted == [] and "pplx resume --profile default BU" in cap.err
+    assert client.deleted == [] and f"pplx resume --profile default {BU}" in cap.err
 
 
 def test_research_cut_with_sources_but_no_answer_is_a_partial(
@@ -692,7 +697,7 @@ def test_research_cut_with_sources_but_no_answer_is_a_partial(
     assert [s["url"] for s in out["sources"]] == ["https://found"]
     assert out["cut_by"] == "stall"
     # Unstoppable without a context uuid, so the thread is kept (see above).
-    assert client.deleted == [] and out["resume"] == "pplx resume --profile default BU"
+    assert client.deleted == [] and out["resume"] == f"pplx resume --profile default {BU}"
 
 
 def test_server_cut_names_no_bound(
@@ -785,21 +790,25 @@ _VERBS: list[Callable[..., Any]] = [
 ]
 
 
-@pytest.mark.parametrize("run", _VERBS, ids=["ask", "research", "fetch"])
+# Each verb with a thread id its stream reader takes (see RESEARCH_ENVELOPE).
+_VERB_IDS = [(_VERBS[0], "BU"), (_VERBS[1], BU), (_VERBS[2], "BU")]
+
+
+@pytest.mark.parametrize(("run", "uuid"), _VERB_IDS, ids=["ask", "research", "fetch"])
 def test_keyboard_interrupt_mid_stream_still_reaps_the_thread(
-    clock: _Clock, run: Callable[..., Any]
+    clock: _Clock, run: Callable[..., Any], uuid: str
 ) -> None:
-    client = _StreamClient([(0, _chunk("a")), (0, KeyboardInterrupt())], clock)
+    client = _StreamClient([(0, _chunk("a", uuid=uuid)), (0, KeyboardInterrupt())], clock)
     with pytest.raises(KeyboardInterrupt):
         run(client, stall_seconds=120)
-    assert client.deleted == [("BU", "RW")]
+    assert client.deleted == [(uuid, "RW")]
 
 
-@pytest.mark.parametrize("run", _VERBS, ids=["ask", "research", "fetch"])
+@pytest.mark.parametrize(("run", "uuid"), _VERB_IDS, ids=["ask", "research", "fetch"])
 def test_keyboard_interrupt_with_keep_thread_leaves_the_thread(
-    clock: _Clock, run: Callable[..., Any]
+    clock: _Clock, run: Callable[..., Any], uuid: str
 ) -> None:
-    client = _StreamClient([(0, _chunk("a")), (0, KeyboardInterrupt())], clock)
+    client = _StreamClient([(0, _chunk("a", uuid=uuid)), (0, KeyboardInterrupt())], clock)
     with pytest.raises(KeyboardInterrupt):
         run(client, keep_thread=True)
     assert client.deleted == []
