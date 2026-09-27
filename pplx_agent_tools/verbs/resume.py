@@ -117,14 +117,18 @@ class HeldThread:
         self.command = command
 
     def release(self) -> None:
-        """The report is out: delete the thread unless it was kept or
-        `keep_thread`, then remove its record."""
+        """The report is out: delete the thread unless it was kept, is gone
+        or `keep_thread`, then remove its record."""
         state = self._state
         if state.kept:
             return
         before = list(self._handle.warnings)
         try:
-            if not self._keep_thread and state.backend_uuid and state.read_write_token:
+            if (
+                not (self._keep_thread or state.gone)
+                and state.backend_uuid
+                and state.read_write_token
+            ):
                 state.deleted = self._client.delete_thread(
                     state.backend_uuid, state.read_write_token
                 )
@@ -134,7 +138,9 @@ class HeldThread:
 
     def keep(self, error: BaseException | None = None) -> None:
         """The report did not get out: mark the record `kept` and name the
-        command on stderr and on `error`."""
+        command on stderr and on `error`. A gone thread has nothing to keep."""
+        if self._state.gone:
+            return
         before = list(self._handle.warnings)
         self._handle.keep()
         if isinstance(error, PplxError):
@@ -177,7 +183,10 @@ def resume(
     failed) keeps its thread and names this command again, and a deadline or
     stall terminates it. An exception (Ctrl-C included), a report that does
     not decode, or no content at all keeps the thread and its record and
-    prints this command on stderr. `notes` lead the result's warnings.
+    prints this command on stderr, unless the server reported the thread gone
+    (at the open or on a reconnect): nothing is then sent, kept or named, and
+    with nothing read the error is `ThreadGoneError`. `notes` lead the
+    result's warnings.
     `prompt`, the run's prompt when the caller knows it, stands in for a
     snapshot that does not echo it.
     """
@@ -212,7 +221,11 @@ def resume(
             state=state,
             handle=handle,
         )
-        if not state.kept and not keep_thread and state.backend_uuid and not state.read_write_token:
+        if (
+            not (state.kept or state.gone or keep_thread)
+            and state.backend_uuid
+            and not state.read_write_token
+        ):
             why = (
                 "its record could not be read and the stream sent no read_write_token"
                 if unread

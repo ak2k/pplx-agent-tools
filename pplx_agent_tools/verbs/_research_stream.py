@@ -67,6 +67,7 @@ from ..errors import (
     StreamFirstContentError,
     StreamSilenceError,
     StreamStallError,
+    ThreadGoneError,
 )
 from ..handles import ThreadHandle
 from ._ask_common import (
@@ -259,6 +260,7 @@ def research_stream(
             keep_on_raise=keep_on_raise,
         )
         state.kept, state.deleted = thread == "kept", thread == "deleted"
+        state.gone = thread == "gone"
         state.cleanup_warnings += warnings
         if handle is not None:
             _settle(handle, thread, hold=hold)
@@ -470,8 +472,18 @@ def raise_if_empty(
 ) -> None:
     """v0.8's errors for a run with nothing to return; a FAILED run's error
     is its caller's. `notes` end the text: cleanup has run by then, so a run
-    it could not stop, or a thread it kept, is named there."""
+    it could not stop, or a thread it kept, is named there. A thread the
+    server reported gone cannot be resumed, so its error says to re-run."""
     outcome = run.outcome
+    if run.thread == "gone" and not (run.answer or run.sources):
+        e = run.driver.last_error
+        gone = (
+            e if isinstance(e, ThreadGoneError) else ThreadGoneError(f"thread gone on {endpoint}")
+        )
+        raise ThreadGoneError(
+            f"{gone}; nothing was read from it and it cannot be resumed, so re-run the "
+            f"research query{error_notes(notes)}"
+        ) from gone
     undecodable = run.consumer.decode_error
     if run.consumer.text is None and undecodable is not None and not (run.answer or run.sources):
         raise SchemaError(f"{undecodable}{error_notes(notes)}") from undecodable

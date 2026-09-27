@@ -39,6 +39,7 @@ from pplx_agent_tools.verbs.research import research
 from pplx_agent_tools.verbs.resume import resume
 
 from ._doubles import FakeTime, _TestClientBase
+from ._driver import fixture_items
 from .test_fixture_replay_research import (
     FIXTURES,
     SENTINEL_BACKEND_UUID,
@@ -288,6 +289,55 @@ def test_a_gone_thread_loses_its_record_and_is_not_offered_again() -> None:
     assert _status() is None
     assert ThreadStore().pick_last().record is None
     assert client.deleted == [] and client.terminated == []
+
+
+class _GoneOnReconnect(_Reconnect):
+    """Resume's own open streams `frames` and drops; the in-call reconnect
+    after it is refused as gone."""
+
+    def __init__(self, frames: list[dict[str, Any]]) -> None:
+        super().__init__(frames, then=NetworkError("SSE stream failed mid-stream: reset"))
+
+    def sse_reconnect(self, backend_uuid: str, **kwargs: Any) -> Iterator[dict[str, Any]]:  # type: ignore[override]
+        if self.reconnected:
+            self.reconnected.append(backend_uuid)
+            raise ThreadGoneError("thread gone on reconnect (status 403)")
+        return super().sse_reconnect(backend_uuid, **kwargs)
+
+
+def _p3() -> list[dict[str, Any]]:
+    return [item["data"] for item in fixture_items("p3-research-initial")]
+
+
+def test_a_thread_gone_on_the_in_call_reconnect_is_not_deleted_or_kept_after_the_report(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _save()
+    client = _GoneOnReconnect(_p3())
+    result, held = resume(client, UUID, store=ThreadStore())
+    assert result.sources and result.resume is None
+    assert _status() is None
+    held.release()
+    held.keep(OSError(32, "Broken pipe"))
+    assert client.reconnected == [UUID, UUID]
+    assert client.deleted == [] and client.terminated == []
+    assert _status() is None
+    assert "thread was kept" not in capsys.readouterr().err
+
+
+def test_a_thread_gone_on_the_in_call_reconnect_with_nothing_read_says_re_run(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _save()
+    client = _GoneOnReconnect(_p3()[:1])
+    with pytest.raises(ThreadGoneError) as raised:
+        resume(client, UUID, store=ThreadStore())
+    assert raised.value.resume is None
+    assert "re-run" in str(raised.value) and "pplx resume" not in str(raised.value)
+    assert client.reconnected == [UUID, UUID]
+    assert client.deleted == [] and client.terminated == []
+    assert _status() is None
+    assert "thread was kept" not in capsys.readouterr().err
 
 
 def test_resume_renders_as_its_own_verb_and_names_the_query() -> None:

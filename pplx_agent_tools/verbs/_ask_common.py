@@ -101,6 +101,9 @@ class AskStreamState:
     # Set by research's cleanup when it left the run and its thread alone
     # because the run goes on server-side, for `pplx resume` to collect.
     kept: bool = False
+    # Set by research's cleanup when the server reported the thread gone:
+    # nothing is left to delete, keep or resume.
+    gone: bool = False
 
 
 def run_may_be_live(state: AskStreamState, *, raised: bool, settles_after_text: bool) -> bool:
