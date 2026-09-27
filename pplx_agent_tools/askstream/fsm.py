@@ -6,6 +6,11 @@ as each event's `now`, and the one random input, the backoff jitter draw
 `u` in [0, 1), is passed in. The FSM sees a `FrameSummary`, never block
 contents.
 
+A conn event is applied as it comes, whatever timer is due at its `now`, so
+the driver must step every due `Tick` before a conn event at that `now`.
+Otherwise a COMPLETED frame that arrives past the deadline or a stall window
+completes a run the timer had already ended.
+
 The start phase (`Starting`, `StartBackoff`) is the only one that can emit
 `Open[InitialPost]`; `step_live`'s return type admits only
 `Open[ReconnectTarget]`, so no second billed POST can follow the first

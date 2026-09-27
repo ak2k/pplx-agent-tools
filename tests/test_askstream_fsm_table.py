@@ -614,6 +614,17 @@ def test_t21_beats_settle_on_the_same_tick() -> None:
     assert s == Done(SettledWithoutTerminal(0, "deadline"), KNOWN)
 
 
+def test_a_completed_frame_past_the_deadline_without_its_tick_completes() -> None:
+    """A conn event is applied as it comes; the Tick the driver steps first
+    is what cuts this run (the driver's late-COMPLETED row)."""
+    lv = live(phase=Producing(500.0), ids=KNOWN, next_conn=3)
+    s0 = streaming(lv, last_byte_at=530.0)
+    assert fsm.due_class(ASK_RC, s0, 540.001) == "deadline"
+    s, eff = step(ASK_RC, s0, FrameIn(C2, 540.001, frame("completed")))
+    assert s == Done(Completed(0), KNOWN)
+    assert eff == (Close(C2),)
+
+
 def test_t22_settle() -> None:
     lv = live(phase=TextComplete(20.0, 20.0), ids=KNOWN)
     s0 = streaming(lv, last_byte_at=30.0)
