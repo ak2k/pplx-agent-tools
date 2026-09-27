@@ -54,7 +54,7 @@ Stall: TypeAlias = StallAfter | StallOff
 class SettleAfterText:
     """Ask: COMPLETED completes. After `text_completed`, wait `settle_s`
     for it; each settle reconnect extends that wait by its backoff and its
-    grace, since no timer fires on a reopened conn before the grace ends."""
+    grace, since settle never fires on a reopened conn before the grace ends."""
 
     settle_s: float
 

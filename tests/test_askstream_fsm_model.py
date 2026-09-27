@@ -180,6 +180,7 @@ class LifecycleModel(RuleBasedStateMachine):
         self.last_progress = t0
         self.saw_429 = False
         self.reopened_at: float | None = None
+        self.reopen_progressed = False
         assert eff == (Open(ConnId(1), InitialPost(), p.low_speed_s),)
 
     # --- event sources ---------------------------------------------------------------------------
@@ -351,11 +352,17 @@ class LifecycleModel(RuleBasedStateMachine):
                 lp2 = _lp(s2)
                 assert lp2 is not None
                 self.last_progress = lp2
-        # I26: no timer reconnects within grace_s of a reconnect opening.
+        # I26: no settle or first-content reconnect within grace_s of a
+        # reconnect opening, and no stall or silence one before the new conn
+        # has made progress.
         if current and isinstance(e, Opened) and isinstance(before, Reconnecting):
-            self.reopened_at = e.now
+            self.reopened_at, self.reopen_progressed = e.now, False
+        if current and isinstance(e, FrameIn) and isinstance(before, Streaming):
+            self.reopen_progressed |= e.s.change == "progress"
         due = fsm.due_class(p, before, e.now) if isinstance(e, Tick) else "none"
-        timer_r = due in ("settle", "first_content", "stall", "silence")
+        timer_r = due in ("settle", "first_content") or (
+            due in ("stall", "silence") and not self.reopen_progressed
+        )
         if timer_r and isinstance(before, Streaming) and self.reopened_at is not None:
             assert e.now >= self.reopened_at + p.grace_s
         # I8: never early, and bounded late when every Tick came on time.

@@ -287,7 +287,8 @@ def _state(rng: random.Random, p: Policy, k: type, ph: type | None) -> fsm.State
     reason = rng.choice(REASONS)
     target = ReconnectTarget(fsm.ids_uuid(ids) if not isinstance(ids, NoIds) else UUID)
     if k is Streaming:
-        grace = rng.choice([NoGrace(), GraceUntil(started + rng.uniform(0, 400))])
+        until = started + rng.uniform(0, 400)
+        grace = rng.choice([NoGrace(), GraceUntil(until), GraceUntil(until, progressed=True)])
         return Streaming(lv, conn, started + rng.uniform(0, 400), grace)
     if k is Reconnecting:
         return Reconnecting(lv, conn, target, reason, started + rng.uniform(0, 400))
@@ -645,7 +646,10 @@ def _chk_t15_t16(
     progress = e.s.change == "progress"
     assert s2.conn == s.conn
     assert s2.last_byte_at == e.now
-    assert s2.grace == s.grace
+    if progress and isinstance(s.grace, GraceUntil):
+        assert s2.grace == GraceUntil(s.grace.t, progressed=True)
+    else:
+        assert s2.grace == s.grace
     assert lv2.phase == expected_phase(p, lv, e.s, e.now)
     assert lv2.ids == expected_ids(lv.ids, e.s)
     assert lv2.rc_consecutive == (0 if progress else lv.rc_consecutive)
@@ -769,8 +773,10 @@ def _chk_tick_r(reason: fsm.ReconnectReason) -> Check:
         p: Policy, s: fsm.State, e: fsm.Event, s2: fsm.State, eff: tuple[fsm.Effect, ...]
     ) -> None:
         assert isinstance(s, Streaming)
-        # I26: a timer never reconnects before a new conn's grace ends.
-        if isinstance(s.grace, GraceUntil):
+        # I26: a timer never reconnects before a new conn's grace ends,
+        # except stall and silence once that conn has made progress.
+        idle = reason in ("stall", "silence")
+        if isinstance(s.grace, GraceUntil) and not (idle and s.grace.progressed):
             assert e.now >= s.grace.t
         _check_r(p, s.live, s.conn, reason, e.now, s2, eff)
 

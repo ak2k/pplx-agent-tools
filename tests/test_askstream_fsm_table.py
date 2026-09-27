@@ -440,7 +440,7 @@ def test_t15_progress() -> None:
     assert isinstance(s, Streaming)
     assert s.live.phase == Producing(7.0)
     assert (s.live.rc_consecutive, s.live.rc_total) == (0, 2)
-    assert s.grace == GraceUntil(50.0)
+    assert s.grace == GraceUntil(50.0, progressed=True)
     assert s.last_byte_at == 7.0
     assert s.live.ids == KNOWN
     assert (s.live.cursor, s.live.reconnectable) == ("c1", "yes")
@@ -1088,7 +1088,7 @@ def test_a_settle_reconnect_extends_the_settle_wait_by_its_grace() -> None:
     assert fsm.due_class(p, s, 18.1 + p.grace_s) == "settle"
 
 
-FLOOR_CASES: list[tuple[str, Policy, fsm.Phase]] = [
+FLOOR_CASES: list[tuple[fsm.DueTag, Policy, fsm.Phase]] = [
     ("settle", ASK_RC, TextComplete(10.0, 10.0)),
     ("first_content", ASK_RC, AwaitingFirst()),
     ("stall", policy(reconnect=Bounded(3, 6), stall=StallAfter(20.0)), Producing(10.0)),
@@ -1098,7 +1098,7 @@ FLOOR_CASES: list[tuple[str, Policy, fsm.Phase]] = [
 
 @pytest.mark.parametrize(("tag", "p", "phase"), FLOOR_CASES)
 def test_every_reconnecting_timer_waits_for_the_grace(
-    tag: str, p: Policy, phase: fsm.Phase
+    tag: fsm.DueTag, p: Policy, phase: fsm.Phase
 ) -> None:
     """Each term is overdue when the reconnect opens at 105; none fires
     before 135."""
@@ -1109,15 +1109,57 @@ def test_every_reconnecting_timer_waits_for_the_grace(
     assert fsm.next_wake(p, s) == 135.0
 
 
-def test_progress_keeps_the_grace() -> None:
+@pytest.mark.parametrize(("tag", "p", "phase"), FLOOR_CASES)
+def test_progress_lifts_the_grace_only_for_stall_and_silence(
+    tag: fsm.DueTag, p: Policy, phase: fsm.Phase
+) -> None:
+    s0 = streaming(live(phase=phase, ids=KNOWN, next_conn=3), last_byte_at=60.0)
+    due = dict(fsm.timers(p, replace(s0, grace=GraceUntil(135.0, progressed=True))))[tag]
+    if tag in ("settle", "first_content"):
+        assert due == 135.0
+    else:
+        assert due < 135.0
+
+
+def test_progress_keeps_the_grace_for_settle() -> None:
     """A snapshot with new blocks but no COMPLETED still leaves the settle
-    reconnect its grace."""
+    reconnect its grace; silence counts from the new conn's bytes."""
     s0 = streaming(live(phase=TextComplete(10.0, 10.0), ids=KNOWN), grace=GraceUntil(135.0))
     s, _ = step(ASK_RC, replace(s0, last_byte_at=105.0), FrameIn(C1, 106.0, frame()))
     assert isinstance(s, Streaming)
+    assert s.grace == GraceUntil(135.0, progressed=True)
+    due = dict(fsm.timers(ASK_RC, s))
+    assert (due["settle"], due["silence"]) == (135.0, 131.0)
+
+
+def test_idle_frames_keep_the_grace_for_stall_and_silence() -> None:
+    s0 = streaming(live(phase=Producing(10.0), ids=KNOWN), grace=GraceUntil(135.0))
+    s, _ = step(
+        ASK_RC, replace(s0, last_byte_at=105.0), FrameIn(C1, 106.0, frame("pending", "idle"))
+    )
+    assert isinstance(s, Streaming)
     assert s.grace == GraceUntil(135.0)
-    assert fsm.due_class(ASK_RC, s, 134.999) == "none"
-    assert fsm.due_class(ASK_RC, s, 135.0) == "settle"
+    assert fsm.next_wake(ASK_RC, s) == 135.0
+
+
+def test_a_stall_after_progress_on_the_new_conn_cuts_before_the_grace_ends() -> None:
+    """The reconnect opens at 7.1 and progresses at 8.1; the stall window
+    counts from that progress, so the run is cut at 13.1, not at 37.1."""
+    p = policy(reconnect=Bounded(1, 1), stall=StallAfter(5.0))
+    s: fsm.State
+    s, _ = fsm.initial(p, 0.0)
+    s, _ = step(p, s, Opened(C1, 0.5))
+    s, _ = step(p, s, FrameIn(C1, 1.0, frame(uuid=UUID, token=token(), context=CTX)))
+    s, _ = step(p, s, Tick(6.0))
+    assert isinstance(s, ReconnectBackoff)
+    s, eff = step(p, s, Tick(7.0))
+    assert [x.conn for x in eff if isinstance(x, Open)] == [C2]
+    s, _ = step(p, s, Opened(C2, 7.1))
+    s, _ = step(p, s, FrameIn(C2, 8.1, frame()))
+    assert fsm.next_wake(p, s) == 13.1
+    assert fsm.due_class(p, s, 13.099) == "none"
+    s, _ = step(p, s, Tick(13.1))
+    assert s == Done(Cut("stall", 5.0, 1), KNOWN)
 
 
 GRACE_POLICIES = [
@@ -1149,16 +1191,16 @@ ACTIONS = st.sampled_from(["wake"] * 6 + ["idle", "progress", "text", "beat", "d
 def test_no_timer_reconnects_within_the_grace(
     pi: int, acts: list[tuple[str, float]], open_after: float
 ) -> None:
-    """I26 over random histories: once a reconnect opens, no settle,
-    first-content, stall or silence reconnect comes before `grace_s` has
-    passed, so no two timer reconnects are closer than the grace."""
+    """I26 over random histories: once a reconnect opens, no settle or
+    first-content reconnect comes before `grace_s` has passed, and no stall
+    or silence reconnect either until the new conn has made progress."""
     p = GRACE_POLICIES[pi]
     assert isinstance(p, Policy)
     s: fsm.State
     s, _ = fsm.initial(p, 0.0)
     s, _ = step(p, s, Opened(C1, 0.0))
     s, _ = step(p, s, FrameIn(C1, 0.0, frame("pending", "idle", uuid=UUID, token=token())))
-    now, reopened_at = 0.0, None
+    now, reopened_at, progressed = 0.0, None, False
     for act, dt in acts:
         if isinstance(s, Done):
             break
@@ -1177,7 +1219,7 @@ def test_no_timer_reconnects_within_the_grace(
                 )
                 s, _ = step(p, s, e)
                 if isinstance(e, Opened):
-                    reopened_at = now
+                    reopened_at, progressed = now, False
             continue
         conn = s.conn
         if act == "wake":
@@ -1185,7 +1227,10 @@ def test_no_timer_reconnects_within_the_grace(
             assert wake is not None
             now = max(now, wake)
             due = fsm.due_class(p, s, now)
-            if due in ("settle", "first_content", "stall", "silence") and reopened_at is not None:
+            floored = due in ("settle", "first_content") or (
+                due in ("stall", "silence") and not progressed
+            )
+            if floored and reopened_at is not None:
                 assert now >= reopened_at + p.grace_s
             s, _ = step(p, s, Tick(now))
             continue
@@ -1202,6 +1247,7 @@ def test_no_timer_reconnects_within_the_grace(
             "fail": HeartbeatIn(conn, now),
         }[act]
         s, _ = step(p, s, body)
+        progressed = progressed or act == "progress"
 
 
 # --- a failed reconnect ends as reconnect Off would (§3.4) ----------------------------------------

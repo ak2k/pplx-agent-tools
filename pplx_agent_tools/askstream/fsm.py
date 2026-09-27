@@ -186,9 +186,13 @@ class NoGrace:
 @dataclass(frozen=True, slots=True)
 class GraceUntil:
     """A reconnect opened; no timer that could reconnect again fires before
-    `t`, so the new conn always has a chance to deliver its snapshot."""
+    `t`, so the new conn always has a chance to deliver its snapshot. Once
+    the new conn has `progressed`, stall and silence count from its frames
+    and no longer wait for `t`; settle and first-content, which count from
+    before the reconnect, still do."""
 
     t: float
+    progressed: bool = False
 
 
 Grace: TypeAlias = NoGrace | GraceUntil
@@ -439,7 +443,7 @@ def timers(policy: Policy, s: State) -> list[tuple[DueTag, float]]:
         case StartBackoff() | ReconnectBackoff():
             out.append(("backoff", s.until))
         case Streaming(live, _, last_byte_at, grace):
-            floor = grace.t if isinstance(grace, GraceUntil) else float("-inf")
+            floor, idle_floor = _grace_floors(grace)
             phase = live.phase
             match phase:
                 case AwaitingFirst():
@@ -457,11 +461,23 @@ def timers(policy: Policy, s: State) -> list[tuple[DueTag, float]]:
             ):
                 out.append(("first_content", max(live.started_at + policy.first_content.s, floor)))
             if isinstance(policy.stall, StallAfter):
-                out.append(("stall", max(last_progress + policy.stall.s, floor)))
-            out.append(("silence", max(last_byte_at + policy.silence_s, floor)))
+                out.append(("stall", max(last_progress + policy.stall.s, idle_floor)))
+            out.append(("silence", max(last_byte_at + policy.silence_s, idle_floor)))
         case _:
             assert_never(s)
     return out
+
+
+def _grace_floors(grace: Grace) -> tuple[float, float]:
+    """The earliest a settle or first-content timer, and a stall or silence
+    timer, may fire on this conn."""
+    match grace:
+        case GraceUntil(t, progressed):
+            return t, float("-inf") if progressed else t
+        case NoGrace():
+            return float("-inf"), float("-inf")
+        case _:
+            assert_never(grace)
 
 
 def due_class(policy: Policy, s: State, now: float) -> DueTag:
@@ -796,7 +812,10 @@ def _frame_in(policy: Policy, s: Streaming, fs: FrameSummary, now: float) -> Liv
         phase=_advance_phase(policy, live, fs, now),
         rc_consecutive=0 if progress else live.rc_consecutive,
     )
-    return Streaming(nxt, s.conn, now, s.grace), ()
+    grace = s.grace
+    if progress and isinstance(grace, GraceUntil):
+        grace = GraceUntil(grace.t, progressed=True)
+    return Streaming(nxt, s.conn, now, grace), ()
 
 
 def step_live(policy: Policy, s: LiveState, e: Event, u: float) -> LiveStep:
