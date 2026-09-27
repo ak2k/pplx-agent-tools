@@ -100,7 +100,6 @@ def resume(
             keep_on_raise=True,
         )
     except ThreadGoneError:
-        handle.settle("gone")
         raise
     except BaseException as e:
         if state.kept and not state.deleted:

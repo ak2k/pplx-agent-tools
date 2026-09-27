@@ -5,11 +5,12 @@ find a run whose client went away before the report arrived.
 One JSON file per thread in `$XDG_STATE_HOME/perplexity/<profile>/threads/`
 (`$XDG_STATE_HOME` defaults to `~/.local/state`): mode 0600 in a 0700
 directory, replaced whole by an atomic rename. A file per thread is what lets
-many pplx processes write at once without a lock. The record is written when
-the stream first names its thread and updated when cleanup settles it, so a
-client killed outright (SIGKILL, a machine sleep, a closed terminal) leaves it
-`running`, which is the case `pplx resume --last` exists for. Records older
-than the thread's expiry plus a margin are pruned on every write.
+many pplx processes write at once without a lock. A file exists only while
+its thread can be resumed: it is written when the stream first names the
+thread and removed once the thread is deleted, gone or finished with, so a
+client killed outright (SIGKILL, a machine sleep, a closed terminal) leaves
+it `running`, which is the case `pplx resume --last` exists for. Records
+older than the thread's expiry plus a margin are pruned on every write.
 
 The read_write_token is kept here because deleting a thread needs it. It never
 leaves the file: no message, warning or error carries it.
@@ -35,12 +36,9 @@ from .auth import DEFAULT_PROFILE, atomic_write_0600, resolve_profile
 MAX_AGE = timedelta(hours=25)
 
 # running: a pplx process is reading the stream, or was until it died without
-#   cleaning up. kept: left running on purpose after the connection dropped.
-# deleted: the thread was deleted. ended: pplx finished with the thread and
-#   left it in place (--keep-thread, or a delete that failed or could not be
-#   sent). gone: the server no longer has it.
-Status = Literal["running", "kept", "deleted", "ended", "gone"]
-RESUMABLE: frozenset[Status] = frozenset({"running", "kept"})
+#   cleaning up. kept: left going server-side on purpose. Only `pick_last`
+#   tells them apart, to pass over a thread a live process is still reading.
+Status = Literal["running", "kept"]
 
 
 @dataclass(frozen=True)
@@ -183,6 +181,10 @@ class ThreadStore:
         atomic_write_0600(self._path(record.backend_uuid), record.to_json())
         self.prune(now or _now())
 
+    def remove(self, backend_uuid: str) -> None:
+        """Remove the record of `backend_uuid`, if any. Raises OSError."""
+        self._path(backend_uuid).unlink(missing_ok=True)
+
     def load(self, backend_uuid: str) -> ThreadRecord | None:
         try:
             text = self._path(backend_uuid).read_text(encoding="utf-8")
@@ -208,8 +210,6 @@ class ThreadStore:
     def pick_last(self, *, now: datetime | None = None) -> LastPick:
         live = 0
         for record in self.records(now=now):
-            if record.status not in RESUMABLE:
-                continue
             pid = record.pid
             if (
                 record.status == "running"
@@ -248,10 +248,11 @@ class ThreadStore:
 
 class ThreadHandle:
     """One run's record: written when the stream first names its thread,
-    rewritten when the token first arrives and when cleanup settles it.
+    rewritten when the token first arrives, marked `kept` or removed once
+    cleanup is done with it.
 
-    A write that fails costs the run nothing: it becomes one entry in
-    `warnings`, and the run goes on without a record.
+    A write or removal that fails costs the run nothing: it becomes the one
+    entry in `warnings`, saying what the record was left as.
     """
 
     def __init__(
@@ -272,6 +273,8 @@ class ThreadHandle:
         # A record this run resumes; it is claimed at the first frame.
         self._record = record
         self._claimed = False
+        # Whether a file for the thread may exist, so removal is worth trying.
+        self._on_disk = record is not None
         self.warnings: list[str] = []
 
     def observe(self, backend_uuid: str | None, read_write_token: str | None) -> None:
@@ -306,9 +309,26 @@ class ThreadHandle:
         elif read_write_token and record.read_write_token is None:
             self._write(replace(record, read_write_token=read_write_token))
 
-    def settle(self, status: Status) -> None:
-        if self._record is not None and self._record.status != status:
-            self._write(replace(self._record, status=status))
+    def keep(self) -> None:
+        """Mark the record `kept`: the thread was left going on purpose."""
+        if self._record is not None and self._record.status != "kept":
+            self._write(replace(self._record, status="kept"))
+
+    def forget(self) -> None:
+        """Remove the record: the thread was deleted, is gone, or pplx is done
+        with it, so there is nothing left to resume."""
+        if self._record is None or not self._on_disk:
+            return
+        try:
+            self._store.remove(self._record.backend_uuid)
+        except Exception as e:
+            self._fail(
+                "could not remove this research thread's record, so `pplx resume --last` "
+                "may still offer it",
+                e,
+            )
+        else:
+            self._on_disk = False
 
     @property
     def record(self) -> ThreadRecord | None:
@@ -320,9 +340,17 @@ class ThreadHandle:
         try:
             self._store.save(record)
         except Exception as e:
-            if not self.warnings:
-                reason = e.strerror if isinstance(e, OSError) and e.strerror else type(e).__name__
-                self.warnings.append(
-                    f"could not record this research thread for `pplx resume` under "
-                    f"{self._store.directory}: {reason}"
-                )
+            self._fail(
+                "could not update this research thread's record for `pplx resume`"
+                if self._on_disk
+                else "could not record this research thread for `pplx resume`",
+                e,
+            )
+        else:
+            self._on_disk = True
+
+    def _fail(self, what: str, e: Exception) -> None:
+        reason = e.strerror if isinstance(e, OSError) and e.strerror else type(e).__name__
+        # One entry: the latest failure is the one that says what the record
+        # was left as.
+        self.warnings[:] = [f"{what} (under {self._store.directory}: {reason})"]

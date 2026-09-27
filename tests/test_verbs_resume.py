@@ -130,7 +130,7 @@ def test_a_finished_thread_resumes_to_the_whole_report_and_is_deleted(fixture: P
     assert result.mode == "research" and result.downgraded is False
     assert client.reconnected == [UUID]
     assert client.deleted == [(UUID, TOKEN)]
-    assert _status() == "deleted"
+    assert _status() is None
 
 
 def test_a_running_thread_resumes_through_snapshots_to_completed() -> None:
@@ -149,7 +149,7 @@ def test_without_a_record_the_token_comes_from_the_frames() -> None:
     result = resume(client, UUID, store=ThreadStore())
     assert result.stream_complete
     assert client.deleted == [(UUID, TOKEN)]
-    assert _status() == "deleted"
+    assert _status() is None
     assert result.query.startswith("Compare five weather nowcasting APIs")
 
 
@@ -160,7 +160,7 @@ def test_with_no_token_anywhere_a_warning_says_the_thread_was_not_deleted() -> N
     result = resume(client, UUID, store=ThreadStore())
     assert client.deleted == []
     assert any("not deleted" in w for w in result.warnings)
-    assert _status() == "ended"
+    assert _status() is None
 
 
 def test_keep_thread_leaves_a_finished_thread() -> None:
@@ -168,7 +168,7 @@ def test_keep_thread_leaves_a_finished_thread() -> None:
     client = _Reconnect([_completed(WEATHER)])
     result = resume(client, UUID, store=ThreadStore(), keep_thread=True)
     assert result.stream_complete and client.deleted == []
-    assert _status() == "ended"
+    assert _status() is None
 
 
 def test_a_resume_that_drops_keeps_the_thread_and_names_itself_again() -> None:
@@ -189,7 +189,7 @@ def test_a_resume_that_stalls_terminates_and_deletes() -> None:
     assert result.cut_by == "stall" and result.resume is None
     assert client.terminated == [(UUID, pending["context_uuid"], "pplx_alpha")]
     assert client.deleted == [(UUID, TOKEN)]
-    assert _status() == "deleted"
+    assert _status() is None
 
 
 def test_a_resume_stall_that_pplx_could_not_stop_keeps_the_thread() -> None:
@@ -238,12 +238,32 @@ def test_any_error_during_resume_keeps_the_thread_and_names_the_command(
     assert _status() == "kept"
 
 
-def test_a_gone_thread_marks_the_record_and_is_not_offered_again() -> None:
+def test_a_gone_thread_on_a_full_disk_is_not_offered_again(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from pplx_agent_tools import handles
+
+    _save()
+
+    def full_disk(dest: Path, content: str) -> None:
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(handles, "atomic_write_0600", full_disk)
+    first = _Reconnect([], then=ThreadGoneError("thread gone (status 403)"))
+    rc, _, _ = _run(monkeypatch, capsys, ["--last", "-j"], first)
+    assert rc == EXIT_GENERIC and first.reconnected == [UUID]
+    second = _Reconnect([], then=ThreadGoneError("thread gone (status 403)"))
+    rc, out, _ = _run(monkeypatch, capsys, ["--last", "-j"], second)
+    assert rc == EXIT_GENERIC and second.reconnected == []
+    assert "no resumable research thread" in json.loads(out)["error"]["message"]
+
+
+def test_a_gone_thread_loses_its_record_and_is_not_offered_again() -> None:
     _save()
     client = _Reconnect([], then=ThreadGoneError("thread gone"))
     with pytest.raises(ThreadGoneError):
         resume(client, UUID, store=ThreadStore())
-    assert _status() == "gone"
+    assert _status() is None
     assert ThreadStore().pick_last().record is None
     assert client.deleted == [] and client.terminated == []
 
@@ -303,7 +323,6 @@ def test_cli_resume_by_uuid_with_a_drop_exits_partial(
 def test_cli_resume_last_with_nothing_to_resume_is_a_clear_error(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    _save("deleted")
     rc, out, err = _run(monkeypatch, capsys, ["--last", "--json"], _Reconnect([]))
     assert rc == EXIT_GENERIC
     doc = json.loads(out)

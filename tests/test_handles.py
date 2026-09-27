@@ -129,7 +129,7 @@ def test_concurrent_threads_lose_no_record(state_home: Path) -> None:
         handle = ThreadHandle(store, prompt=f"q{i}")
         handle.observe(_uuid(i), None)
         handle.observe(_uuid(i), f"tok{i}")
-        handle.settle("kept")
+        handle.keep()
         assert handle.warnings == []
 
     workers = [threading.Thread(target=write, args=(i,)) for i in range(20)]
@@ -174,9 +174,6 @@ def test_last_picks_the_newest_resumable(state_home: Path) -> None:
     dead_pid = _dead_pid()
     store.save(ThreadRecord(_uuid(1), now - timedelta(hours=3), "kept"))
     store.save(ThreadRecord(_uuid(2), now - timedelta(hours=2), "running", pid=dead_pid))
-    store.save(ThreadRecord(_uuid(3), now - timedelta(hours=1), "deleted"))
-    store.save(ThreadRecord(_uuid(4), now - timedelta(minutes=30), "ended"))
-    store.save(ThreadRecord(_uuid(5), now - timedelta(minutes=20), "gone"))
     # Still streaming in a live process: not offered.
     store.save(ThreadRecord(_uuid(6), now - timedelta(minutes=10), "running", pid=os.getppid()))
     pick = store.pick_last()
@@ -187,7 +184,8 @@ def test_last_picks_the_newest_resumable(state_home: Path) -> None:
 def test_last_with_nothing_resumable(state_home: Path) -> None:
     store = ThreadStore()
     assert store.pick_last().record is None
-    store.save(ThreadRecord(_uuid(1), datetime.now(timezone.utc), "deleted"))
+    store.save(ThreadRecord(_uuid(1), datetime.now(timezone.utc), "kept"))
+    store.remove(_uuid(1))
     assert store.pick_last().record is None
 
 
@@ -212,9 +210,11 @@ def test_handle_writes_at_the_first_id_and_adds_the_token_later(state_home: Path
     handle.observe(UUID, TOKEN)
     second = store.load(UUID)
     assert second is not None and second.read_write_token == TOKEN
-    handle.settle("deleted")
+    handle.keep()
     third = store.load(UUID)
-    assert third is not None and third.status == "deleted"
+    assert third is not None and third.status == "kept" and third.read_write_token == TOKEN
+    handle.forget()
+    assert store.load(UUID) is None and list(store.directory.iterdir()) == []
 
 
 def test_an_unwritable_state_dir_is_one_warning_and_never_raises(
@@ -225,7 +225,8 @@ def test_an_unwritable_state_dir_is_one_warning_and_never_raises(
     handle = ThreadHandle(ThreadStore(), prompt="q")
     handle.observe(UUID, None)
     handle.observe(UUID, TOKEN)
-    handle.settle("kept")
+    handle.keep()
+    handle.forget()
     assert len(handle.warnings) == 1
     assert "could not record" in handle.warnings[0]
     assert TOKEN not in handle.warnings[0] and UUID not in handle.warnings[0]

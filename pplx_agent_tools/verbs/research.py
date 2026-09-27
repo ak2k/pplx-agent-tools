@@ -37,8 +37,8 @@ from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from ..errors import PplxError, SchemaError
-from ..handles import Status, ThreadHandle, ThreadStore, resume_command
+from ..errors import PplxError, SchemaError, ThreadGoneError
+from ..handles import ThreadHandle, ThreadStore, resume_command
 from ..wire import Client
 from ._ask_common import (
     RESEARCH_SILENCE_SECONDS,
@@ -315,6 +315,7 @@ def read_report(
         on_event(event)
 
     raised = True
+    gone = False
     try:
         with release_on_exit(
             client, state, keep_thread=keep_thread, keep_live=True, keep_on_raise=keep_on_raise
@@ -335,26 +336,27 @@ def read_report(
                 opener=opener,
             )
         raised = False
+    except ThreadGoneError:
+        gone = True
+        raise
     finally:
-        status = _settled_status(state)
-        if status is not None:
-            handle.settle(status)
+        _settle(handle, state, gone=gone)
         if raised:
             # An exception in flight has no result or error text of ours to carry these.
             for warning in handle.warnings:
                 print(f"warning: {warning}", file=sys.stderr)
 
 
-def _settled_status(state: AskStreamState) -> Status | None:
-    """The record status from what cleanup did; None leaves the record as it
-    was, for a stream that ended before any frame named the thread."""
-    if state.deleted:
-        return "deleted"
-    if state.kept:
-        return "kept"
-    if state.backend_uuid is None:
-        return None
-    return "ended"
+def _settle(handle: ThreadHandle, state: AskStreamState, *, gone: bool) -> None:
+    """Bring the record in line with what cleanup did: kept while the thread
+    can be resumed, removed once it is deleted, gone or finished with, and
+    left as it was when no frame named the thread."""
+    if gone or state.deleted:
+        handle.forget()
+    elif state.kept:
+        handle.keep()
+    elif state.backend_uuid is not None:
+        handle.forget()
 
 
 def kept_warning(command: str) -> str:

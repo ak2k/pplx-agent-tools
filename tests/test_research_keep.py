@@ -11,6 +11,7 @@ Streams run through the real `Client.sse_post` on a fake clock.
 from __future__ import annotations
 
 import contextlib
+import errno
 import json
 from types import SimpleNamespace
 from typing import Any
@@ -18,7 +19,7 @@ from typing import Any
 import pytest
 from curl_cffi import CurlECode
 
-from pplx_agent_tools import cli_research, wire
+from pplx_agent_tools import cli_research, handles, wire
 from pplx_agent_tools.errors import EXIT_NETWORK, EXIT_PARTIAL, NetworkError
 from pplx_agent_tools.handles import ThreadStore
 from pplx_agent_tools.render import render_research_json, render_research_text
@@ -188,7 +189,7 @@ def test_the_record_is_written_at_the_first_frame_and_gains_the_token(clock: _Cl
     assert result.stream_complete and result.resume is None
     [before_delete] = seen
     assert before_delete.status == "running" and before_delete.read_write_token == TOKEN
-    assert _status() == "deleted"
+    assert _status() is None
 
 
 @pytest.mark.parametrize("end", ["deadline", "stall", "interrupt"])
@@ -210,15 +211,15 @@ def test_every_other_cut_still_terminates_and_deletes(clock: _Clock, end: str) -
         assert not any("pplx resume" in w for w in result.warnings)
     assert client.terminated == [(UUID, "CTX", "pplx_alpha")]
     assert client.deleted == [(UUID, TOKEN)]
-    assert _status() == "deleted"
+    assert _status() is None
 
 
-def test_keep_thread_on_a_completed_run_is_ended_not_resumable(clock: _Clock) -> None:
+def test_keep_thread_on_a_completed_run_leaves_no_resumable_record(clock: _Clock) -> None:
     client = _StreamClient([(0, _completed("whole"))], clock)
     result = research(client, "q", keep_thread=True)
     assert result.resume is None
     assert client.deleted == []
-    assert _status() == "ended"
+    assert _status() is None
     assert ThreadStore().pick_last().record is None
 
 
@@ -332,3 +333,45 @@ def test_a_first_content_cut_that_pplx_could_not_stop_names_the_resume_command(
     assert doc["resume"] == RESUME and RESUME in doc["error"]["message"]
     assert client.terminated == [] and client.deleted == []
     assert _status() == "kept"
+
+
+def test_a_finished_run_leaves_no_record_and_no_token_on_disk(clock: _Clock) -> None:
+    client = _StreamClient([(0, _completed("whole"))], clock)
+    research(client, "q")
+    assert client.deleted == [(UUID, TOKEN)]
+    directory = ThreadStore().directory
+    assert list(directory.iterdir()) == []
+
+
+def test_a_settle_after_writes_start_failing_still_removes_the_record(
+    clock: _Clock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real = handles.atomic_write_0600
+    calls = {"n": 0}
+
+    def fails_after_first(dest: Any, content: str) -> None:
+        calls["n"] += 1
+        if calls["n"] > 1:
+            raise OSError(errno.ENOSPC, "No space left on device")
+        real(dest, content)
+
+    monkeypatch.setattr(handles, "atomic_write_0600", fails_after_first)
+    result = research(_StreamClient([(0, _completed("whole"))], clock), "q")
+    monkeypatch.setattr(handles, "_alive", lambda pid: False)
+    assert ThreadStore().load(UUID) is None
+    assert ThreadStore().pick_last().record is None
+    assert not any("could not record" in w for w in result.warnings)
+
+
+def test_a_record_that_cannot_be_removed_is_one_warning_saying_so(
+    clock: _Clock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def cannot_remove(self: ThreadStore, backend_uuid: str) -> None:
+        raise PermissionError(errno.EACCES, "Permission denied")
+
+    monkeypatch.setattr(ThreadStore, "remove", cannot_remove)
+    result = research(_StreamClient([(0, _completed("whole"))], clock), "q")
+    assert len(result.warnings) == 1
+    assert "could not remove" in result.warnings[0]
+    assert "Permission denied" in result.warnings[0]
+    assert "could not record" not in result.warnings[0]
