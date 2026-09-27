@@ -789,6 +789,71 @@ def test_fallback_table(reason: ReconnectReason, phase: fsm.Phase) -> None:
         assert got == table[reason]
 
 
+# --- ended_by: the trigger whose fallback ended the run -----------------------------------------
+
+EXHAUSTED = live(ids=KNOWN, phase=Producing(3.0), next_conn=3, rc_consecutive=3, rc_total=3)
+PRODUCING = live(phase=Producing(100.0), ids=KNOWN)
+
+
+@pytest.mark.parametrize(
+    ("p", "before", "e", "trigger"),
+    [
+        (ASK, streaming(PRODUCING), StreamBroke(C1, 110.0, "transport", "reset"), "drop"),
+        (ASK, streaming(PRODUCING), StreamBroke(C1, 110.0, "silence", "quiet"), "silence"),
+        (ASK, streaming(PRODUCING), StreamBroke(C1, 110.0, "oversize", "big"), None),
+        (ASK, streaming(PRODUCING), StreamBroke(C1, 110.0, "cap", "cap"), None),
+        (ASK, streaming(PRODUCING), StreamEnded(C1, 110.0), "eof"),
+        (ASK, streaming(PRODUCING), FrameIn(C1, 110.0, frame("completed")), None),
+        (ASK, streaming(PRODUCING), FrameIn(C1, 110.0, frame("failed")), None),
+        (ASK, streaming(PRODUCING, last_byte_at=100.0), Tick(125.0), "silence"),
+        (ASK, streaming(PRODUCING, last_byte_at=539.0), Tick(540.0), None),
+        (
+            policy(deadline=At(3600.0)),
+            streaming(replace(PRODUCING, deadline=At(3600.0)), last_byte_at=570.0),
+            Tick(580.0),
+            "stall",
+        ),
+        (
+            policy(first_content=FirstContentWithin(90.0)),
+            streaming(last_byte_at=85.0),
+            Tick(90.0),
+            "first_content",
+        ),
+        (
+            ASK,
+            streaming(live(phase=TextComplete(0.0, 10.0)), last_byte_at=20.0),
+            Tick(25.0),
+            "settle",
+        ),
+        (
+            ASK_RC,
+            reconnecting(EXHAUSTED, "silence"),
+            OpenFailed(C2, 104.0, Transient("x")),
+            "silence",
+        ),
+        (
+            ASK_RC,
+            reconnecting(EXHAUSTED, "stall"),
+            OpenFailed(C2, 104.0, Fatal(AuthError("expired"))),
+            "stall",
+        ),
+        (ASK_RC, reconnecting(EXHAUSTED, "eof"), OpenFailed(C2, 104.0, Gone(403)), "eof"),
+        (ASK_RC, reconnecting(EXHAUSTED, "drop"), Tick(130.0), "drop"),
+        (ASK_RC, reconnecting(EXHAUSTED, "drop", open_due_at=600.0), Tick(540.0), None),
+        (ASK_RC, rc_backoff(EXHAUSTED, 536.0, "eof"), Tick(536.0), "eof"),
+        (ASK_RC, rc_backoff(EXHAUSTED, 600.0, "eof"), Tick(540.0), None),
+        (ASK, starting(), OpenFailed(C1, 1.0, Transient("reset")), None),
+        (ASK, starting(open_due_at=600.0), Tick(540.0), None),
+    ],
+)
+def test_ended_by(
+    p: Policy, before: fsm.State, e: fsm.Event, trigger: ReconnectReason | None
+) -> None:
+    s, _ = step(p, before, e)
+    assert isinstance(s, Done)
+    assert fsm.ended_by(p, before, e) == trigger
+
+
 # --- §2.6: round 5's ends after text_done, and each `by` ----------------------------------------
 
 

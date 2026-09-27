@@ -396,6 +396,17 @@ class LifecycleModel(RuleBasedStateMachine):
         if isinstance(o, Cut) and o.cause == "first_content":  # I10
             assert isinstance(before, (Streaming, Reconnecting, ReconnectBackoff))
             assert isinstance(before.live.phase, AwaitingFirst)
+        # The trigger the driver reports matches the fallback that ended the run.
+        trigger = fsm.ended_by(p, before, e)
+        if isinstance(o, Lost):
+            assert trigger == "drop"
+        if isinstance(o, EndedEarly) and o.by == "server":
+            assert trigger == "eof"
+        if isinstance(o, Cut):
+            allowed = {"deadline": {None}, "first_content": {"first_content"}}.get(
+                o.cause, {"stall", "silence", "settle"}
+            )
+            assert trigger in allowed
         live_before = (
             before.live if isinstance(before, (Streaming, Reconnecting, ReconnectBackoff)) else None
         )

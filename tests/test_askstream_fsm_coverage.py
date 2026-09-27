@@ -687,11 +687,14 @@ def _chk_t19(
     assert eff == (Close(s.conn),)
 
 
+BROKE_REASONS: dict[str, fsm.ReconnectReason] = {"transport": "drop", "silence": "silence"}
+
+
 def _chk_t20(
     p: Policy, s: fsm.State, e: fsm.Event, s2: fsm.State, eff: tuple[fsm.Effect, ...]
 ) -> None:
     assert isinstance(e, StreamBroke)
-    _chk_streamed_r({"transport": "drop", "silence": "silence"}[e.kind])(p, s, e, s2, eff)
+    _chk_streamed_r(BROKE_REASONS[e.kind])(p, s, e, s2, eff)
 
 
 def _chk_t21(

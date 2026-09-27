@@ -936,6 +936,43 @@ def step(policy: Policy, s: State, e: Event, u: float) -> Step:
             assert_never(s)
 
 
+_BROKE_TRIGGERS: dict[BrokeKind, ReconnectReason] = {"transport": "drop", "silence": "silence"}
+_TIMER_TRIGGERS: dict[DueTag, ReconnectReason] = {
+    "settle": "settle",
+    "first_content": "first_content",
+    "stall": "stall",
+    "silence": "silence",
+}
+
+
+def ended_by(policy: Policy, before: State, e: Event) -> ReconnectReason | None:
+    """For the step from `before` on `e` that reached `Done`: the reconnect
+    trigger whose fallback ended the run, or None when the run ended some
+    other way. Cleanup reads it, since a thread lost to a drop or silence is
+    worth keeping whichever guard refused the reconnect."""
+    match before:
+        case Reconnecting() | ReconnectBackoff():
+            deadline = isinstance(e, Tick) and due_class(policy, before, e.now) == "deadline"
+            return None if deadline else before.reason
+        case Streaming():
+            pass
+        case Starting() | StartBackoff() | Done():
+            return None
+        case _:
+            assert_never(before)
+    match e:
+        case StreamBroke(kind=kind):
+            return _BROKE_TRIGGERS.get(kind)
+        case StreamEnded():
+            return "eof"
+        case Tick(now):
+            return _TIMER_TRIGGERS.get(due_class(policy, before, now))
+        case Opened() | OpenFailed() | FrameIn() | HeartbeatIn():
+            return None
+        case _:
+            assert_never(e)
+
+
 # --- classification for the coverage test and the trace ------------------------------------------
 
 ConnAxis = Literal["current", "stale"]
