@@ -53,7 +53,7 @@ def last_resumable(
             f"{_reason(e)}; fix the directory, or resume by the uuid `pplx research` printed"
         ) from e
     unreadable = (
-        [f"{pick.unreadable} record files under {store.directory} could not be read"]
+        [f"{pick.unreadable} record file(s) under {store.directory} could not be read"]
         if pick.unreadable
         else []
     )
@@ -143,7 +143,7 @@ def resume(
             keep_on_raise=True,
         )
     except ThreadGoneError:
-        raise
+        raise  # nothing left to keep or resume
     except BaseException as e:
         if state.kept and not state.deleted:
             command = resume_command(backend_uuid, store.profile)

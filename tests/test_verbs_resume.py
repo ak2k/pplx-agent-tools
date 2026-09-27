@@ -345,7 +345,7 @@ def test_cli_resume_last_skips_an_undecodable_record_with_one_warning(
     rc, out, _ = _run(monkeypatch, capsys, ["--last", "-j"], client)
     assert rc == EXIT_OK and client.reconnected == [UUID]
     notes = [w for w in json.loads(out)["warnings"] if "could not be read" in w]
-    assert len(notes) == 1 and "2 record files" in notes[0]
+    assert len(notes) == 1 and "2 record file(s)" in notes[0]
 
 
 def test_cli_resume_by_uuid_with_an_undecodable_record_resumes_without_it(
