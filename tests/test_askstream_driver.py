@@ -445,7 +445,7 @@ def test_research_drop_then_reconnect_completes_and_deletes_once() -> None:
     assert run.driver.reconnect_opens == 1
     assert run.state.saw_completed
     assert cutoff_cause(run.state) is None
-    assert run.thread == "cleaned"
+    assert run.thread == "deleted"
     assert (client.terminated, client.deleted) == ([], DELETED)
 
 
@@ -563,7 +563,7 @@ def test_research_trickle_to_the_deadline_does_not_keep_the_thread() -> None:
     assert isinstance(run.driver.state, Done)
     assert run.driver.state.outcome == Cut("deadline", 100.0, 0)
     assert cutoff_cause(run.state) == "deadline"
-    assert run.thread == "cleaned"
+    assert run.thread == "deleted"
     assert (client.terminated, client.deleted) == (STOPPED, DELETED)
 
 

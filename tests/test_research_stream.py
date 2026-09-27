@@ -87,7 +87,7 @@ def test_replay_answers_with_the_terminal_text(stem: str, legacy: bool) -> None:
     assert run.state.saw_completed
     assert run.state.cutoff is None
     assert run.warnings == []
-    assert run.thread == "cleaned"
+    assert run.thread == "deleted"
     assert (client.terminated, client.deleted) == ([], DELETED)
 
 
@@ -128,7 +128,7 @@ def test_a_deadline_cut_before_the_terminal_frame_answers_from_the_projections()
     assert cutoff.since_progress == run.driver.since_progress
     assert cutoff_cause(run.state) == "deadline"
     assert not run.state.saw_completed
-    assert run.thread == "cleaned"
+    assert run.thread == "deleted"
     assert (client.terminated, client.deleted) == (STOPPED, DELETED)
 
 
@@ -172,7 +172,7 @@ def test_a_stall_the_reconnects_cannot_recover_is_a_stall_cut() -> None:
     assert str(cutoff) == f"SSE stream on {ENDPOINT} stalled: no new content for 20.0s"
     assert (cutoff_cause(run.state), cutoff_silence(run.state)) == ("stall", None)
     assert run.driver.trigger == "stall"
-    assert run.thread == "cleaned"
+    assert run.thread == "deleted"
     assert (client.terminated, client.deleted) == (STOPPED, DELETED)
 
 
@@ -206,7 +206,7 @@ def test_ended_early_by_the_server_returns_the_partial_without_a_cutoff() -> Non
     assert run.sources
     assert run.state.cutoff is None
     assert not run.state.saw_completed
-    assert run.thread == "cleaned"
+    assert run.thread == "deleted"
     assert (client.terminated, client.deleted) == (STOPPED, DELETED)
 
 
@@ -306,7 +306,7 @@ def test_observe_sees_the_run_before_an_error_is_raised() -> None:
     with pytest.raises(SchemaError):
         run_research(client, observe=seen.append)
     assert len(seen) == 1
-    assert seen[0].thread == "cleaned"
+    assert seen[0].thread == "deleted"
 
 
 def test_on_data_sees_every_frame_payload() -> None:
@@ -348,7 +348,7 @@ def test_release_keeps_a_thread_lost_to_a_drop_or_silence(trigger: ReconnectReas
 
 def test_release_of_a_cut_terminates_then_deletes() -> None:
     client, got = _release(Done(Cut("deadline", 3600.0, 0), KNOWN))
-    assert got == ("cleaned", [])
+    assert got == ("deleted", [])
     assert client.terminated == [(UUID, CTX, MODEL)]
     assert client.deleted == [(UUID, TOKEN_RAW)]
 
@@ -361,7 +361,7 @@ def test_release_with_keep_thread_terminates_but_does_not_delete() -> None:
 
 def test_release_of_a_completed_run_only_deletes() -> None:
     client, got = _release(Done(Completed(0), KNOWN))
-    assert got == ("cleaned", [])
+    assert got == ("deleted", [])
     assert (client.terminated, client.deleted) == ([], [(UUID, TOKEN_RAW)])
 
 
@@ -378,14 +378,15 @@ def test_release_names_what_a_terminate_lacked(
 ) -> None:
     client, got = _release(Done(Cut("deadline", 3600.0, 0), ids), model=model)
     expected = f"{MAY_BE_LIVE}: no {missing} arrived, so pplx could not ask it to stop"
-    assert got == ("cleaned", [expected])
+    assert got == ("kept", [expected])
     assert client.terminated == []
+    assert client.deleted == []
 
 
 def test_release_warns_when_the_terminate_request_fails() -> None:
     client, got = _release(Done(Cut("deadline", 3600.0, 0), KNOWN), ok=False)
-    assert got == ("cleaned", [f"{MAY_BE_LIVE}: the request to stop it failed"])
-    assert client.deleted == [(UUID, TOKEN_RAW)]
+    assert got == ("kept", [f"{MAY_BE_LIVE}: the request to stop it failed"])
+    assert client.deleted == []
 
 
 def test_release_with_no_thread_sends_nothing() -> None:
