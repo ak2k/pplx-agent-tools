@@ -18,14 +18,14 @@ from __future__ import annotations
 
 import json
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from functools import partial
 from typing import Any
 
-from ..errors import PplxError, ThreadGoneError
+from ..errors import PplxError, ThreadGoneError, ThreadRecordsError
 from ..handles import ThreadHandle, ThreadRecord, ThreadStore, resume_command
 from ..wire import RECONNECT_PATH, Client, thread_ref
-from ._ask_common import AskStreamState
+from ._ask_common import AskStreamState, error_notes
 from .research import (
     _COUNCIL_MODEL,
     DEFAULT_MODE,
@@ -39,20 +39,36 @@ from .research import (
 _MODEL_MODE = {"pplx_alpha": "research", _COUNCIL_MODEL: "agentic_research"}
 
 
-def last_resumable(store: ThreadStore) -> ThreadRecord:
-    """The newest resumable record in `store`, for `--last`."""
-    pick = store.pick_last()
+def last_resumable(store: ThreadStore) -> tuple[ThreadRecord, list[str]]:
+    """The newest resumable record in `store`, for `--last`, and the notes
+    the result should carry about how it was chosen."""
+    try:
+        pick = store.pick_last()
+    except OSError as e:
+        raise ThreadRecordsError(
+            f"cannot read the research thread records under {store.directory}: "
+            f"{_reason(e)}; fix the directory, or resume by the uuid `pplx research` printed"
+        ) from e
+    unreadable = (
+        [f"{pick.unreadable} record files under {store.directory} could not be read"]
+        if pick.unreadable
+        else []
+    )
     if pick.record is not None:
-        return pick.record
+        return pick.record, unreadable
     live = (
-        f"; {pick.live} newer run(s) are still being read by a live pplx process"
+        [f"{pick.live} newer run(s) are still being read by a live pplx process"]
         if pick.live
-        else ""
+        else []
     )
     raise PplxError(
         f"no resumable research thread recorded for profile {store.profile!r} in the "
-        f"last 25 h{live}"
+        f"last 25 h{error_notes(live + unreadable)}"
     )
+
+
+def _reason(e: Exception) -> str:
+    return e.strerror if isinstance(e, OSError) and e.strerror else str(e) or type(e).__name__
 
 
 def resume(
@@ -65,6 +81,7 @@ def resume(
     stall_seconds: float | None = None,
     progress: bool = False,
     new_consumer: Callable[[], SnapshotReport] = SnapshotReport,
+    notes: Sequence[str] = (),
 ) -> ResearchResult:
     """Reconnect to `backend_uuid` and return its report as `research` would.
 
@@ -77,8 +94,18 @@ def resume(
     research, an exception (Ctrl-C included) keeps it too, since the thread
     is the only copy of a report already paid for, and prints this command on
     stderr. `new_consumer` builds the consumer the frames are read into.
+    `notes` lead the result's warnings.
     """
-    record = store.load(backend_uuid)
+    notes = list(notes)
+    unread = False
+    try:
+        record = store.load(backend_uuid)
+    except (OSError, ValueError) as e:
+        record, unread = None, True
+        notes.append(
+            f"the record of this thread under {store.directory} could not be read "
+            f"({_reason(e)}); resuming without it"
+        )
     report = new_consumer()
     state = AskStreamState(read_write_token=record.read_write_token if record else None)
     handle = ThreadHandle(store, record=record)
@@ -114,9 +141,13 @@ def resume(
         raise
     kept = state.kept and not state.deleted
     if not kept and not keep_thread and state.backend_uuid and not state.read_write_token:
+        why = (
+            "its record could not be read and the stream sent no read_write_token"
+            if unread
+            else "no read_write_token was recorded for it or sent on the stream"
+        )
         state.cleanup_warnings.append(
-            "the thread was not deleted: no read_write_token was recorded for it or sent "
-            "on the stream; it expires about 24 h after it started"
+            f"the thread was not deleted: {why}; it expires about 24 h after it started"
         )
     model = record.model if record else None
     mode = (record.mode if record else None) or _MODEL_MODE.get(
@@ -133,6 +164,7 @@ def resume(
         requested_model=None if model == _COUNCIL_MODEL else model,
         timeout=timeout,
         resume=resume_command(backend_uuid, store.profile) if kept else None,
+        notes=notes,
     )
 
 

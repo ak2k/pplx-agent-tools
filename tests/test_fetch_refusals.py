@@ -412,6 +412,7 @@ EXPECTED_EXIT = {
     "BlockedUrlError": 1,
     "TargetHttpError": 1,
     "ThreadGoneError": 1,
+    "ThreadRecordsError": 1,
 }
 
 

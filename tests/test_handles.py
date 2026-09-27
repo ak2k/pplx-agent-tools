@@ -259,3 +259,44 @@ def test_no_token_bearing_field_shows_in_a_repr() -> None:
     state = AskStreamState(backend_uuid=UUID, read_write_token=TOKEN)
     assert TOKEN not in repr(record) and TOKEN not in repr(state)
     assert UUID in repr(record)
+
+
+@pytest.mark.parametrize(
+    "junk", [b"\xff\xfe\x00 not utf-8", b"\xff not utf-8", b"{not json"], ids=["bom", "raw", "json"]
+)
+def test_an_undecodable_record_file_is_skipped_counted_and_never_breaks_a_save(
+    state_home: Path, junk: bytes
+) -> None:
+    store = ThreadStore()
+    store.save(ThreadRecord(UUID, datetime.now(timezone.utc), "kept"))
+    (store.directory / ("f" * 32 + ".json")).write_bytes(junk)
+    pick = store.pick_last()
+    assert pick.record is not None and pick.record.backend_uuid == UUID
+    assert pick.unreadable == 1
+    handle = ThreadHandle(store, prompt="q")
+    handle.observe(_uuid(7), None)
+    assert handle.warnings == []
+    assert store.load(_uuid(7)) is not None
+
+
+def test_a_record_that_is_not_one_raises_on_load(state_home: Path) -> None:
+    store = ThreadStore()
+    store.save(ThreadRecord(UUID, datetime.now(timezone.utc), "kept"))
+    store._path(UUID).write_bytes(b"\xff\xfe corrupt")
+    with pytest.raises(ValueError):
+        store.load(UUID)
+    assert store.load(_uuid(8)) is None
+
+
+def test_an_unlistable_directory_raises_rather_than_reading_as_empty(state_home: Path) -> None:
+    store = ThreadStore()
+    store.save(ThreadRecord(UUID, datetime.now(timezone.utc), "kept"))
+    store.directory.chmod(0)
+    try:
+        with pytest.raises(PermissionError):
+            store.pick_last()
+        with pytest.raises(PermissionError):
+            store.load(UUID)
+        store.prune(datetime.now(timezone.utc))
+    finally:
+        store.directory.chmod(0o700)

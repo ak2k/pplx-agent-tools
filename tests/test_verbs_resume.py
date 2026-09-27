@@ -330,6 +330,67 @@ def test_cli_resume_last_with_nothing_to_resume_is_a_clear_error(
     assert "no resumable research thread" in err
 
 
+def test_cli_resume_last_skips_an_undecodable_record_with_one_warning(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _save()
+    store = ThreadStore()
+    for name in ("e" * 32, "f" * 32):
+        (store.directory / f"{name}.json").write_bytes(b"\xff\xfe\x00 not utf-8")
+    client = _Reconnect([_completed(WEATHER)])
+    rc, out, _ = _run(monkeypatch, capsys, ["--last", "-j"], client)
+    assert rc == EXIT_OK and client.reconnected == [UUID]
+    notes = [w for w in json.loads(out)["warnings"] if "could not be read" in w]
+    assert len(notes) == 1 and "2 record files" in notes[0]
+
+
+def test_cli_resume_by_uuid_with_an_undecodable_record_resumes_without_it(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _save()
+    ThreadStore()._path(UUID).write_bytes(b"\xff\xfe corrupt")
+    client = _Reconnect([_completed(WEATHER)])
+    rc, out, _ = _run(monkeypatch, capsys, [UUID, "-j"], client)
+    assert rc == EXIT_OK and client.reconnected == [UUID]
+    assert client.deleted == [(UUID, TOKEN)]
+    assert any("record of this thread" in w for w in json.loads(out)["warnings"])
+    assert _status() is None
+
+
+def test_cli_resume_last_with_an_unreadable_state_dir_says_so_and_not_re_run(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _save()
+    directory = ThreadStore().directory
+    directory.chmod(0)
+    try:
+        client = _Reconnect([_completed(WEATHER)])
+        rc, out, _ = _run(monkeypatch, capsys, ["--last", "-j"], client)
+    finally:
+        directory.chmod(0o700)
+    assert rc == EXIT_GENERIC and client.reconnected == []
+    error = json.loads(out)["error"]
+    assert error["type"] == "ThreadRecordsError"
+    assert str(directory) in error["message"] and "Permission denied" in error["message"]
+    assert "no resumable" not in error["message"] and "re-run" not in error["message"]
+
+
+def test_resume_by_uuid_with_an_unreadable_state_dir_never_says_no_token_was_recorded(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _save()
+    directory = ThreadStore().directory
+    frame = {k: v for k, v in _completed(WEATHER).items() if k != "read_write_token"}
+    directory.chmod(0)
+    try:
+        result = resume(_Reconnect([frame]), UUID, store=ThreadStore())
+    finally:
+        directory.chmod(0o700)
+    assert any("could not be read" in w and "Permission denied" in w for w in result.warnings)
+    assert not any("no read_write_token was recorded" in w for w in result.warnings)
+    assert any("not deleted" in w for w in result.warnings)
+
+
 def test_cli_resume_gone_json_is_exit_1(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

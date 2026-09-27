@@ -73,10 +73,12 @@ def _opt_str(value: object) -> str | None:
     return value if isinstance(value, str) else None
 
 
-def _parse(text: str) -> ThreadRecord | None:
-    """A record file's text → the record, or None when it is not one."""
+def _parse(content: bytes) -> ThreadRecord | None:
+    """A record file's bytes → the record, or None when it is not one. Bytes
+    that are not UTF-8 are one more way not to be a record: `json.loads`
+    raises UnicodeDecodeError, a ValueError, for them."""
     try:
-        raw: object = json.loads(text)
+        raw: object = json.loads(content)
     except ValueError:
         return None
     if not isinstance(raw, dict):
@@ -150,12 +152,13 @@ def resume_command(backend_uuid: str, profile: str | None) -> str:
 
 @dataclass(frozen=True)
 class LastPick:
-    """What `--last` found: the newest resumable record, if any, and how many
+    """What `--last` found: the newest resumable record, if any; how many
     newer `running` records it passed over because a live process is still
-    reading them."""
+    reading them; and how many files were not readable records."""
 
     record: ThreadRecord | None
     live: int
+    unreadable: int = 0
 
 
 class ThreadStore:
@@ -186,30 +189,51 @@ class ThreadStore:
         self._path(backend_uuid).unlink(missing_ok=True)
 
     def load(self, backend_uuid: str) -> ThreadRecord | None:
+        """The record of `backend_uuid`, or None when there is none. Raises
+        OSError when it cannot be read and ValueError when the file there is
+        not its record."""
         try:
-            text = self._path(backend_uuid).read_text(encoding="utf-8")
-        except OSError:
+            content = self._path(backend_uuid).read_bytes()
+        except FileNotFoundError:
             return None
-        record = _parse(text)
-        return record if record is not None and record.backend_uuid == backend_uuid else None
+        record = _parse(content)
+        if record is None or record.backend_uuid != backend_uuid:
+            raise ValueError("not a thread record")
+        return record
 
     def records(self, *, now: datetime | None = None) -> list[ThreadRecord]:
-        """Every readable record younger than MAX_AGE, newest first."""
-        cutoff = (now or _now()) - MAX_AGE
+        """Every readable record younger than MAX_AGE, newest first. Raises
+        OSError when the directory cannot be listed."""
+        return self._scan(now or _now())[0]
+
+    def _scan(self, now: datetime) -> tuple[list[ThreadRecord], int]:
+        """`records`, and how many files were not readable records."""
+        cutoff = now - MAX_AGE
+        try:
+            # Not `glob`, which reads an unlistable directory as empty.
+            paths = [p for p in self.directory.iterdir() if p.suffix == ".json"]
+        except FileNotFoundError:
+            return [], 0
         found: list[ThreadRecord] = []
-        with contextlib.suppress(OSError):
-            for path in self.directory.glob("*.json"):
-                try:
-                    record = _parse(path.read_text(encoding="utf-8"))
-                except OSError:
-                    continue
-                if record is not None and record.started >= cutoff:
-                    found.append(record)
-        return sorted(found, key=lambda r: r.started, reverse=True)
+        unreadable = 0
+        for path in paths:
+            try:
+                record = _parse(path.read_bytes())
+            except FileNotFoundError:
+                continue  # removed since the listing
+            except OSError:
+                record = None
+            if record is None:
+                unreadable += 1
+            elif record.started >= cutoff:
+                found.append(record)
+        return sorted(found, key=lambda r: r.started, reverse=True), unreadable
 
     def pick_last(self, *, now: datetime | None = None) -> LastPick:
+        """Raises OSError when the directory cannot be listed."""
         live = 0
-        for record in self.records(now=now):
+        records, unreadable = self._scan(now or _now())
+        for record in records:
             pid = record.pid
             if (
                 record.status == "running"
@@ -219,8 +243,8 @@ class ThreadStore:
             ):
                 live += 1
                 continue
-            return LastPick(record, live)
-        return LastPick(None, live)
+            return LastPick(record, live, unreadable)
+        return LastPick(None, live, unreadable)
 
     def prune(self, now: datetime) -> None:
         """Remove records, and temp files a killed writer left, older than
@@ -233,7 +257,7 @@ class ThreadStore:
         for path in entries:
             if path.suffix == ".json":
                 try:
-                    record = _parse(path.read_text(encoding="utf-8"))
+                    record = _parse(path.read_bytes())
                 except OSError:
                     continue
                 started = record.started if record is not None else _mtime(path)

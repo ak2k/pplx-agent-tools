@@ -17,7 +17,9 @@ from .cli_types import PplxArgumentParser, duration, thread_id
 from .handles import ThreadStore
 from .render import render_resume_json, render_resume_text
 from .verbs._ask_common import DEFAULT_STALL_SECONDS
+from .verbs.research import ResearchResult
 from .verbs.resume import last_resumable, resume
+from .wire import Client
 
 
 def build_parser() -> PplxArgumentParser:
@@ -94,23 +96,33 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     store = ThreadStore(args.profile)
 
-    return run_verb(
-        "resume",
-        args,
-        requires_auth=True,
-        run=lambda client: resume(
+    def run(client: Client) -> ResearchResult:
+        uuid, notes = (args.uuid, []) if args.uuid else _last(store)
+        return resume(
             client,
-            args.uuid or last_resumable(store).backend_uuid,
+            uuid,
             store=store,
             keep_thread=keep_thread,
             timeout=timeout,
             stall_seconds=stall_seconds,
             progress=progress,
-        ),
+            notes=notes,
+        )
+
+    return run_verb(
+        "resume",
+        args,
+        requires_auth=True,
+        run=run,
         render_text=render_resume_text,
         render_json=render_resume_json,
         finalize=_finalize,
     )
+
+
+def _last(store: ThreadStore) -> tuple[str, list[str]]:
+    record, notes = last_resumable(store)
+    return record.backend_uuid, notes
 
 
 if __name__ == "__main__":

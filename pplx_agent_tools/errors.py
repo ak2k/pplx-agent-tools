@@ -121,6 +121,13 @@ class ThreadGoneError(PplxError):
     exit_code = EXIT_GENERIC
 
 
+class ThreadRecordsError(PplxError):
+    """The local records of research threads could not be read, so `--last`
+    cannot tell whether one is resumable. Fix the directory, or resume by
+    uuid; a re-run would spend a unit on a run that may be recorded. Exit 1.
+    """
+
+
 class SchemaError(PplxError):
     """Required field missing or unparseable response.
 

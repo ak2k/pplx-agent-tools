@@ -379,6 +379,7 @@ def finish_report(
     requested_model: str | None,
     timeout: float | None,
     resume: str | None,
+    notes: Sequence[str] = (),
 ) -> ResearchResult:
     """The result of a stream `read_report` drove into `report`, or the error
     for one that yielded nothing usable.
@@ -386,10 +387,11 @@ def finish_report(
     `requested_model` is judged against the model the frames named (None skips
     the downgrade check). `resume`, set when the thread was kept, reaches the
     result's warnings and `resume` field, or the error's text and `resume`
-    attribute, so an agent reading either document finds it.
+    attribute, so an agent reading either document finds it. `notes` lead
+    the warnings, or end the error's text, like those.
     """
-    kept = [kept_warning(resume)] if resume else []
-    notes = kept + state.cleanup_warnings + handle.warnings
+    lead = [*notes, kept_warning(resume)] if resume else list(notes)
+    error_tail = lead + state.cleanup_warnings + handle.warnings
     try:
         if state.failed:
             raise SchemaError(
@@ -402,13 +404,13 @@ def finish_report(
             if report.last_raw is not None:
                 # Text arrived but no frame ever parsed — the decode error is the
                 # honest diagnosis, so re-raise it rather than reporting no content.
-                _raise_undecodable(report.last_raw, notes)
+                _raise_undecodable(report.last_raw, error_tail)
             raise no_content_error(
                 label=label,
                 endpoint=endpoint,
                 timeout=timeout,
                 cutoff=state.cutoff,
-                warnings=notes,
+                warnings=error_tail,
             )
 
         if not state.saw_completed and not report.answer and not report.sources:
@@ -421,7 +423,7 @@ def finish_report(
                 endpoint=endpoint,
                 timeout=timeout,
                 cutoff=state.cutoff,
-                warnings=_clarifying_warnings(report.questions, no_answer=True) + notes,
+                warnings=_clarifying_warnings(report.questions, no_answer=True) + error_tail,
             )
     except PplxError as e:
         e.resume = resume
@@ -443,7 +445,7 @@ def finish_report(
         silent_for=cutoff_silence(state),
         content_shortfall=content_shortfall,
         warnings=cutoff_warnings(state)
-        + kept
+        + lead
         + warnings
         + state.cleanup_warnings
         + handle.warnings,
