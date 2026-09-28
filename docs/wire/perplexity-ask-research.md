@@ -22,8 +22,9 @@ behavior:
 forever unless `params.compare_model_preferences` is set. The web always sends
 it: its picker's list of 2–3 models, which starts empty on each page load, is
 filled from `GET /rest/models/config/v2` `.agentic_research_compare_models` when
-Model Council is selected, and is never persisted (web bundle read 2026-09-28).
-With a trio set it completes in ~80s and returns a normal `FINAL` block
+Model Council is selected; no code that persists it turned up in the 71 of ~1089
+bundle chunks read on 2026-09-28. With a trio set it completes in ~80s (2026-06-23)
+to ~2 min (2026-09-28) and returns a normal `FINAL` block
 (`content.answer` JSON-wrapped like Deep Research, so the same decoder works).
 `pplx research --mode council` therefore sends `_DEFAULT_COUNCIL_MODELS`
 (`verbs/research.py`) unless `--council-models` overrides it.

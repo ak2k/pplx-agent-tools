@@ -37,7 +37,7 @@ def build_parser() -> PplxArgumentParser:
         help=(
             f"research depth (default: {DEFAULT_MODE} = Perplexity Deep Research). "
             "'council' (aka 'agentic_research') = Model Council: 3 frontier models "
-            "cross-checked (~80s; pick them with --council-models, else a default "
+            "cross-checked (~1-2 min; pick them with --council-models, else a default "
             "trio is sent). An unknown value is passed through as a raw model_preference."
         ),
     )
