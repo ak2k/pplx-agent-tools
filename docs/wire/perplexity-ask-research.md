@@ -19,12 +19,14 @@ behavior:
 | Computer / ASI | `pplx_asi` | echoes mode `ASI`; separate runtime (needs `/rest/realtime/v2/computer/session`) | `copilot` |
 
 **Model Council gotcha (verified 2026-06-23):** `pplx_agentic_research` STALLS
-forever unless `params.compare_model_preferences` is set (the web always sends the
-3-model trio). With the trio it completes in ~80s and returns a normal `FINAL`
-block (`content.answer` JSON-wrapped like Deep Research, so the same decoder
-works). `pplx research --mode council` therefore auto-sends a default trio
-(`gpt55_thinking, claude48opusthinking, gemini31pro_high`) unless `--council-models`
-overrides it.
+forever unless `params.compare_model_preferences` is set. The web always sends
+it: its picker's list of 2–3 models, which starts empty on each page load, is
+filled from `GET /rest/models/config/v2` `.agentic_research_compare_models` when
+Model Council is selected, and is never persisted (web bundle read 2026-09-28).
+With a trio set it completes in ~80s and returns a normal `FINAL` block
+(`content.answer` JSON-wrapped like Deep Research, so the same decoder works).
+`pplx research --mode council` therefore sends `_DEFAULT_COUNCIL_MODELS`
+(`verbs/research.py`) unless `--council-models` overrides it.
 
 So `pplx research` keeps `params.mode = "copilot"` (coarse; the server derives the
 real mode from the model) and maps its user-facing `--mode` to the driving model
