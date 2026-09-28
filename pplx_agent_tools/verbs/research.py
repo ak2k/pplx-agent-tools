@@ -90,8 +90,8 @@ _MODE_MODEL = {
 # id from each of three vendors in the `pplx models` picker. Picker ids rotate,
 # so an id that leaves the picker needs replacing here. Verified 2026-06-23:
 # council STALLS forever unless `compare_model_preferences` is set (the web
-# always sends it); with the trio it completes in ~80s and returns a FINAL block
-# in the usual shape.
+# always sends it). Verified 2026-09-28: all three ids are served, and a run
+# returns a FINAL block in the usual shape in ~2 min.
 _DEFAULT_COUNCIL_MODELS = ["gpt6_sol_thinking", "claude55opusthinking", "grok47thinking"]
 
 # The web client's list. A shorter one does not shrink the report's
