@@ -86,12 +86,13 @@ _MODE_MODEL = {
     "council": _COUNCIL_MODEL,  # friendly alias
 }
 
-# Default Model Council trio (mirrors /rest/models/config
-# `agentic_research_compare_models`; can drift across builds — override with
-# --council-models). Verified 2026-06-23: council STALLS forever unless
-# `compare_model_preferences` is set (the web always sends it); with the trio it
-# completes in ~80s and returns a FINAL block in the usual shape.
-_DEFAULT_COUNCIL_MODELS = ["gpt55_thinking", "claude48opusthinking", "gemini31pro_high"]
+# Default Model Council trio, sent when --council-models is omitted: a thinking
+# id from each of three vendors in the `pplx models` picker. Picker ids rotate,
+# so an id that leaves the picker needs replacing here. Verified 2026-06-23:
+# council STALLS forever unless `compare_model_preferences` is set (the web
+# always sends it); with the trio it completes in ~80s and returns a FINAL block
+# in the usual shape.
+_DEFAULT_COUNCIL_MODELS = ["gpt6_sol_thinking", "claude55opusthinking", "grok47thinking"]
 
 # The web client's list. A shorter one does not shrink the report's
 # whole-string replaces, it only moves them into workflow_block
@@ -573,7 +574,7 @@ def _build_research_body(
     `_MODE_MODEL`. `params.mode` stays "copilot" (coarse; the server derives the
     real mode from the model). `is_incognito` is True so the thread stays out of
     history. `council_models` (Model Council only) picks the cross-checked trio
-    via `compare_model_preferences`; omitted → Perplexity's default trio."""
+    via `compare_model_preferences`; omitted → the param is not sent."""
     params = base_ask_params(query, model_preference=model_preference)
     params["send_back_text_in_streaming_api"] = False
     params["supported_block_use_cases"] = list(_BLOCK_USE_CASES)

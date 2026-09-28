@@ -456,7 +456,7 @@ def test_research_council_auto_sends_default_trio() -> None:
     research(_Cap(_complete_events()), "q", mode="council")
     assert captured["mp"] == "pplx_agentic_research"
     # council STALLS without compare_model_preferences, so the verb defaults the trio.
-    assert captured["compare"] == ["gpt55_thinking", "claude48opusthinking", "gemini31pro_high"]
+    assert captured["compare"] == ["gpt6_sol_thinking", "claude55opusthinking", "grok47thinking"]
 
 
 def test_research_council_explicit_models_override_default() -> None:
