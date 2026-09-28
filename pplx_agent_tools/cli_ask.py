@@ -37,8 +37,8 @@ def build_parser() -> PplxArgumentParser:
         default=None,
         help=(
             f"model_preference (default: {DEFAULT_MODEL} = 'Best', or $PPLX_ASK_MODEL "
-            "/ $PPLX_MODEL). Pass a model id from `pplx models` — incl. thinking "
-            "variants like 'claude48opusthinking' (Max). An invalid model fails fast."
+            "/ $PPLX_MODEL). Pass a model id from `pplx models`; its +thinking ids "
+            "enable reasoning. An invalid model fails fast."
         ),
     )
     parser.add_argument("-j", "--json", action="store_true", help="output JSON")

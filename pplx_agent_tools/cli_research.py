@@ -17,7 +17,7 @@ from .cli_types import PplxArgumentParser, duration
 from .errors import EXIT_OK, EXIT_PARTIAL
 from .render import render_research_json, render_research_text
 from .verbs._ask_common import DEFAULT_STALL_SECONDS
-from .verbs.research import DEFAULT_MODE, ResearchResult, research
+from .verbs.research import _DEFAULT_COUNCIL_MODELS, DEFAULT_MODE, ResearchResult, research
 
 # A hard cap, not the expected duration: a focused question finishes in
 # ~90-120s but a broad one can run past 30 minutes, and a hung backend is
@@ -37,7 +37,7 @@ def build_parser() -> PplxArgumentParser:
         help=(
             f"research depth (default: {DEFAULT_MODE} = Perplexity Deep Research). "
             "'council' (aka 'agentic_research') = Model Council: 3 frontier models "
-            "cross-checked (~80s; pick them with --council-models, else a default "
+            "cross-checked (~1-2 min; pick them with --council-models, else a default "
             "trio is sent). An unknown value is passed through as a raw model_preference."
         ),
     )
@@ -46,8 +46,8 @@ def build_parser() -> PplxArgumentParser:
         default=None,
         help=(
             "override the model_preference the --mode maps to (power users; a model "
-            "incompatible with research fails fast). research accepts pplx_alpha / "
-            "o4mini — see `pplx models`."
+            "incompatible with research fails fast). research accepts the ids "
+            "`pplx models` tags [research]."
         ),
     )
     parser.add_argument(
@@ -55,9 +55,9 @@ def build_parser() -> PplxArgumentParser:
         default=None,
         metavar="A,B,C",
         help=(
-            "Model Council only (--mode council): comma-separated model ids to "
-            "cross-check (e.g. gpt55_thinking,claude48opusthinking,gemini31pro_high). "
-            "Omitted → Perplexity's default trio."
+            "Model Council only (--mode council): comma-separated model ids from "
+            "`pplx models` to cross-check. Omitted → "
+            f"{','.join(_DEFAULT_COUNCIL_MODELS)}."
         ),
     )
     parser.add_argument("-j", "--json", action="store_true", help="output JSON")

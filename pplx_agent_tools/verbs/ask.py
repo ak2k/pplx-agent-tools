@@ -8,8 +8,8 @@ consumes. Unlike fetch, ask reads on to the terminal COMPLETED frame, the only
 one whose web_results list is in the order the answer's [n] citations index.
 
 Model-selectable (`--model`): the answer-producing verb is where picking a
-specific model (e.g. `claude48opusthinking`, a Max thinking variant) makes sense.
-Default `turbo` ("Best — adapts to each query"). See `pplx models` for valid ids.
+specific model (such as a thinking variant) makes sense. Default `turbo`
+("Best — adapts to each query"). See `pplx models` for valid ids.
 
 Session-creating but incognito (no history pollution) + best-effort cleanup, like
 `research`.
