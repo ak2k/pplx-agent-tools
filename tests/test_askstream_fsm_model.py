@@ -207,6 +207,7 @@ class LifecycleModel(RuleBasedStateMachine):
         self.went_live = False
         self.late = False
         self.last_progress = t0
+        self.live_at = t0
         self.saw_429 = False
         self.reopened_at: float | None = None
         self.reopen_progressed = False
@@ -417,6 +418,8 @@ class LifecycleModel(RuleBasedStateMachine):
             assert e.now >= lp + p.stall.s
         if current and isinstance(e, OpenFailed) and isinstance(e.f, RateLimited):
             self.saw_429 = True
+        if current and isinstance(e, Opened) and isinstance(before, Starting):
+            self.live_at = e.now
         cut = s2.outcome if isinstance(s2, Done) else None
         # With the stall check off only silence cuts, and bytes without progress defer it.
         stall_on = isinstance(p.stall, StallAfter)
@@ -425,7 +428,10 @@ class LifecycleModel(RuleBasedStateMachine):
             # A 429 on a reconnect may wait its retry-after, capped, instead of the backoff.
             wait = max(p.backoff_cap_s, RATE_LIMIT_CAP_S) if self.saw_429 else p.backoff_cap_s
             assert isinstance(p.stall, StallAfter)
-            bound = self.last_progress + p.stall.s + k * (wait + p.open_s + p.grace_s)
+            # The start phase arms no stall timer, so a window that lapses
+            # before the first open is enforced at the first Tick after it.
+            start = max(self.last_progress + p.stall.s, self.live_at)
+            bound = start + k * (wait + p.open_s + p.grace_s)
             assert self.now <= bound + 1e-6
 
         if isinstance(s2, Done):
