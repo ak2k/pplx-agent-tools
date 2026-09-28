@@ -41,8 +41,8 @@ R = TypeVar("R")
 
 def resolve_model(arg: str | None, env_vars: Sequence[str], default: str) -> str:
     """Resolve a model preference: explicit --model flag → env vars (in order) →
-    default. Lets a user set e.g. $PPLX_ASK_MODEL=claude48opusthinking once
-    instead of passing --model every call, while the flag still wins per-call."""
+    default. Lets a user set $PPLX_ASK_MODEL once instead of passing --model
+    every call, while the flag still wins per-call."""
     if arg:
         return arg
     for ev in env_vars:

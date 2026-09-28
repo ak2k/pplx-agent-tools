@@ -46,8 +46,8 @@ def build_parser() -> PplxArgumentParser:
         default=None,
         help=(
             "override the model_preference the --mode maps to (power users; a model "
-            "incompatible with research fails fast). research accepts pplx_alpha / "
-            "o4mini — see `pplx models`."
+            "incompatible with research fails fast). research accepts the ids "
+            "`pplx models` tags [research]."
         ),
     )
     parser.add_argument(
