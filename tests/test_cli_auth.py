@@ -70,9 +70,6 @@ def _write_jar(path: Path, cookies: dict[str, str], *, mode: int = 0o600) -> Non
 def _xdg(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Point cookie storage at a tmp dir for every test."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    monkeypatch.delenv("PPLX_PROFILE", raising=False)
-    monkeypatch.delenv("PPLX_COOKIES_PATH", raising=False)
-    monkeypatch.delenv("PPLX_COOKIES", raising=False)
 
 
 # ---------- main() routing ----------

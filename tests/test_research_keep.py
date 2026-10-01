@@ -66,7 +66,6 @@ def clock(monkeypatch: pytest.MonkeyPatch) -> _Clock:
 def state_home(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
     home = tmp_path / "state"
     monkeypatch.setenv("XDG_STATE_HOME", str(home))
-    monkeypatch.delenv("PPLX_PROFILE", raising=False)
     return home
 
 

@@ -625,7 +625,6 @@ def test_research_names_the_resume_command_on_the_error_of_a_kept_rejected_run(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
-    monkeypatch.delenv("PPLX_PROFILE", raising=False)
     monkeypatch.setattr(_research_stream, "time", FakeTime())
     drop = _auth_refused_before_first_content("drop")
     client = _Posting(drop.clock, initials=drop.initials, reconnects=drop.reconnects)
@@ -644,7 +643,6 @@ def test_a_partial_ended_by_an_auth_refused_reconnect_names_the_expiry_beside_th
     """The resume command fails the same way until the cookies are refreshed,
     and the partial has no cut_by to say why it ended."""
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
-    monkeypatch.delenv("PPLX_PROFILE", raising=False)
     monkeypatch.setattr(_research_stream, "time", FakeTime())
     initial = [*paced(P3_INITIAL), (26.0, NetworkError("reset"))]
     client = _Posting(FakeClock(), initials=[initial], reconnects=[[(0.0, AuthError("x"))]])

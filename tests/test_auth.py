@@ -29,8 +29,7 @@ from pplx_agent_tools.errors import AuthError
 # ---------- profile resolution ----------
 
 
-def test_resolve_profile_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("PPLX_PROFILE", raising=False)
+def test_resolve_profile_default() -> None:
     assert resolve_profile() == DEFAULT_PROFILE == "default"
 
 
@@ -46,7 +45,6 @@ def test_resolve_profile_explicit_overrides_env(monkeypatch: pytest.MonkeyPatch)
 
 def test_default_cookies_path_uses_xdg(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    monkeypatch.delenv("PPLX_PROFILE", raising=False)
     p = default_cookies_path()
     assert p == tmp_path / "perplexity" / "default" / "cookies.json"
 
@@ -117,13 +115,11 @@ def test_normalize_source_label_in_error() -> None:
 
 
 def test_load_cookies_inline_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("PPLX_COOKIES_PATH", raising=False)
     monkeypatch.setenv("PPLX_COOKIES", '{"foo": "bar"}')
     assert load_cookies() == {"foo": "bar"}
 
 
 def test_load_cookies_inline_invalid_json(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("PPLX_COOKIES_PATH", raising=False)
     monkeypatch.setenv("PPLX_COOKIES", "not json")
     with pytest.raises(AuthError) as ei:
         load_cookies()
@@ -143,8 +139,6 @@ def test_load_cookies_path_takes_precedence_over_inline(
 
 def test_load_cookies_xdg_default(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    monkeypatch.delenv("PPLX_COOKIES_PATH", raising=False)
-    monkeypatch.delenv("PPLX_COOKIES", raising=False)
     cookies_dir = tmp_path / "perplexity" / "default"
     cookies_dir.mkdir(parents=True)
     p = cookies_dir / "cookies.json"
@@ -157,8 +151,6 @@ def test_load_cookies_xdg_default_missing_raises(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    monkeypatch.delenv("PPLX_COOKIES_PATH", raising=False)
-    monkeypatch.delenv("PPLX_COOKIES", raising=False)
     with pytest.raises(AuthError) as ei:
         load_cookies()
     assert "pplx-auth import" in str(ei.value) or "pplx auth import" in str(ei.value)
@@ -222,7 +214,6 @@ def test_supported_browsers_includes_common() -> None:
 
 def test_load_cookies_path_nonexistent_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PPLX_COOKIES_PATH", "/no/such/path.json")
-    monkeypatch.delenv("PPLX_COOKIES", raising=False)
     with pytest.raises(AuthError) as ei:
         load_cookies()
     assert "does not exist" in str(ei.value)
@@ -238,7 +229,7 @@ def test_save_cookies_writes_with_0600_perms(tmp_path: Path) -> None:
     assert json.loads(dest.read_text()) == {"a": "1", "b": "2"}
 
 
-@pytest.mark.usefixtures("no_cookie_env")
+@pytest.mark.usefixtures("tmp_config_home")
 def test_cookie_write_path_per_profile() -> None:
     assert cookie_write_path("work", inline_refusal="x") == default_cookies_path("work")
 
@@ -268,8 +259,6 @@ def test_save_cookies_atomic_replace(tmp_path: Path) -> None:
 
 def test_save_cookies_then_load_roundtrip(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    monkeypatch.delenv("PPLX_COOKIES_PATH", raising=False)
-    monkeypatch.delenv("PPLX_COOKIES", raising=False)
     save_cookies({"session-token": "abc123", "csrf": "xyz"}, dest=default_cookies_path())
     assert load_cookies() == {"session-token": "abc123", "csrf": "xyz"}
 
@@ -303,14 +292,22 @@ def test_save_cookies_unwritable_symlink_target_fails(tmp_path: Path) -> None:
     assert json.loads(target.read_text()) == {"a": "old"}
 
 
-@pytest.mark.skipif(sys.version_info >= (3, 13), reason="resolve() stops raising on loops")
-def test_save_cookies_symlink_loop_fails(tmp_path: Path) -> None:
-    a, b = tmp_path / "a.json", tmp_path / "b.json"
+@pytest.mark.parametrize("returns_link", [False, True], ids=["real-resolve", "returns-link"])
+@pytest.mark.parametrize("in_dir", [False, True], ids=["file", "parent-dir"])
+def test_save_cookies_symlink_loop_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, returns_link: bool, in_dir: bool
+) -> None:
+    a, b = tmp_path / "a", tmp_path / "b"
     a.symlink_to(b)
     b.symlink_to(a)
-    with pytest.raises(AuthError, match="cannot write cookie file"):
-        save_cookies({"x": "1"}, dest=a)
-    assert a.is_symlink()
+    dest = a / "cookies.json" if in_dir else a
+    with monkeypatch.context() as mp, pytest.raises(AuthError) as ei:
+        if returns_link:  # what resolve() does with a loop from Python 3.13
+            mp.setattr(Path, "resolve", lambda self, strict=False: self)
+        save_cookies({"x": "1"}, dest=dest)
+    assert str(ei.value) == f"cannot write cookie file: {dest}: symlink loop"
+    assert a.is_symlink() and b.is_symlink()
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["a", "b"]
 
 
 # ---------- cookie-pair boundary (property) ----------
@@ -507,13 +504,11 @@ def test_import_from_browser_empty_says_sign_in(
 
 
 @pytest.fixture
-def no_cookie_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def tmp_config_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
-    monkeypatch.delenv("PPLX_COOKIES_PATH", raising=False)
-    monkeypatch.delenv("PPLX_COOKIES", raising=False)
 
 
-@pytest.mark.usefixtures("no_cookie_env")
+@pytest.mark.usefixtures("tmp_config_home")
 def test_import_writes_to_cookies_path_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     target = tmp_path / "custom" / "jar.json"
     monkeypatch.setenv("PPLX_COOKIES_PATH", str(target))
@@ -524,7 +519,7 @@ def test_import_writes_to_cookies_path_env(monkeypatch: pytest.MonkeyPatch, tmp_
     assert not default_cookies_path().exists()
 
 
-@pytest.mark.usefixtures("no_cookie_env")
+@pytest.mark.usefixtures("tmp_config_home")
 def test_import_refuses_when_inline_env_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PPLX_COOKIES", '{"a": "SECRET"}')
     called: list[object] = []
@@ -540,7 +535,7 @@ def test_import_refuses_when_inline_env_overrides(monkeypatch: pytest.MonkeyPatc
     assert not default_cookies_path().exists()
 
 
-@pytest.mark.usefixtures("no_cookie_env")
+@pytest.mark.usefixtures("tmp_config_home")
 @pytest.mark.parametrize(
     ("content", "mode"),
     [(None, 0o600), ("{bad", 0o600), ('{"a": "x;y"}', 0o600), ('{"a": "1"}', 0o644)],
@@ -560,7 +555,7 @@ def test_load_errors_name_env_path_source(
     assert str(p) in str(ei.value)
 
 
-@pytest.mark.usefixtures("no_cookie_env")
+@pytest.mark.usefixtures("tmp_config_home")
 @pytest.mark.parametrize(
     ("content", "mode"),
     [("{bad", 0o600), ('{"a": "x;y"}', 0o600), ('{"a": "1"}', 0o644)],
@@ -577,7 +572,7 @@ def test_load_errors_name_profile_source(content: str, mode: int) -> None:
     assert str(p) in str(ei.value)
 
 
-@pytest.mark.usefixtures("no_cookie_env")
+@pytest.mark.usefixtures("tmp_config_home")
 @pytest.mark.parametrize("inline", ["{bad", '{"a": "x;SECRET"}', "[]"])
 def test_load_errors_name_inline_source(monkeypatch: pytest.MonkeyPatch, inline: str) -> None:
     monkeypatch.setenv("PPLX_COOKIES", inline)
@@ -590,7 +585,7 @@ def test_load_errors_name_inline_source(monkeypatch: pytest.MonkeyPatch, inline:
 # ---------- save never writes what load refuses ----------
 
 
-@pytest.mark.usefixtures("no_cookie_env")
+@pytest.mark.usefixtures("tmp_config_home")
 def test_save_cookies_drops_unloadable_values_with_warning(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -604,7 +599,7 @@ def test_save_cookies_drops_unloadable_values_with_warning(
     assert "SECRET" not in err
 
 
-@pytest.mark.usefixtures("no_cookie_env")
+@pytest.mark.usefixtures("tmp_config_home")
 def test_save_cookies_all_unloadable_keeps_existing_file() -> None:
     dest = save_cookies({"session": "ok"}, dest=default_cookies_path())
     with pytest.raises(AuthError):

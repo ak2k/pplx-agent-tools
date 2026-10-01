@@ -34,6 +34,18 @@ def _private_state_home(tmp_path_factory: pytest.TempPathFactory) -> Iterator[No
         yield
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _private_cookies(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
+    """No test may read or write the developer's cookie files, whatever PPLX_*
+    they export: a test that needs a cookie source or profile sets its own, and
+    profile files default to a tmp dir."""
+    with pytest.MonkeyPatch.context() as mp:
+        for name in ("PPLX_COOKIES_PATH", "PPLX_COOKIES", "PPLX_PROFILE"):
+            mp.delenv(name, raising=False)
+        mp.setenv("XDG_CONFIG_HOME", str(tmp_path_factory.mktemp("xdg-config")))
+        yield
+
+
 def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line("markers", "slow: a benchmark row; deselect with -m 'not slow'")
 

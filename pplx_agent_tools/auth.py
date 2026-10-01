@@ -135,8 +135,9 @@ def load_cookies(profile: str | None = None) -> dict[str, str]:
 def cookie_write_path(profile: str | None, *, inline_refusal: str) -> Path:
     """The file `load_cookies` reads, so a write there is what the next load sees.
 
-    Raises AuthError with `inline_refusal` when $PPLX_COOKIES is set: a child
-    process cannot change the parent's environment, so no write would be read.
+    Raises AuthError with `inline_refusal` when $PPLX_COOKIES is set and
+    $PPLX_COOKIES_PATH is not: a child process cannot change the parent's
+    environment, so no write would be read.
     """
     source = cookie_source(profile)
     match source:
@@ -162,16 +163,21 @@ def save_cookies(cookies: dict[str, str], *, dest: Path) -> Path:
             print(f"warning: {e}", file=sys.stderr)
     if not loadable:
         raise AuthError("no loadable cookies to save; the cookie file was not changed")
+    loop = f"cannot write cookie file: {dest}: symlink loop"
     try:
         # The rename would replace a symlink itself and leave the file it points
         # to (synced or managed elsewhere) stale; write beside the target instead.
         dest = dest.resolve()
+        # From Python 3.13 resolve() returns a loop instead of raising; any other
+        # resolved path is free of links.
+        if any(p.is_symlink() for p in (dest, *dest.parents)):
+            raise AuthError(loop)
         dest.parent.mkdir(parents=True, exist_ok=True)
         atomic_write_0600(dest, json.dumps(loadable, indent=2, sort_keys=True))
     except OSError as e:
         raise AuthError(f"cannot write cookie file: {dest}: {e.strerror}") from e
     except RuntimeError as e:  # a symlink loop, before Python 3.13
-        raise AuthError(f"cannot write cookie file: {dest}: {e}") from e
+        raise AuthError(loop) from e
     return dest
 
 

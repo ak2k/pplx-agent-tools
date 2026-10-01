@@ -27,7 +27,6 @@ TOKEN = "SECRET-RW-TOKEN"
 def state_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     home = tmp_path / "state"
     monkeypatch.setenv("XDG_STATE_HOME", str(home))
-    monkeypatch.delenv("PPLX_PROFILE", raising=False)
     return home
 
 
@@ -247,7 +246,6 @@ def test_an_unwritable_state_dir_is_one_warning_and_never_raises(
 
 
 def test_resume_command_always_names_the_profile(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("PPLX_PROFILE", raising=False)
     assert handles.resume_command(UUID, None) == f"pplx resume --profile default {UUID}"
     assert handles.resume_command(UUID, "default") == f"pplx resume --profile default {UUID}"
     assert handles.resume_command(UUID, "work") == f"pplx resume --profile work {UUID}"
