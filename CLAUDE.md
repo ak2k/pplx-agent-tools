@@ -7,7 +7,7 @@ The `ak2k-skills` flake pins this repo to a specific tag (e.g.
 `github:ak2k/pplx-agent-tools/v0.1.0`); Renovate auto-opens a bump PR
 on every new GitHub release matching `vX.Y.Z`.
 
-**Release recipe** (after merging a behaviour change to `main`):
+**Release recipe** (after merging a behavior change to `main`):
 
 ```bash
 git tag -a vX.Y.Z -m "..." && git push origin vX.Y.Z
@@ -28,8 +28,8 @@ Between tags, `pplx --version` reports a dev marker like
 without anyone editing a string.
 
 **When to tag:** any user-visible change to verbs / CLI / SKILL.md / wire
-behaviour. Skip for pure-internal refactors that don't change agent or
-human consumer behaviour.
+behavior. Skip for pure-internal refactors that don't change agent or
+human consumer behavior.
 
 **SemVer:** breaking changes to verb signatures, CLI flags, or JSON output
 shapes bump the **minor** while we're pre-1.0 (everything is "unstable"
@@ -42,13 +42,15 @@ preserve all shapes bump the **patch**.
 - Lint + format check: `uv run --extra dev ruff check . && uv run --extra dev ruff format --check .`
 - Typecheck: `uv run --extra dev basedpyright pplx_agent_tools/ tests/`
 - Coverage: `uv run --extra dev pytest --cov` (gated at `fail_under = 80`)
+- Dead code: `uv run --extra dev vulture`
 
-**CI is `nix flake check`** — it builds `checks.{lint,typecheck,deadcode,tests}`:
+**CI is `nix flake check`** (`ci.yml`; CodeQL and gitleaks run as separate
+workflows). It builds `checks.{package,nix-fmt,lint,typecheck,deadcode,tests}`:
+`nix build .#default` (package), `nixfmt --check flake.nix` (nix-fmt),
 `ruff check` + `ruff format --check` (lint), `basedpyright` (typecheck), `vulture`
-(deadcode), and `pytest --cov` (tests), and **stops at the first failing check** (so
-failures surface one at a time). The per-tool commands above cover most of it, but
-`ruff check` alone misses the formatter, basedpyright, and vulture — run
-`nix flake check` to reproduce the exact gate before pushing.
+(deadcode), and `pytest --cov` (tests), and **stops at the first failing check**
+(so failures surface one at a time). The commands above skip nixfmt and the
+package build — run `nix flake check` to reproduce the exact gate before pushing.
 
 `nix flake check` builds from a snapshot of the **git** tree: untracked files are
 invisible to it, so `git add` anything new before running it or the check runs
@@ -56,50 +58,96 @@ against a tree that is missing it.
 
 `.python-version` pins uv to 3.12 because `rookiepy` publishes cp310–cp312 wheels
 only — on 3.13 uv falls back to building it from source and fails. Inside
-`nix develop` the shell's `UV_PYTHON` points at the flake's dev venv and outranks
-`.python-version`; the pin is what makes a bare `uv run` work outside that shell.
+`nix develop` the shell's `UV_PYTHON` points at the flake's dev venv and takes
+precedence over `.python-version`; the pin is what makes a bare `uv run` work outside that shell.
 
 The `[tool.pyright]` table in `pyproject.toml` still configures the type
 checker — basedpyright reads the same config keys as pyright (it's a
 fork). Don't be confused by the `pyright` table name and `basedpyright`
-binary; they're intentionally compatible.
+binary; they're intentionally compatible. The modules listed in that table's
+`strict` array (`askstream/`, `jsonval.py`, `cli_runner.py`, …) are checked in
+strict mode; `auth.py`, `grounding.py` and `handles.py` opt in with a
+`# pyright: strict` first line. Code there that decodes wire JSON takes `object` /
+`JsonValue` and reads it through the `jsonval` accessors, never `Any`, because
+strict mode does not flag `Any`.
 
 ## Layout
 
-- `pplx_agent_tools/verbs/{search,fetch,snippets}.py` — verb logic; each
-  returns a typed `*Result` dataclass.
-- `pplx_agent_tools/render.py` — single rendering registry: every verb has
-  a `render_<verb>_{text,json}` pair here. Concentrated on purpose; see
-  module docstring.
-- `pplx_agent_tools/wire.py` — HTTP/SSE `Client` (curl_cffi chrome
-  impersonation, status-code branching to typed exceptions).
-- `pplx_agent_tools/auth.py` — cookie loading + perms enforcement.
+All paths are under `pplx_agent_tools/`.
+
+- `cli.py` — the `pplx <verb>` dispatcher (`VERBS`).
+- `cli_<verb>.py` — one argparse front end per verb.
+- `cli_runner.py` — `run_verb`, which every `cli_<verb>.main` calls: it builds
+  the `Client`, renders text or JSON, maps `PplxError` to its exit code and
+  writes the JSON error envelope.
+- `verbs/<verb>.py` — verb logic; each returns a typed `*Result` dataclass
+  (`resume` returns it with the held thread).
+  `verbs/_ask_common.py` is shared by the ask-family verbs (`ask`, `research`,
+  `fetch --prompt`); `verbs/_research_stream.py` runs, salvages and cleans up a
+  research stream for `research` and `resume`.
+- `askstream/` — the diff-mode SSE decoder and run lifecycle: typed frames, an
+  RFC 6902 patch applier with work caps, the block store and projections, and the
+  lifecycle as a pure state machine with per-verb policy and cleanup. `research`
+  and `resume` run on it through `_research_stream`; `ask` and `fetch --prompt`
+  use `_ask_common.run_ask_stream`.
+- `render.py` — single rendering registry: every verb with a Result type (all
+  but `auth` and `skill-path`) has a `render_<verb>_{text,json}` pair here, and
+  JSON goes through `envelope()`. Concentrated on purpose; see module docstring.
+- `wire.py` — HTTP/SSE `Client` (curl_cffi chrome impersonation, status-code
+  branching to typed exceptions, SSE reconnect and terminate).
+- `auth.py` — cookie loading + perms enforcement.
+- `errors.py` — typed errors, each mapped to an exit code 1–5, and the
+  `EXIT_*` constants 0–6 (6, a partial result, comes from a verb's `finalize`).
+  The codes are part of the CLI contract that SKILL.md documents.
+- `netguard.py` — SSRF guard: checks every user-supplied URL that `fetch` or
+  `snippets` fetches locally, redirect targets included.
+- `handles.py` — local records of research threads, read by `pplx resume --last`.
+- `grounding.py` — checks whether an `ask` answer's figures and names appear in
+  its sources.
 
 ## Endpoint selection principle (stateless-first)
 
 **Prefer the realtime / GET endpoints; treat ask-family endpoints as the
-exception that requires the delete-thread cleanup discipline.**
+exception that requires the terminate-and-delete cleanup discipline.**
 
 Perplexity's surface splits into two classes:
 
 - **Stateless** — create nothing server-side, leave no trace in the user's
   Library. `/rest/realtime/*` (`search-web`, `search-youtube`, `query-video`)
-  and read-only `GET`s (`rate-limit/status`, `models/config`). `search-web`'s
+  and read-only `GET`s (`rate-limit/status`, `models/config`, `models/modes`). `search-web`'s
   `session_id` is a throwaway UUID per call. Plain `fetch` + `snippets` are fully
   local. **This is the default class for new verbs** — verified to create zero
   threads (before/after `GET /rest/thread/list_recent`).
 - **Ask-family / session-creating** — `/rest/sse/perplexity_ask` and anything
   scoped to an `entry_uuid`. These create a thread ("entry") in the user's
-  history. Only `fetch --prompt` uses this today.
+  history. `ask`, `research` and `fetch --prompt` use it, all building the body
+  with `_ask_common.base_ask_params`. `resume` creates nothing: it reattaches to
+  an existing research thread through `/rest/sse/perplexity_ask/reconnect/{uuid}`.
 
 Discipline for the ask-family exception:
 
 - Set `params.is_incognito: true` in the ask body. Verified: an incognito ask
   **never appears in `list_recent`**, whereas `is_incognito: false` does. This is
   strictly better than the legacy create-then-delete (no history pollution even
-  if cleanup fails). The `backend_uuid` is still deletable by UUID as
-  belt-and-suspenders, but deletion stops being load-bearing.
-- Keep `delete_thread` cleanup as the secondary guard (`keep_thread=False`).
+  if cleanup fails). Deleting the thread by UUID is a second safeguard; the
+  incognito flag alone keeps it out of the history.
+- On exit, terminate the run if it may still be live
+  (`/rest/sse/perplexity_terminate`), then delete the thread, unless
+  `--keep-thread` is passed, `$PPLX_KEEP_THREADS=1` is set, or the research case
+  below applies. `ask` and `fetch --prompt` get this from
+  `_ask_common.release_on_exit`, and `research` from `_research_stream.release`.
+  `resume` gets the terminate there and the delete from
+  `verbs/resume.HeldThread.release`, which runs only after the report is flushed
+  to stdout. A new ask-family verb must call one of these; a bare
+  `delete_thread` skips the terminate.
+- `research` keeps the thread when the run may still be going on the server: the
+  stream dropped or hit the silence timeout, or pplx stopped reading and could
+  not terminate the run with no exception in flight (after Ctrl-C it still
+  deletes). A record in `$XDG_STATE_HOME/perplexity/<profile>/threads/` is
+  written when a frame first names the thread and removed when cleanup finishes,
+  unless the run stays resumable. `pplx resume --last` picks a record left
+  `running` (client killed) or marked `kept`; a completed run kept with
+  `--keep-thread` leaves no record.
 
 Gotcha — **the stateless GETs answer 200 to an anonymous caller.** With no
 cookies (or an expired session), `rate-limit/status` returns a fully populated
@@ -121,23 +169,31 @@ stateless multi-result image/video/news search. `realtime/query-video` is
 
 ## Adding a new verb
 
-A verb lives in three files. Adding `pplx widget` means:
+Each verb has three files, plus an entry in `cli.VERBS`. Adding `pplx widget`
+means:
 
 1. **`verbs/widget.py`** — define `WidgetResult` (dataclass) and a top-level
    `widget(client: Client, ...) -> WidgetResult` function. Raise typed
    exceptions from `errors.py` (`SchemaError`, `NetworkError`, etc.) on
    failure; never return None or raise generic Exception.
 2. **`render.py`** — add `render_widget_text(result) -> str` and
-   `render_widget_json(result) -> dict[str, Any]`. The JSON branch must
-   include `"_pplx_tools_version": __version__` for agent consumers.
-3. **`cli_widget.py`** — define `build_parser() -> argparse.ArgumentParser`
-   and `main(argv: Sequence[str] | None) -> int`. `main()` builds a Client,
-   calls the verb, catches `PplxError` to print + return `exit_code(e)`,
-   then dispatches to the right `render_widget_*` based on `--json`.
+   `render_widget_json(result) -> dict[str, Any]`. The JSON function returns
+   `envelope("widget", payload, warnings=result.warnings)`. It stamps
+   `_pplx_tools_version` and `_verb`, adds `warnings` when that argument is
+   non-empty, and raises `ValueError` if the payload sets any of the three.
+3. **`cli_widget.py`** — define `build_parser() -> PplxArgumentParser` (from
+   `cli_types`, which also holds argument validators such as `positive_int`) and
+   `main(argv: Sequence[str] | None) -> int`. The parser needs `-j/--json` and
+   `--profile` as `cli_search.py` has them: `run_verb` reads both with silent
+   defaults, so a parser without them prints text and uses the default profile.
+   `main()` calls `run_verb("widget", args, requires_auth=..., run=...,
+   render_text=..., render_json=...)`. Pass `finalize` for an exit code that
+   depends on the result, such as `EXIT_PARTIAL`.
 
-Then register `("widget", cli_widget.main, "...one-line description...")`
-in `cli.VERBS` so `pplx widget` is dispatchable. Run `pplx --help` after
-to confirm the verb is listed.
+Then import `cli_widget` in `cli.py` and add
+`"widget": (cli_widget.main, "...one-line description...")` to `cli.VERBS` so
+`pplx widget` is dispatchable. Run `pplx --help` after to confirm the verb is
+listed.
 
 **Why three files:** verb logic, render, and CLI parsing have different
 change cadences and are independently testable; co-locating them in one
@@ -151,3 +207,6 @@ markers) visible in one place.
 calls `super().__init__({"x": "y"})` to satisfy CodeQL's
 missing-super-init rule. Inherit test doubles from `_TestClientBase`
 (not `Client` directly) and call `super().__init__()` in their `__init__`.
+The base also stubs `terminate` and `sse_reconnect`, but not `delete_thread`:
+a double whose run reaches cleanup with a thread id and token must override
+`delete_thread`, or cleanup sends a real DELETE.

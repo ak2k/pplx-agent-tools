@@ -1,54 +1,59 @@
 # pplx-agent-tools
 
-Shell-CLI agent toolkit for Perplexity, backed by your Pro subscription's web session cookies. Parallel to [`kagi-search`](https://github.com/Mic92/mics-skills/tree/main/skills/kagi-search) in shape and purpose.
+Shell CLI that gives agents (Claude Code, Codex, anything that shells out) Perplexity's search, answers and Research mode through your Pro subscription's web session cookies. Perplexity's public Sonar API needs its own key and bills by usage; this needs neither. Parallel to [`kagi-search`](https://github.com/Mic92/mics-skills/tree/main/skills/kagi-search) in shape and purpose.
 
-**Status**: Phase 1 in progress. Three verbs ship today (`search`, `fetch`, `snippets`) plus auth. See the [design plan](https://github.com/ak2k/nix-config/blob/main/docs/plans/pplx-agent-tools.md) for surface, architecture, phasing, and risk register.
-
-## Why
-
-Perplexity exposes its agent verbs (raw search, URL fetch + LLM extraction, batched snippet extraction) internally but not via its public Sonar API. This project gives agents — Claude Code, Codex, anything that shells out — the same primitives, backed by an existing Pro subscription's web session cookies. No per-token billing, no separate API key.
+Pre-1.0: flags and JSON shapes can change in a minor release.
 
 ## Verbs
 
-Single binary, subcommand-style (`pplx <verb>`):
+- `pplx search <query>...`: ranked web hits with snippets (`-j` adds a longer summary per hit). Several queries return one merged list.
+- `pplx ask <query>`: one synthesized answer with cited sources (Pro Search). `--model` picks the model.
+- `pplx research <query>`: a long cited report from Perplexity's Research mode. Takes minutes and spends a research-quota unit.
+- `pplx resume --last` (or `<uuid>`): gets the report of a research run whose connection dropped or whose process died. The run keeps going on the server.
+- `pplx fetch <url>`: fetches the page locally and returns its cleaned text; needs no cookies. With `--prompt`, Perplexity's model fetches the URL and answers the prompt in one call.
+- `pplx snippets <query> <url>...`: query-relevant excerpts from several URLs, ranked locally by keyword (BM25) and semantic (`fastembed`) search. Needs SQLite 3.38 or newer.
+- `pplx quota`: remaining rate limit per mode.
+- `pplx models`: available models and modes.
+- `pplx auth {check,refresh,import}`: cookie management.
+- `pplx skill-path`: path of the bundled agent skill, [SKILL.md](SKILL.md).
 
-- `pplx search <query>...` — ranked web hits via `/rest/realtime/search-web`. Native multi-query. Each hit carries `title`, `snippet`, and a longer `summary` field.
-- `pplx fetch <url>` — local fetch (`curl_cffi` chrome impersonation + `trafilatura`). With `--prompt`, routes URL+prompt through Perplexity's chat endpoint for LLM extraction in one round-trip.
-- `pplx snippets <query> <url>...` — hybrid retrieval (FTS5 BM25 + `fastembed` semantic vectors, RRF-merged) over locally-fetched URLs. Per-URL and total token budgets.
-  - Needs SQLite 3.38 or newer; an older build is refused with a clear error rather than quietly returning no semantic matches.
-- `pplx auth {check, refresh, import}` — cookie management. `import --browser <name>` lifts cookies from a local browser via `rookiepy` (Brave/Chrome/Chromium/Firefox/Safari/Edge/Arc/Vivaldi/Opera/LibreWolf/Zen).
+`ask`, `research` and `fetch --prompt` run incognito, so they never appear in your Perplexity library, and delete their thread afterward. A research run whose connection drops or whose process is killed keeps its thread (about 24 hours) so `pplx resume` can get the report.
 
-Each verb: text output by default, `-j` for JSON. Stable exit codes for agent retry semantics (2 = auth, 3 = rate limit, 4 = network, 5 = anti-bot). Single-shot CLIs; no daemon (the daemon model is a deferred Phase 2).
+Verbs print text, or JSON with `-j`; diagnostics go to stderr. Exit codes are stable so agents can choose a retry: 1 usage or other error, 2 auth, 3 rate limit, 4 network, 5 anti-bot, 6 partial result (stdout still usable). SKILL.md is the full reference for flags, JSON fields and what to do on each exit code.
 
 ## Install
 
-```bash
-# Install the CLI
-uv tool install pplx-agent-tools  # or: pipx install pplx-agent-tools
+Not on PyPI. Install a [release](https://github.com/ak2k/pplx-agent-tools/releases) from GitHub; the commands below use v0.9.1.
 
-# One-time: wire the agent skill so Claude Code (etc.) can find it
+```bash
+# Python 3.12: rookiepy ships wheels only up to Python 3.12
+uv tool install --python 3.12 git+https://github.com/ak2k/pplx-agent-tools@v0.9.1
+# or with Nix
+nix profile install github:ak2k/pplx-agent-tools/v0.9.1
+
+# Claude Code: install the skill
 mkdir -p ~/.claude/skills/pplx-agent-tools
 ln -sf "$(pplx skill-path)" ~/.claude/skills/pplx-agent-tools/SKILL.md
+# (Nix: link ~/.nix-profile/share/skills/pplx-agent-tools/SKILL.md instead,
+#  which survives upgrades)
 
-# Import cookies from your browser (only need to do once per ~30 days,
-# or until you log out of perplexity.ai)
-pplx auth import --browser firefox  # also: brave, chrome, safari, ...
-pplx auth check                     # validate the session
+# Import cookies from a browser where you are logged in to perplexity.ai
+pplx auth import --browser firefox  # also: brave, chrome, safari, arc, zen, ...
+pplx auth check
 
-# Optional: extend the session indefinitely by refreshing periodically
-# (each refresh rotates the cookie with a fresh 30-day TTL)
-pplx auth refresh                   # add to cron / launchd for hands-off
+# Optional: each refresh resets the cookie's 30-day expiry
+pplx auth refresh                   # run from cron / launchd
 ```
+
+Cookies are stored in `~/.config/perplexity/<profile>/cookies.json`. Pass `--profile` or set `$PPLX_PROFILE` to use more than one account.
 
 ## Caveats
 
-- **Unofficial**. Uses Perplexity's internal web endpoints, not the official Sonar API. Endpoints can change without notice.
-- **Not affiliated with Perplexity AI.**
-- **For your own subscription only**. Cookie pooling across users is an explicit anti-pattern.
-- **Session cookies expire**. Reimport from the browser when `pplx auth check` fails.
-- **No URL-fetch endpoint**: `pplx fetch` fetches locally (no Perplexity-backend paywall bypass / cache reuse). For LLM-extracted content, use `--prompt`.
-- **`pplx search` is web-results only.** Variant search modes (academic / images / videos / shopping) and filter knobs (country, domain include/exclude) aren't supported by the realtime/search-web endpoint this verb uses — probed 2026-05-14 and found silently ignored. If we add them later they'll route through the ask-SSE endpoint instead.
+- **Unofficial and not affiliated with Perplexity AI.** It uses internal web endpoints, not the Sonar API, and they can change without notice.
+- **For your own subscription only.** Don't pool cookies across users.
+- **Session cookies expire.** Re-import from the browser when `pplx auth check` fails.
+- **`pplx search` returns web results only:** no academic, image, video or shopping mode, and no country or domain filter.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).

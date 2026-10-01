@@ -1,9 +1,5 @@
 """Transport layer: curl_cffi chrome-impersonate session.
 
-Minimal v1 surface: enough for /api/auth/session round-trips during Step 2.
-Verb-specific methods (search, fetch, snippets) join in Step 4 once their
-endpoints are reverse-engineered.
-
 `curl_cffi` is required (not `requests`) so Cloudflare's TLS fingerprint check
 accepts us as a real Chrome client. See balakumardev/perplexity-web-wrapper.
 """
