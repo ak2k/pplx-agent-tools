@@ -292,6 +292,47 @@ def test_save_cookies_unwritable_symlink_target_fails(tmp_path: Path) -> None:
     assert json.loads(target.read_text()) == {"a": "old"}
 
 
+def test_save_cookies_dotdot_past_missing_dir(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    (tmp_path / "pplx").mkdir()
+    dest = tmp_path / "pplx" / "missing" / ".." / "cookies.json"
+    monkeypatch.setenv("PPLX_COOKIES_PATH", str(dest))
+    save_cookies({"a": "1"}, dest=dest)
+    assert load_cookies() == {"a": "1"}
+
+
+def test_save_cookies_creates_dir_of_dangling_dir_symlink(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    (tmp_path / "link").symlink_to("real")
+    dest = tmp_path / "link" / "cookies.json"
+    monkeypatch.setenv("PPLX_COOKIES_PATH", str(dest))
+    assert save_cookies({"a": "1"}, dest=dest) == tmp_path / "real" / "cookies.json"
+    assert load_cookies() == {"a": "1"}
+
+
+@pytest.mark.parametrize("existing", [False, True], ids=["no-file", "file-there"])
+def test_save_cookies_symlink_through_missing_dir_fails(tmp_path: Path, existing: bool) -> None:
+    # resolve() names tmp_path/cookies.json, which opening the link never reaches.
+    collapsed = tmp_path / "cookies.json"
+    if existing:
+        collapsed.write_text('{"a": "old"}')
+    link = tmp_path / "link.json"
+    link.symlink_to("missing/../cookies.json")
+    with pytest.raises(AuthError) as ei:
+        save_cookies({"a": "new"}, dest=link)
+    assert str(ei.value) == (
+        f"cannot write cookie file: {link}: the path does not lead to {collapsed}"
+    )
+    assert link.is_symlink()
+    assert sorted(p.name for p in tmp_path.iterdir()) == (
+        ["cookies.json", "link.json"] if existing else ["link.json"]
+    )
+    if existing:
+        assert json.loads(collapsed.read_text()) == {"a": "old"}
+
+
 @pytest.mark.parametrize("returns_link", [False, True], ids=["real-resolve", "returns-link"])
 @pytest.mark.parametrize("in_dir", [False, True], ids=["file", "parent-dir"])
 def test_save_cookies_symlink_loop_fails(

@@ -153,7 +153,9 @@ def save_cookies(cookies: dict[str, str], *, dest: Path) -> Path:
 
     Pairs the loader would refuse are dropped with a warning naming the cookie,
     because one of them would make the whole file unloadable. Atomic via tmp +
-    rename. Returns the path written: `dest` with symlinks resolved.
+    rename. Returns the path written: `dest` with symlinks resolved. Raises
+    AuthError unless `dest` as given then leads to that file, which is what the
+    next load opens.
     """
     loadable: dict[str, str] = {}
     for name, value in cookies.items():
@@ -164,21 +166,42 @@ def save_cookies(cookies: dict[str, str], *, dest: Path) -> Path:
     if not loadable:
         raise AuthError("no loadable cookies to save; the cookie file was not changed")
     loop = f"cannot write cookie file: {dest}: symlink loop"
+    target = dest
     try:
         # The rename would replace a symlink itself and leave the file it points
         # to (synced or managed elsewhere) stale; write beside the target instead.
-        dest = dest.resolve()
+        target = dest.resolve()
         # From Python 3.13 resolve() returns a loop instead of raising; any other
         # resolved path is free of links.
-        if any(p.is_symlink() for p in (dest, *dest.parents)):
+        if any(p.is_symlink() for p in (target, *target.parents)):
             raise AuthError(loop)
+        # resolve() collapses "missing/.." even when "missing" is absent, but
+        # opening `dest` cannot walk it until the directory exists. The target's
+        # directory goes first: mkdir refuses a symlink in `dest` that dangles.
+        target.parent.mkdir(parents=True, exist_ok=True)
         dest.parent.mkdir(parents=True, exist_ok=True)
-        atomic_write_0600(dest, json.dumps(loadable, indent=2, sort_keys=True))
+        # A symlink in `dest` can still name such a path, so check that `dest`
+        # leads to the file, before overwriting one and after creating one.
+        unreachable = f"cannot write cookie file: {dest}: the path does not lead to {target}"
+        if target.exists() and not _leads_to(dest, target):
+            raise AuthError(unreachable)
+        atomic_write_0600(target, json.dumps(loadable, indent=2, sort_keys=True))
+        if not _leads_to(dest, target):
+            target.unlink()
+            raise AuthError(unreachable)
     except OSError as e:
-        raise AuthError(f"cannot write cookie file: {dest}: {e.strerror}") from e
+        raise AuthError(f"cannot write cookie file: {target}: {e.strerror}") from e
     except RuntimeError as e:  # a symlink loop, before Python 3.13
         raise AuthError(loop) from e
-    return dest
+    return target
+
+
+def _leads_to(path: Path, target: Path) -> bool:
+    """Whether opening `path` as given reaches the file at `target`."""
+    try:
+        return path.samefile(target)
+    except OSError:
+        return False
 
 
 def atomic_write_0600(dest: Path, content: str) -> None:
