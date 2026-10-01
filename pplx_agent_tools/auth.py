@@ -27,11 +27,12 @@ import os
 import stat
 import sys
 import tempfile
+import time
 from collections.abc import Iterable
 from dataclasses import dataclass
 from http.cookiejar import Cookie
 from pathlib import Path
-from typing import cast
+from typing import NamedTuple, cast
 
 from typing_extensions import assert_never
 
@@ -52,12 +53,31 @@ SUPPORTED_BROWSERS: tuple[str, ...] = (
     "zen",
 )
 
+
+class _Fork(NamedTuple):
+    flatpak_id: str
+    # Linux profile root under $XDG_CONFIG_HOME.
+    xdg_root: tuple[str, ...]
+
+
 # Firefox forks whose cookie store yt-dlp reads as Firefox's, given the
-# fork's profile root; the value is the fork's Flatpak app id.
+# fork's profile root. Zen's XDG root drops Firefox's vendor level.
 _FIREFOX_FORKS = {
-    "librewolf": "io.gitlab.librewolf-community",
-    "zen": "app.zen_browser.zen",
+    "librewolf": _Fork("io.gitlab.librewolf-community", ("librewolf", "librewolf")),
+    "zen": _Fork("app.zen_browser.zen", ("zen",)),
 }
+
+# yt-dlp's warnings that it has no key for the browser's encrypted cookies.
+_NO_KEY = (
+    "find-generic-password failed",
+    "exception running find-generic-password",
+    "exception running kwallet-query",
+    "cannot decrypt v10 cookies: no key found",
+    "cannot decrypt v11 cookies: no key found",
+)
+
+# Seconds from 1601-01-01, Chromium's time origin, to the Unix epoch.
+_CHROMIUM_EPOCH_OFFSET = 11_644_473_600
 
 _COOKIE_DOMAIN = "perplexity.ai"
 # The host of wire.BASE_URL; wire imports this module, so it cannot import wire.
@@ -383,14 +403,20 @@ def _normalize(data: object, *, source: str) -> dict[str, str]:
     return flat
 
 
-def import_from_browser(browser: str, profile: str | None = None) -> Path:
+def import_from_browser(
+    browser: str, profile: str | None = None, browser_profile: str | None = None
+) -> Path:
     """Read *.perplexity.ai cookies from a local browser's cookie store and
     write them to the file `load_cookies` reads ($PPLX_COOKIES_PATH, else the
     profile file). Atomic (tmp + rename), mode 0600.
 
+    `browser_profile` is the browser profile to read, by name or path; without
+    it yt-dlp reads the profile whose cookie database changed last.
+
     yt-dlp reads the store: Keychain on macOS, GNOME keyring or KWallet on
     Linux, DPAPI on Windows, a copy of a locked database. Any failure there is
-    an AuthError naming the browser and the cause.
+    an AuthError naming the browser and the cause, and so is a store whose key
+    yt-dlp could not get (see `_extract_jar`); nothing is written then.
 
     Unlike a cookie file, a bad row is skipped with a warning: the jar holds
     third-party cookies the user cannot edit, and one of them must not block
@@ -408,20 +434,34 @@ def import_from_browser(browser: str, profile: str | None = None) -> Path:
         ),
     )
 
+    if browser_profile is not None and browser_profile.startswith("~"):
+        browser_profile = str(Path(browser_profile).expanduser())
     if browser in _FIREFOX_FORKS:
-        source, browser_profile = "firefox", _firefox_fork_root(browser)
+        source, where = "firefox", _fork_profile(browser, browser_profile)
     else:
-        source, browser_profile = browser, None
+        source, where = browser, browser_profile
+
+    def named(message: str) -> str:
+        # yt-dlp reads a fork's store as Firefox's and says "firefox".
+        return message.replace(f"{source} cookies", f"{browser} cookies").replace(
+            f"from {source}", f"from {browser}"
+        )
+
     problems: list[str] = []
     try:
-        rows = [c for c in _extract_jar(source, browser_profile, problems) if _for_site(c.domain)]
+        rows = [c for c in _extract_jar(source, where, problems) if _for_site(c.domain)]
     except Exception as e:
-        cause = "; ".join([str(e) or type(e).__name__, *problems])
+        # yt-dlp often logs the message it then raises.
+        causes = dict.fromkeys(named(m) for m in (str(e) or type(e).__name__, *problems))
+        cause = "; ".join(causes)
         if browser == "safari" and isinstance(e, OSError):
             cause += " (reading Safari's cookies needs Full Disk Access for this terminal)"
         raise AuthError(f"cannot read {browser} cookies: {cause}") from e
+    problems = [named(p) for p in problems]
 
-    chosen: dict[str, tuple[tuple[bool, str, str], str]] = {}
+    # yt-dlp gives Firefox's and Safari's expiry in Unix time, Chromium's as stored.
+    chromium = source not in ("firefox", "safari")
+    chosen: dict[str, tuple[tuple[bool, bool, str, str], str]] = {}
     for row in rows:
         try:
             name, value = _cookie_pair(
@@ -430,18 +470,21 @@ def import_from_browser(browser: str, profile: str | None = None) -> Path:
         except AuthError as e:
             print(f"warning: skipping {e}", file=sys.stderr)
             continue
-        # A flat file holds one value per name. Prefer the cookie a browser
-        # sends to the root of BASE_URL; among equals keep the last in
-        # (domain, path) order, as `_normalize` keeps the last repeat, so
-        # www.perplexity.ai beats .perplexity.ai. The jar's own order differs
-        # across Python versions. yt-dlp has already merged container and
-        # partition copies of one (domain, path, name).
-        rank = (_sent_to_request_root(row), row.domain, row.path)
+        expires = _chromium_expiry(row.expires) if chromium else row.expires
+        # A flat file holds one value per name. Prefer a non-empty value: an
+        # empty one authenticates nothing, and is what a wrong key most often
+        # decrypts to. Then prefer the cookie a browser sends to the root of
+        # BASE_URL; among equals keep the last in (domain, path) order, as
+        # `_normalize` keeps the last repeat, so www.perplexity.ai beats
+        # .perplexity.ai. The jar's own order differs across Python versions.
+        # yt-dlp has already merged container and partition copies of one
+        # (domain, path, name).
+        rank = (value != "", _sent_to_request_root(row, expires), row.domain, row.path)
         if name not in chosen or rank >= chosen[name][0]:
             chosen[name] = (rank, value)
     cookies = {name: value for name, (_, value) in chosen.items()}
 
-    if not cookies:
+    if not any(cookies.values()):
         if problems:
             raise AuthError(
                 f"no usable cookies for *.{_COOKIE_DOMAIN} in {browser}: " + "; ".join(problems)
@@ -456,18 +499,31 @@ def import_from_browser(browser: str, profile: str | None = None) -> Path:
     return save_cookies(cookies, dest=dest)
 
 
+class _YtDlpFailure(Exception):
+    """yt-dlp logged an error, or that it had no key, and returned anyway."""
+
+
 def _extract_jar(browser: str, profile: str | None, problems: list[str]) -> Iterable[Cookie]:
     """Every cookie in the browser's store; the one call into yt-dlp.
 
     yt-dlp's diagnostics never reach stdout. The ones that explain missing
     cookies are appended to `problems`, each once.
+
+    Raises if yt-dlp logs an error or that it has no key, though it returns
+    cookies then: on Linux it decrypts with an empty password when the keyring
+    or KWallet does not give the key, and a value decrypted with the wrong key
+    can look valid. A count of cookies that did not decrypt is not a failure.
     """
     # Imported here so that no other verb pays for loading yt-dlp.
     from yt_dlp.cookies import YDLLogger, extract_cookies_from_browser
 
-    def note(message: str) -> None:
+    failures: list[str] = []
+
+    def note(message: str, *, failed: bool = False) -> None:
         if message not in problems:
             problems.append(message)
+        if failed:
+            failures.append(message)
 
     class Log(YDLLogger):
         def info(self, message: str) -> None:
@@ -476,21 +532,45 @@ def _extract_jar(browser: str, profile: str | None, problems: list[str]) -> Iter
                 note(message)
 
         def warning(self, message: str, only_once: bool = False) -> None:  # noqa: ARG002 - note() keeps each once
-            note(message)
+            note(message, failed=message.startswith(_NO_KEY))
 
         def error(self, message: str) -> None:
-            note(message)
+            note(message, failed=True)
 
-    return extract_cookies_from_browser(browser, profile, Log())
+    jar: Iterable[Cookie] = extract_cookies_from_browser(browser, profile, Log())
+    if failures:
+        raise _YtDlpFailure(failures[0])
+    return jar
+
+
+def _is_path(value: str) -> bool:
+    """Whether yt-dlp takes a profile argument as a path rather than a name."""
+    return any(sep in value for sep in (os.sep, os.altsep) if sep)
+
+
+def _fork_profile(browser: str, browser_profile: str | None) -> str:
+    """The profile path to give yt-dlp for a Firefox fork it reads as Firefox.
+
+    yt-dlp looks a profile name up under Firefox's directories, not the fork's.
+    """
+    if browser_profile is not None and _is_path(browser_profile):
+        return browser_profile
+    root = Path(_firefox_fork_root(browser))
+    if browser_profile is None:
+        return str(root)
+    # Profiles sit under Profiles/ on macOS and Windows, beside profiles.ini on Linux.
+    nested = root / "Profiles" / browser_profile
+    return str(nested if nested.is_dir() else root / browser_profile)
 
 
 def _firefox_fork_root(browser: str) -> str:
     """The directory holding a Firefox fork's profiles.ini.
 
-    A directory without profiles.ini does not count: LibreWolf users create
-    ~/.librewolf for librewolf.overrides.cfg alone, and LibreWolf then uses
-    its XDG directory. The order is the browser's: the legacy dot directory
-    wins over the XDG one.
+    The order is the browser's: it uses the legacy dot directory whenever that
+    exists (LibreWolf's FAQ: ~/.librewolf "always takes precedence"), else the
+    XDG one. A directory without profiles.ini is passed over: the browser has
+    not run since it was created (LibreWolf users create ~/.librewolf for
+    librewolf.overrides.cfg alone), so its last profile is in the next one.
     """
     home = Path.home()
     if sys.platform == "darwin":
@@ -500,12 +580,13 @@ def _firefox_fork_root(browser: str) -> str:
         candidates = [Path(appdata) / browser] if appdata else []
     else:
         config = Path(os.environ.get("XDG_CONFIG_HOME") or home / ".config")
-        flatpak = home / ".var" / "app" / _FIREFOX_FORKS[browser]
+        fork = _FIREFOX_FORKS[browser]
+        flatpak = home / ".var" / "app" / fork.flatpak_id
         candidates = [
             home / f".{browser}",
-            config / browser / browser,
+            config.joinpath(*fork.xdg_root),
             flatpak / f".{browser}",
-            flatpak / "config" / browser / browser,
+            flatpak.joinpath("config", *fork.xdg_root),
         ]
     for root in candidates:
         if (root / "profiles.ini").is_file():
@@ -520,9 +601,16 @@ def _for_site(domain: str) -> bool:
     return host == _COOKIE_DOMAIN or host.endswith(f".{_COOKIE_DOMAIN}")
 
 
-def _sent_to_request_root(cookie: Cookie) -> bool:
+def _chromium_expiry(expires: float | None) -> float | None:
+    """Chromium's expires_utc, microseconds since 1601-01-01 or 0 for a session
+    cookie, in Unix time; None for a session cookie."""
+    return expires / 1_000_000 - _CHROMIUM_EPOCH_OFFSET if expires else None
+
+
+def _sent_to_request_root(cookie: Cookie, expires: float | None) -> bool:
     """Whether a browser sends `cookie` with a request for https://www.perplexity.ai/.
 
+    `expires` is the cookie's expiry in Unix time, None for a session cookie.
     A stored domain with a leading dot came from a Domain attribute and
     matches subdomains; one without is host-only (RFC 6265 5.3 and 5.4).
     """
@@ -531,4 +619,5 @@ def _sent_to_request_root(cookie: Cookie) -> bool:
         host_ok = domain[1:] == _REQUEST_HOST or _REQUEST_HOST.endswith(domain)
     else:
         host_ok = domain == _REQUEST_HOST
-    return host_ok and cookie.path in ("", "/") and not cookie.is_expired()
+    unexpired = expires is None or expires > time.time()
+    return host_ok and cookie.path in ("", "/") and unexpired

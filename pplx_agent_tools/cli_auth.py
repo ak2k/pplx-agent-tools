@@ -62,6 +62,14 @@ def build_parser() -> PplxArgumentParser:
         help="browser to read perplexity.ai cookies from (safari: macOS only)",
     )
     p_import.add_argument(
+        "--browser-profile",
+        metavar="NAME_OR_PATH",
+        help=(
+            "browser profile to read, by name or path (default: the one whose cookies "
+            "changed last, which may be another account's)"
+        ),
+    )
+    p_import.add_argument(
         "--profile",
         help=(
             "destination cookie profile (default: $PPLX_PROFILE or 'default'); "
@@ -129,7 +137,9 @@ def cmd_refresh(args: argparse.Namespace) -> int:
 
 def cmd_import(args: argparse.Namespace) -> int:
     try:
-        dest = import_from_browser(args.browser, profile=args.profile)
+        dest = import_from_browser(
+            args.browser, profile=args.profile, browser_profile=args.browser_profile
+        )
     except PplxError as e:
         print(f"pplx auth import: {e}", file=sys.stderr)
         return exit_code(e)

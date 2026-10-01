@@ -117,9 +117,12 @@
               );
         };
 
-      # Bundle the runtime venv with SKILL.md at the ak2k-skills convention
-      # path ($out/share/skills/<name>/) so ak2k-skills' registry can pick
-      # it up the same way as krisp-cli / claude-sessions / msgvault-query.
+      # Only `pplx` from the runtime venv, plus SKILL.md at the ak2k-skills
+      # convention path ($out/share/skills/<name>/) so ak2k-skills' registry
+      # can pick it up the same way as krisp-cli / claude-sessions /
+      # msgvault-query. The venv's other executables (python3, yt-dlp, ...)
+      # and data (yt-dlp's man page and completions) stay inside it, so a
+      # profile holding this and those packages has no conflicting paths.
       # SKILL.md is also force-included in the wheel under pplx_agent_tools/
       # for non-Nix consumers (`pplx skill-path`).
       mkPplx =
@@ -129,29 +132,21 @@
           s = mkPythonSet system;
           venv = s.pythonSet.mkVirtualEnv "pplx-agent-tools-env" s.workspace.deps.default;
         in
-        pkgs.symlinkJoin {
-          name = "pplx-agent-tools";
-          paths = [ venv ];
-          postBuild = ''
-            # The venv links share/ whole when one dependency (yt-dlp) has it;
-            # make it a directory before adding to it.
-            if [ -L $out/share ]; then
-              target=$(readlink -f $out/share)
-              rm $out/share
-              mkdir $out/share
-              ln -s $target/* $out/share/
-            fi
-            mkdir -p $out/share/skills/pplx-agent-tools
+        pkgs.runCommandLocal "pplx-agent-tools"
+          {
+            meta = {
+              description = "Agent toolkit for Perplexity, backed by your Pro subscription's web session cookies";
+              homepage = "https://github.com/ak2k/pplx-agent-tools";
+              license = nixpkgs.lib.licenses.mit;
+              mainProgram = "pplx";
+              platforms = systems;
+            };
+          }
+          ''
+            mkdir -p $out/bin $out/share/skills/pplx-agent-tools
+            ln -s ${venv}/bin/pplx $out/bin/pplx
             cp ${./SKILL.md} $out/share/skills/pplx-agent-tools/SKILL.md
           '';
-          meta = {
-            description = "Agent toolkit for Perplexity, backed by your Pro subscription's web session cookies";
-            homepage = "https://github.com/ak2k/pplx-agent-tools";
-            license = nixpkgs.lib.licenses.mit;
-            mainProgram = "pplx";
-            platforms = systems;
-          };
-        };
     in
     {
       packages = forAllSystems (

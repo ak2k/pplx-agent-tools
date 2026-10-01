@@ -104,7 +104,9 @@ def test_main_dispatches_to_import(
     tmp_path: Path,
 ) -> None:
     dest = tmp_path / "cookies.json"
-    monkeypatch.setattr(cli_auth, "import_from_browser", lambda browser, profile=None: dest)
+    monkeypatch.setattr(
+        cli_auth, "import_from_browser", lambda browser, profile=None, browser_profile=None: dest
+    )
     rc = cli_auth.main(["import", "--browser", "chrome"])
     assert rc == 0
     out = capsys.readouterr().out
@@ -431,7 +433,9 @@ def test_import_prints_destination(
     tmp_path: Path,
 ) -> None:
     dest = tmp_path / "out" / "cookies.json"
-    monkeypatch.setattr(cli_auth, "import_from_browser", lambda b, profile=None: dest)
+    monkeypatch.setattr(
+        cli_auth, "import_from_browser", lambda b, profile=None, browser_profile=None: dest
+    )
     rc = cli_auth.main(["import", "--browser", "firefox"])
     assert rc == 0
     out = capsys.readouterr().out
@@ -442,7 +446,7 @@ def test_import_prints_destination(
 def test_import_auth_error_exits_two(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
 ) -> None:
-    def boom(browser: str, profile: str | None = None) -> Path:
+    def boom(browser: str, profile: str | None = None, browser_profile: str | None = None) -> Path:
         raise AuthError("cannot read chrome cookies: database is locked")
 
     monkeypatch.setattr(cli_auth, "import_from_browser", boom)
@@ -467,11 +471,16 @@ def test_import_rejects_unsupported_browser() -> None:
 def test_import_passes_profile_to_helper(monkeypatch: pytest.MonkeyPatch) -> None:
     received: dict[str, Any] = {}
 
-    def fake_import(browser: str, profile: str | None = None) -> Path:
+    def fake_import(
+        browser: str, profile: str | None = None, browser_profile: str | None = None
+    ) -> Path:
         received["browser"] = browser
         received["profile"] = profile
+        received["browser_profile"] = browser_profile
         return Path("/tmp/x")
 
     monkeypatch.setattr(cli_auth, "import_from_browser", fake_import)
     cli_auth.main(["import", "--browser", "safari", "--profile", "personal"])
-    assert received == {"browser": "safari", "profile": "personal"}
+    assert received == {"browser": "safari", "profile": "personal", "browser_profile": None}
+    cli_auth.main(["import", "--browser", "chrome", "--browser-profile", "Profile 1"])
+    assert received == {"browser": "chrome", "profile": None, "browser_profile": "Profile 1"}
