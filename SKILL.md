@@ -112,7 +112,10 @@ Counts (`-n/--limit`, `--max-chars`, `--max-tokens`, `--max-tokens-per-page`) mu
 
 - `pplx snippets` downloads ~80 MB embedding model on first invocation (cached at `~/.cache/fastembed/`). Subsequent calls are 1–2 s for N≈5 URLs.
 - `pplx snippets` needs SQLite 3.38 or newer; an older build is refused with a clear error rather than quietly returning no semantic matches.
-- `pplx auth import --browser <name>` pops a macOS keychain prompt the first time; click "Always Allow" so future runs are silent.
+- On macOS, `pplx auth import` from a Chromium-based browser (Chrome, Brave, Edge, ...) pops a Keychain prompt for the browser's "Safe Storage" key: "Allow" answers once, "Always Allow" lets any program that runs the `security` tool read that key without asking. Importing from Safari needs Full Disk Access for the terminal.
+- `pplx auth import` reads the browser profile whose cookies changed last, which with several signed in may be another account; `--browser-profile` picks one by profile directory name (e.g. `Default`, `Profile 1`, `xxxx.default-release`) or path, or for Safari the path of a `Cookies.binarycookies` file. It saves the cookies only once perplexity.ai accepts the session, and prints `session valid: <account>`: check that it is the account you meant. It exits 2 and leaves the cookie file as it was when the browser's cookie key cannot be read (keyring, KWallet, refused Keychain prompt), no Perplexity session cookie could be read, or perplexity.ai does not accept the session (sign in again in that browser), and exits 4, also leaving the file as it was, when it cannot reach perplexity.ai to check. `--no-verify` saves without the check (offline use), with a warning on stderr; a missing session cookie still exits 2.
+- On Windows, import from Chrome, Edge and Brave fails once they store cookies with App-Bound (`v20`) encryption, which Chromium 127 introduced: those cannot be decrypted.
+- Arc is not supported: export its perplexity.ai cookies as JSON with the Cookie-Editor extension to the cookie file (`$PPLX_COOKIES_PATH`, else `~/.config/perplexity/<profile>/cookies.json`), mode 600.
 
 # Caveats
 

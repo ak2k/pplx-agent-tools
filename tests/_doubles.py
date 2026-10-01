@@ -42,13 +42,14 @@ class FakeTime:
 class _TestClientBase(Client):
     """Inherit from this instead of `Client` directly when writing a test
     double. Subclasses call `super().__init__()` (no args) to inherit the
-    throwaway-cookie setup; CodeQL sees the chained super() and is happy.
+    throwaway-cookie setup, or pass the cookies the double holds; CodeQL sees
+    the chained super() and is happy.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, cookies: dict[str, str] | None = None) -> None:
         # Allocates a curl_cffi Session we never use — subclasses override
-        # every method that would read `_session`.
-        super().__init__({"x": "y"})
+        # every method that would read `_session`, or replace it.
+        super().__init__({"x": "y"} if cookies is None else cookies)
         self.terminated: list[tuple[str, str, str]] = []
 
     def terminate(self, entry_uuid: str, context_uuid: str, model_preference: str) -> bool:

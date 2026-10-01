@@ -5,8 +5,6 @@ from __future__ import annotations
 import json
 import os
 import stat
-import sys
-import types
 from pathlib import Path
 
 import pytest
@@ -15,12 +13,10 @@ from hypothesis import strategies as st
 
 from pplx_agent_tools.auth import (
     DEFAULT_PROFILE,
-    SUPPORTED_BROWSERS,
     _normalize,
     atomic_write_0600,
     cookie_write_path,
     default_cookies_path,
-    import_from_browser,
     load_cookies,
     resolve_profile,
     save_cookies,
@@ -199,15 +195,6 @@ def test_load_cookies_perfect_perms_no_warning(
     monkeypatch.setenv("PPLX_COOKIES_PATH", str(p))
     load_cookies()
     assert capsys.readouterr().err == ""
-
-
-# ---------- supported_browsers exposed ----------
-
-
-def test_supported_browsers_includes_common() -> None:
-    # These are the browsers explicitly documented in the SKILL.md / plan
-    for name in ("brave", "chrome", "firefox", "safari", "edge"):
-        assert name in SUPPORTED_BROWSERS
 
 
 # ---------- defensive: missing file ----------
@@ -501,98 +488,12 @@ def test_normalize_error_omits_cookie_value() -> None:
     assert "secret" not in str(ei.value)
 
 
-# ---------- import_from_browser: rows pass the same gate ----------
-
-
-def _fake_rookiepy(monkeypatch: pytest.MonkeyPatch, rows: object) -> None:
-    mod = types.ModuleType("rookiepy")
-    mod.brave = lambda _domains: rows  # pyright: ignore[reportAttributeAccessIssue]
-    monkeypatch.setitem(sys.modules, "rookiepy", mod)
-
-
-def test_import_from_browser_saves_rows(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    _fake_rookiepy(monkeypatch, [{"name": "a", "value": "1", "domain": ".perplexity.ai"}])
-    dest = import_from_browser("brave")
-    assert json.loads(dest.read_text()) == {"a": "1"}
-
-
-def test_import_from_browser_skips_bad_rows_with_warning(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    rows = [
-        {"name": "session", "value": "good"},
-        {"name": "nullish", "value": None},
-        {"name": "crlf", "value": "SECRET1\r\nX: y"},
-        {"name": "tabbed", "value": "SECRET2\tz"},
-        {"name": "surr", "value": "SECRET3\ud800"},
-        {"name": "a;b", "value": "SECRET4"},
-        "not a row",
-    ]
-    _fake_rookiepy(monkeypatch, rows)
-    dest = import_from_browser("brave")
-    assert json.loads(dest.read_text()) == {"session": "good"}
-    err = capsys.readouterr().err
-    assert err.count("warning: skipping") == 6
-    for name in ("nullish", "crlf", "tabbed", "surr"):
-        assert repr(name) in err
-    assert "has no value" in err
-    assert "SECRET" not in err
-
-
-def test_import_from_browser_all_rows_bad_writes_nothing(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    _fake_rookiepy(monkeypatch, [{"name": "a", "value": "x\r\ny"}])
-    with pytest.raises(AuthError, match="sign in"):
-        import_from_browser("brave")
-    assert not default_cookies_path().exists()
-
-
-def test_import_from_browser_empty_says_sign_in(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    _fake_rookiepy(monkeypatch, [])
-    with pytest.raises(AuthError, match="sign in"):
-        import_from_browser("brave")
-
-
-# ---------- import repairs the source load_cookies reads ----------
+# ---------- load errors name the source they read ----------
 
 
 @pytest.fixture
 def tmp_config_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
-
-
-@pytest.mark.usefixtures("tmp_config_home")
-def test_import_writes_to_cookies_path_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    target = tmp_path / "custom" / "jar.json"
-    monkeypatch.setenv("PPLX_COOKIES_PATH", str(target))
-    _fake_rookiepy(monkeypatch, [{"name": "a", "value": "1"}])
-    assert import_from_browser("brave") == target
-    assert stat.S_IMODE(target.stat().st_mode) == 0o600
-    assert load_cookies() == {"a": "1"}
-    assert not default_cookies_path().exists()
-
-
-@pytest.mark.usefixtures("tmp_config_home")
-def test_import_refuses_when_inline_env_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("PPLX_COOKIES", '{"a": "SECRET"}')
-    called: list[object] = []
-    mod = types.ModuleType("rookiepy")
-    mod.brave = lambda d: called.append(d) or []  # pyright: ignore[reportAttributeAccessIssue]
-    monkeypatch.setitem(sys.modules, "rookiepy", mod)
-    with pytest.raises(AuthError) as ei:
-        import_from_browser("brave")
-    msg = str(ei.value)
-    assert "$PPLX_COOKIES" in msg and "not changed" in msg
-    assert "SECRET" not in msg
-    assert called == []
-    assert not default_cookies_path().exists()
 
 
 @pytest.mark.usefixtures("tmp_config_home")
