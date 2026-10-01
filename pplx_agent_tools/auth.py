@@ -67,14 +67,22 @@ _FIREFOX_FORKS = {
     "zen": _Fork("app.zen_browser.zen", ("zen",)),
 }
 
-# yt-dlp's warnings that it has no key for the browser's encrypted cookies.
+# yt-dlp's warnings that reading the browser's key failed. Like its errors they
+# refuse the import even when cookies decrypted: after a KWallet failure yt-dlp
+# decrypts with an empty password, which can be the wrong key.
 _NO_KEY = (
     "find-generic-password failed",
     "exception running find-generic-password",
     "exception running kwallet-query",
-    "cannot decrypt v10 cookies: no key found",
-    "cannot decrypt v11 cookies: no key found",
 )
+# Logged at debug level, then yt-dlp decrypts with an empty password.
+_KWALLET_EMPTY_PASSWORD = "failed to read password from kwallet. Using empty string instead"
+# In yt-dlp's count of cookies it skipped.
+_UNDECRYPTED = "could not be decrypted"
+
+# NextAuth's session cookie. A token too large for one cookie is split into
+# <name>.0, <name>.1, ..., which the server joins in order.
+_SESSION_COOKIE = "__Secure-next-auth.session-token"
 
 # Seconds from 1601-01-01, Chromium's time origin, to the Unix epoch.
 _CHROMIUM_EPOCH_OFFSET = 11_644_473_600
@@ -410,13 +418,15 @@ def import_from_browser(
     write them to the file `load_cookies` reads ($PPLX_COOKIES_PATH, else the
     profile file). Atomic (tmp + rename), mode 0600.
 
-    `browser_profile` is the browser profile to read, by name or path; without
-    it yt-dlp reads the profile whose cookie database changed last.
+    `browser_profile` is the browser profile to read, by directory name or
+    path, or for Safari the path of a Cookies.binarycookies file; without it
+    yt-dlp reads the profile whose cookie database changed last.
 
     yt-dlp reads the store: Keychain on macOS, GNOME keyring or KWallet on
     Linux, DPAPI on Windows, a copy of a locked database. Any failure there is
     an AuthError naming the browser and the cause, and so is a store whose key
-    yt-dlp could not get (see `_extract_jar`); nothing is written then.
+    yt-dlp could not get (see `_extract_jar`) and an import without a session
+    token (see `_has_session`); nothing is written then.
 
     Unlike a cookie file, a bad row is skipped with a warning: the jar holds
     third-party cookies the user cannot edit, and one of them must not block
@@ -454,14 +464,19 @@ def import_from_browser(
         # yt-dlp often logs the message it then raises.
         causes = dict.fromkeys(named(m) for m in (str(e) or type(e).__name__, *problems))
         cause = "; ".join(causes)
-        if browser == "safari" and isinstance(e, OSError):
+        # A Safari profile is a file path, so not finding it means a wrong path.
+        if (
+            browser == "safari"
+            and isinstance(e, OSError)
+            and not (browser_profile and isinstance(e, FileNotFoundError))
+        ):
             cause += " (reading Safari's cookies needs Full Disk Access for this terminal)"
         raise AuthError(f"cannot read {browser} cookies: {cause}") from e
     problems = [named(p) for p in problems]
 
     # yt-dlp gives Firefox's and Safari's expiry in Unix time, Chromium's as stored.
     chromium = source not in ("firefox", "safari")
-    chosen: dict[str, tuple[tuple[bool, bool, str, str], str]] = {}
+    chosen: dict[str, tuple[tuple[bool, bool, bool, str, str], str]] = {}
     for row in rows:
         try:
             name, value = _cookie_pair(
@@ -473,25 +488,24 @@ def import_from_browser(
         expires = _chromium_expiry(row.expires) if chromium else row.expires
         # A flat file holds one value per name. Prefer a non-empty value: an
         # empty one authenticates nothing, and is what a wrong key most often
-        # decrypts to. Then prefer the cookie a browser sends to the root of
-        # BASE_URL; among equals keep the last in (domain, path) order, as
-        # `_normalize` keeps the last repeat, so www.perplexity.ai beats
-        # .perplexity.ai. The jar's own order differs across Python versions.
-        # yt-dlp has already merged container and partition copies of one
-        # (domain, path, name).
-        rank = (value != "", _sent_to_request_root(row, expires), row.domain, row.path)
+        # decrypts to. Then an unexpired one, whatever its path. Then the
+        # cookie a browser sends to the root of BASE_URL; among equals keep the
+        # last in (domain, path) order, as `_normalize` keeps the last repeat,
+        # so www.perplexity.ai beats .perplexity.ai. The jar's own order
+        # differs across Python versions. yt-dlp has already merged partition
+        # copies of one (domain, path, name).
+        unexpired = expires is None or expires > time.time()
+        rank = (value != "", unexpired, _sent_to_request_root(row), row.domain, row.path)
         if name not in chosen or rank >= chosen[name][0]:
             chosen[name] = (rank, value)
     cookies = {name: value for name, (_, value) in chosen.items()}
 
-    if not any(cookies.values()):
-        if problems:
-            raise AuthError(
-                f"no usable cookies for *.{_COOKIE_DOMAIN} in {browser}: " + "; ".join(problems)
-            )
+    # Without it the other cookies authenticate nothing, and must not replace
+    # a working file. A wrong key all but never decrypts it to a value that loads.
+    if not _has_session(cookies):
+        cause = "; ".join(problems) or f"sign in at perplexity.ai in {browser} first"
         raise AuthError(
-            f"no usable cookies for *.{_COOKIE_DOMAIN} in {browser}; "
-            f"sign in at perplexity.ai in {browser} first"
+            f"no usable {_SESSION_COOKIE} cookie for *.{_COOKIE_DOMAIN} in {browser}: {cause}"
         )
     for problem in problems:
         print(f"warning: {browser}: {problem}", file=sys.stderr)
@@ -499,20 +513,35 @@ def import_from_browser(
     return save_cookies(cookies, dest=dest)
 
 
+def _has_session(cookies: dict[str, str]) -> bool:
+    """Whether `cookies` hold a non-empty, loadable session token: whole, or
+    as every chunk from .0 up with none missing."""
+
+    def present(name: str) -> bool:
+        value = cookies.get(name, "")
+        return value != "" and cookie_pair_ok(name, value)
+
+    if present(_SESSION_COOKIE):
+        return True
+    prefix = f"{_SESSION_COOKIE}."
+    count = sum(1 for n in cookies if n.startswith(prefix) and n[len(prefix) :].isdigit())
+    return count > 0 and all(present(f"{prefix}{i}") for i in range(count))
+
+
 class _YtDlpFailure(Exception):
-    """yt-dlp logged an error, or that it had no key, and returned anyway."""
+    """yt-dlp logged an error, or that reading the key failed, and returned anyway."""
 
 
 def _extract_jar(browser: str, profile: str | None, problems: list[str]) -> Iterable[Cookie]:
-    """Every cookie in the browser's store; the one call into yt-dlp.
+    """Every cookie in the browser's store, Firefox's outside any container;
+    the one call into yt-dlp.
 
-    yt-dlp's diagnostics never reach stdout. The ones that explain missing
-    cookies are appended to `problems`, each once.
+    yt-dlp's diagnostics never reach stdout. The ones that explain missing or
+    doubtful cookies are appended to `problems`, each once.
 
-    Raises if yt-dlp logs an error or that it has no key, though it returns
-    cookies then: on Linux it decrypts with an empty password when the keyring
-    or KWallet does not give the key, and a value decrypted with the wrong key
-    can look valid. A count of cookies that did not decrypt is not a failure.
+    Raises if yt-dlp logs an error or one of `_NO_KEY`, though it returns
+    cookies then. Cookies it skipped, for want of a key or otherwise, are not
+    a failure: whether a session token remains decides.
     """
     # Imported here so that no other verb pays for loading yt-dlp.
     from yt_dlp.cookies import YDLLogger, extract_cookies_from_browser
@@ -526,9 +555,17 @@ def _extract_jar(browser: str, profile: str | None, problems: list[str]) -> Iter
             failures.append(message)
 
     class Log(YDLLogger):
+        def debug(self, message: str) -> None:
+            # Not a failure: yt-dlp's comment there says Chrome on KDE "does not
+            # check hasEntry and instead just tries to read the value (which
+            # kwallet returns "")", so Chrome encrypted with the same empty
+            # password. A wrong key leaves no session token.
+            if message == _KWALLET_EMPTY_PASSWORD:
+                note(message)
+
         def info(self, message: str) -> None:
             # The only count of cookies that failed to decrypt.
-            if "could not be decrypted" in message:
+            if _UNDECRYPTED in message:
                 note(message)
 
         def warning(self, message: str, only_once: bool = False) -> None:  # noqa: ARG002 - note() keeps each once
@@ -537,7 +574,9 @@ def _extract_jar(browser: str, profile: str | None, problems: list[str]) -> Iter
         def error(self, message: str) -> None:
             note(message, failed=True)
 
-    jar: Iterable[Cookie] = extract_cookies_from_browser(browser, profile, Log())
+    # Firefox only reads `container`; "none" leaves out container copies,
+    # which yt-dlp would otherwise merge, keeping the last row.
+    jar: Iterable[Cookie] = extract_cookies_from_browser(browser, profile, Log(), container="none")
     if failures:
         raise _YtDlpFailure(failures[0])
     return jar
@@ -559,8 +598,9 @@ def _fork_profile(browser: str, browser_profile: str | None) -> str:
     if browser_profile is None:
         return str(root)
     # Profiles sit under Profiles/ on macOS and Windows, beside profiles.ini on Linux.
-    nested = root / "Profiles" / browser_profile
-    return str(nested if nested.is_dir() else root / browser_profile)
+    if sys.platform in ("darwin", "win32"):
+        root /= "Profiles"
+    return str(root / browser_profile)
 
 
 def _firefox_fork_root(browser: str) -> str:
@@ -607,10 +647,10 @@ def _chromium_expiry(expires: float | None) -> float | None:
     return expires / 1_000_000 - _CHROMIUM_EPOCH_OFFSET if expires else None
 
 
-def _sent_to_request_root(cookie: Cookie, expires: float | None) -> bool:
-    """Whether a browser sends `cookie` with a request for https://www.perplexity.ai/.
+def _sent_to_request_root(cookie: Cookie) -> bool:
+    """Whether a browser sends `cookie`, unless expired, with a request for
+    https://www.perplexity.ai/.
 
-    `expires` is the cookie's expiry in Unix time, None for a session cookie.
     A stored domain with a leading dot came from a Domain attribute and
     matches subdomains; one without is host-only (RFC 6265 5.3 and 5.4).
     """
@@ -619,5 +659,4 @@ def _sent_to_request_root(cookie: Cookie, expires: float | None) -> bool:
         host_ok = domain[1:] == _REQUEST_HOST or _REQUEST_HOST.endswith(domain)
     else:
         host_ok = domain == _REQUEST_HOST
-    unexpired = expires is None or expires > time.time()
-    return host_ok and cookie.path in ("", "/") and unexpired
+    return host_ok and cookie.path in ("", "/")

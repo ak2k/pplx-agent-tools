@@ -65,8 +65,10 @@ def build_parser() -> PplxArgumentParser:
         "--browser-profile",
         metavar="NAME_OR_PATH",
         help=(
-            "browser profile to read, by name or path (default: the one whose cookies "
-            "changed last, which may be another account's)"
+            "browser profile to read: its directory name (e.g. Default, Profile 1, "
+            "xxxx.default-release) or path; for safari, the path of a Cookies.binarycookies "
+            "file (default: the profile whose cookies changed last, which may be another "
+            "account's)"
         ),
     )
     p_import.add_argument(
