@@ -98,8 +98,8 @@ def cookie_source(profile: str | None = None) -> CookieSource:
     return ProfileSource(resolve_profile(profile), default_cookies_path(profile))
 
 
-def _describe(source: CookieSource) -> str:
-    """Names the source for error messages; never includes cookie values."""
+def describe_cookie_source(source: CookieSource) -> str:
+    """Names the source for messages; never includes cookie values."""
     match source:
         case EnvPathSource(path):
             return f"$PPLX_COOKIES_PATH file {path}"
@@ -117,7 +117,7 @@ def load_cookies(profile: str | None = None) -> dict[str, str]:
     Every error names the source it read.
     """
     source = cookie_source(profile)
-    label = _describe(source)
+    label = describe_cookie_source(source)
     match source:
         case EnvInlineSource(text):
             try:

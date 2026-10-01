@@ -70,7 +70,8 @@ def build_parser() -> PplxArgumentParser:
         action="store_true",
         help=(
             "keep the (incognito) research thread instead of deleting it. "
-            "Default deletes it post-call. Also honors $PPLX_KEEP_THREADS=1."
+            "Default deletes it post-call, unless the run may still be going on the server. "
+            "Also honors $PPLX_KEEP_THREADS=1."
         ),
     )
     parser.add_argument(

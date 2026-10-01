@@ -14,10 +14,11 @@ from collections.abc import Sequence
 
 from .auth import (
     SUPPORTED_BROWSERS,
+    ProfileSource,
+    cookie_source,
     cookie_write_path,
-    default_cookies_path,
+    describe_cookie_source,
     import_from_browser,
-    resolve_profile,
     save_cookies,
 )
 from .cli_types import PplxArgumentParser
@@ -62,7 +63,6 @@ def build_parser() -> PplxArgumentParser:
 
 
 def cmd_check(args: argparse.Namespace) -> int:
-    profile = resolve_profile(args.profile)
     try:
         client = Client.from_default_cookies(profile=args.profile)
         session = client.auth_session()
@@ -73,10 +73,13 @@ def cmd_check(args: argparse.Namespace) -> int:
     user = session.get("user") or {}
     email = user.get("email") or "(no email)"
     expires = session.get("expires") or "(no expiry)"
-    cookie_path = default_cookies_path(profile)
     print(f"session valid: {email}")
     print(f"expires: {expires}")
-    print(f"profile: {profile} ({cookie_path})")
+    source = cookie_source(args.profile)
+    if isinstance(source, ProfileSource):
+        print(f"profile: {source.profile} ({source.path})")
+    else:
+        print(f"cookies: {describe_cookie_source(source)}")
     return 0
 
 

@@ -184,6 +184,55 @@ def test_check_respects_profile_flag(monkeypatch: pytest.MonkeyPatch) -> None:
     assert received["profile"] == "kanerai"
 
 
+def _install_loading_factory(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Like `_install_client_factory`, but reads the cookies first, as the real one does."""
+
+    def factory(cls: Any, profile: str | None = None, **_: Any) -> Any:
+        load_cookies(profile)
+        return _StubClient({"user": {"email": "x@y"}})
+
+    monkeypatch.setattr(cli_auth.Client, "from_default_cookies", classmethod(factory))
+
+
+def test_check_names_cookies_path_env_source(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture, tmp_path: Path
+) -> None:
+    jar = tmp_path / "custom" / "jar.json"
+    _write_jar(jar, {"session-token": "v"})
+    monkeypatch.setenv("PPLX_COOKIES_PATH", str(jar))
+    _install_loading_factory(monkeypatch)
+
+    assert cli_auth.main(["check"]) == 0
+    out = capsys.readouterr().out
+    assert f"$PPLX_COOKIES_PATH file {jar}" in out
+    assert str(default_cookies_path()) not in out
+
+
+def test_check_names_inline_env_source(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    monkeypatch.setenv("PPLX_COOKIES", '{"session-token": "SECRET"}')
+    _install_loading_factory(monkeypatch)
+
+    assert cli_auth.main(["check"]) == 0
+    out = capsys.readouterr().out
+    assert "$PPLX_COOKIES" in out
+    assert "$PPLX_COOKIES_PATH" not in out
+    assert "SECRET" not in out
+    assert str(default_cookies_path()) not in out
+
+
+def test_check_names_profile_file_source(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    jar = default_cookies_path("work")
+    _write_jar(jar, {"session-token": "v"})
+    _install_loading_factory(monkeypatch)
+
+    assert cli_auth.main(["check", "--profile", "work"]) == 0
+    assert f"profile: work ({jar})" in capsys.readouterr().out
+
+
 # ---------- refresh ----------
 
 
