@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from curl_cffi.requests import Headers
 
 from pplx_agent_tools import auth, cli_auth
 from pplx_agent_tools.auth import (
@@ -29,7 +30,14 @@ from pplx_agent_tools.auth import (
     load_cookies,
     read_browser_cookies,
 )
-from pplx_agent_tools.errors import EXIT_AUTH, EXIT_GENERIC, EXIT_NETWORK, AuthError
+from pplx_agent_tools.errors import (
+    EXIT_ANTI_BOT,
+    EXIT_AUTH,
+    EXIT_GENERIC,
+    EXIT_NETWORK,
+    EXIT_RATE_LIMIT,
+    AuthError,
+)
 from tests._doubles import _TestClientBase
 
 FAR_FUTURE = 4102444800  # 2100-01-01
@@ -57,29 +65,42 @@ SIGNED_IN = {
     "user": {"id": "0a0a0a0a-1111-4222-8333-444444444444", "email": "me@example.com"},
     "expires": "2099-01-01T00:00:00.000Z",
 }
+JSON_TYPE = "application/json; charset=utf-8"
+
+
+def _set_cookie(name: str, value: str | None) -> str:
+    """A Set-Cookie header as perplexity.ai sends it; None expires the cookie."""
+    if value is None:
+        return f"{name}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax"
+    return f"{name}={value}; Path=/; Max-Age=2592000; HttpOnly; Secure; SameSite=Lax"
 
 
 class _Answer:
-    def __init__(self, status: int, body: object) -> None:
+    def __init__(
+        self, status: int, body: object, *, content_type: str, set_cookie: Sequence[str]
+    ) -> None:
         self.status_code = status
-        self.headers = {"content-type": "application/json; charset=utf-8"}
-        self.content = json.dumps(body).encode()
-        self._body = body
+        self.headers = Headers(
+            [("content-type", content_type), *(("set-cookie", h) for h in set_cookie)]
+        )
+        self.content = body if isinstance(body, bytes) else json.dumps(body).encode()
 
     def json(self) -> object:
-        return self._body
+        return json.loads(self.content)
 
 
 class _Server:
     """curl_cffi's session under a real `Client`, standing in for perplexity.ai:
-    every GET gets `status` and `body`, or raises `error`; a 200 also sets the
-    `rotate` cookies, as Set-Cookie would."""
+    every GET gets `status`, `content_type` and `body` (bytes as they are), or
+    raises `error`; a 200 also sends the `rotate` cookies as Set-Cookie, None
+    expiring one, and applies them to the jar as curl does."""
 
     def __init__(self) -> None:
         self.status = 200
+        self.content_type = JSON_TYPE
         self.body: object = SIGNED_IN
         self.error: Exception | None = None
-        self.rotate: dict[str, str] = {}
+        self.rotate: dict[str, str | None] = {}
         self.cookies: dict[str, str] = {}
         self.requests: list[tuple[str, dict[str, str]]] = []
         self.on_request: Callable[[], None] = lambda: None
@@ -89,9 +110,18 @@ class _Server:
         self.on_request()
         if self.error is not None:
             raise self.error
+        self.cookies.update(cookies)
+        set_cookie: list[str] = []
         if self.status == 200:
-            self.cookies.update(self.rotate)
-        return _Answer(self.status, self.body)
+            for name, value in self.rotate.items():
+                set_cookie.append(_set_cookie(name, value))
+                if value is None:
+                    self.cookies.pop(name, None)
+                else:
+                    self.cookies[name] = value
+        return _Answer(
+            self.status, self.body, content_type=self.content_type, set_cookie=set_cookie
+        )
 
 
 class _CheckedClient(_TestClientBase):
@@ -103,11 +133,25 @@ class _CheckedClient(_TestClientBase):
         self._session = server  # type: ignore[assignment]
 
 
+class _Clients:
+    """`cli_auth.Client` over `_Server`: import builds one from the browser's
+    cookies, refresh from the cookie file."""
+
+    def __init__(self, server: _Server) -> None:
+        self._server = server
+
+    def __call__(self, cookies: dict[str, str]) -> _CheckedClient:
+        return _CheckedClient(cookies, self._server)
+
+    def from_default_cookies(self, profile: str | None = None) -> _CheckedClient:
+        return _CheckedClient(load_cookies(profile), self._server)
+
+
 @pytest.fixture(autouse=True)
 def server(monkeypatch: pytest.MonkeyPatch) -> _Server:
-    """perplexity.ai as `pplx auth import` reaches it: by default it accepts the session."""
+    """perplexity.ai as `pplx auth` reaches it: by default it accepts the session."""
     srv = _Server()
-    monkeypatch.setattr(cli_auth, "Client", lambda cookies: _CheckedClient(cookies, srv))
+    monkeypatch.setattr(cli_auth, "Client", _Clients(srv))
     return srv
 
 
@@ -1367,6 +1411,104 @@ def test_unreachable_server_exits_four_naming_no_verify(
         "--no-verify to save the cookies unverified\n"
     )
     assert default_cookies_path().read_text() == before
+
+
+@pytest.mark.parametrize(
+    ("status", "content_type", "body", "code", "cause"),
+    [
+        (429, JSON_TYPE, {}, EXIT_RATE_LIMIT, "rate limited on /api/auth/session"),
+        (
+            403,
+            "text/html",
+            b"<title>Just a moment...</title>",
+            EXIT_ANTI_BOT,
+            "Cloudflare block on /api/auth/session (status 403)",
+        ),
+        (503, JSON_TYPE, {}, EXIT_NETWORK, "server error 503 on /api/auth/session"),
+        (422, JSON_TYPE, {}, EXIT_GENERIC, "unexpected status 422 on /api/auth/session"),
+        (200, "text/plain", b"ok", EXIT_GENERIC, "non-JSON response from /api/auth/session"),
+    ],
+    ids=["rate-limit", "anti-bot", "server-error", "unexpected-status", "non-json"],
+)
+def test_check_failing_other_than_by_rejection_keeps_its_code_and_names_no_verify(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    server: _Server,
+    status: int,
+    content_type: str,
+    body: object,
+    code: int,
+    cause: str,
+) -> None:
+    before = _working_file()
+    _fake_extractor(monkeypatch, [SESSION])
+    server.status, server.content_type, server.body = status, content_type, body
+    assert cli_auth.main(["import", "--browser", "firefox"]) == code
+    assert capsys.readouterr() == (
+        "",
+        f"pplx auth import: cannot verify the firefox session: {cause}; nothing was saved. "
+        "Retry, or pass --no-verify to save the cookies unverified\n",
+    )
+    assert default_cookies_path().read_text() == before
+
+
+# Suffixes of the session cookie's name: the token held before, the Set-Cookie
+# the check answers with (None expires the name), and the token saved.
+_ROTATIONS = {
+    "2-to-3-chunks": (
+        {".0": "a0", ".1": "a1"},
+        {".0": "b0", ".1": "b1", ".2": "b2"},
+        {".0": "b0", ".1": "b1", ".2": "b2"},
+    ),
+    "3-to-2-chunks": (
+        {".0": "a0", ".1": "a1", ".2": "a2"},
+        {".0": "b0", ".1": "b1", ".2": None},
+        {".0": "b0", ".1": "b1"},
+    ),
+    "whole-to-chunks": (
+        {"": "a"},
+        {"": None, ".0": "b0", ".1": "b1"},
+        {".0": "b0", ".1": "b1"},
+    ),
+    "chunks-to-whole": (
+        {".0": "a0", ".1": "a1"},
+        {"": "b", ".0": None, ".1": None},
+        {"": "b"},
+    ),
+    "no-rotation": (
+        {".0": "a0", ".1": "a1"},
+        {},
+        {".0": "a0", ".1": "a1"},
+    ),
+}
+
+
+@pytest.mark.parametrize("command", ["import", "refresh"])
+@pytest.mark.parametrize(("held", "sent", "saved"), list(_ROTATIONS.values()), ids=list(_ROTATIONS))
+def test_saved_session_token_is_the_one_the_server_last_set(
+    monkeypatch: pytest.MonkeyPatch,
+    server: _Server,
+    command: str,
+    held: dict[str, str],
+    sent: dict[str, str | None],
+    saved: dict[str, str],
+) -> None:
+    # NextAuth splits a token too large for one cookie into numbered chunks, so
+    # a rotated token can take another number of them.
+    other = {"pplx.visitor-id": "v"}
+    if command == "import":
+        rows = [_cookie(TOKEN + suffix, value) for suffix, value in held.items()]
+        _fake_extractor(monkeypatch, [_cookie("pplx.visitor-id", "v"), *rows])
+        argv = ["import", "--browser", "firefox"]
+    else:
+        dest = default_cookies_path()
+        dest.parent.mkdir(parents=True)
+        dest.write_text(json.dumps({**other, **{TOKEN + s: v for s, v in held.items()}}))
+        dest.chmod(0o600)
+        argv = ["refresh"]
+    server.rotate = {TOKEN + suffix: value for suffix, value in sent.items()}
+    assert cli_auth.main(argv) == 0
+    assert _saved() == {**other, **{TOKEN + suffix: value for suffix, value in saved.items()}}
 
 
 def test_no_verify_saves_without_a_request_and_warns(

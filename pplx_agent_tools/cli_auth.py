@@ -25,7 +25,7 @@ from .auth import (
     save_cookies,
 )
 from .cli_types import PplxArgumentParser
-from .errors import AuthError, NetworkError, PplxError, exit_code
+from .errors import AuthError, PplxError, exit_code
 from .wire import Client
 
 
@@ -171,7 +171,22 @@ def cmd_import(args: argparse.Namespace) -> int:
             )
         else:
             client = Client(cookies)
-            session = _browser_session(client, browser)
+            try:
+                session = client.auth_session()
+            except AuthError as e:
+                raise AuthError(
+                    f"perplexity.ai did not accept the {browser} session: it is missing or "
+                    f"expired; sign in at perplexity.ai in {browser}, then import again"
+                ) from e
+            except PplxError as e:
+                # Only a rejection calls for signing in again; any other failure
+                # keeps its own exit code.
+                print(
+                    f"pplx auth import: cannot verify the {browser} session: {e}; nothing was "
+                    "saved. Retry, or pass --no-verify to save the cookies unverified",
+                    file=sys.stderr,
+                )
+                return exit_code(e)
             # The check can rotate the session token.
             cookies = client.cookies
         written = save_cookies(cookies, dest=dest, expected=expected)
@@ -182,22 +197,6 @@ def cmd_import(args: argparse.Namespace) -> int:
     if session is not None:
         print(f"session valid: {_account(session)}")
     return 0
-
-
-def _browser_session(client: Client, browser: str) -> dict[str, Any]:
-    """`client.auth_session()`, its errors worded for cookies read from `browser`."""
-    try:
-        return client.auth_session()
-    except AuthError as e:
-        raise AuthError(
-            f"perplexity.ai did not accept the {browser} session: it is missing or expired; "
-            f"sign in at perplexity.ai in {browser}, then import again"
-        ) from e
-    except NetworkError as e:
-        raise NetworkError(
-            f"cannot verify the {browser} session: {e}; nothing was saved. "
-            "Retry, or pass --no-verify to save the cookies unverified"
-        ) from e
 
 
 def _account(session: dict[str, Any]) -> str:

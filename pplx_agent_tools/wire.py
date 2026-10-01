@@ -12,14 +12,15 @@ import hashlib
 import json
 import sys
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
+from email.utils import parsedate_to_datetime
 from functools import partial
 from typing import Any
 
 from curl_cffi import CurlECode, CurlError
 from curl_cffi import requests as cf_requests
 
-from .auth import cookie_pair_ok
+from .auth import SESSION_COOKIE, cookie_pair_ok
 from .errors import (
     AntiBotError,
     AuthError,
@@ -107,9 +108,9 @@ class Client:
         someone (`_USER_KEYS`); anything else is AuthError.
 
         Captures rotated cookies into `self._cookies` (NextAuth's rolling-session
-        pattern issues a fresh `__Secure-next-auth.session-token` on each call;
-        without capture, a 30-day-old cookie that's been rotating silently still
-        expires from our perspective on day 30).
+        pattern issues a fresh session token on each call; without capture, a
+        30-day-old cookie that's been rotating silently still expires from our
+        perspective on day 30).
         """
         resp = self._get("/api/auth/session")
         try:
@@ -124,6 +125,7 @@ class Client:
         ):
             raise AuthError("session expired or unauthenticated; re-import cookies")
         self._capture_rotated_cookies()
+        self._capture_session_token(resp.headers.get_list("set-cookie"))
         return data
 
     def _capture_rotated_cookies(self) -> bool:
@@ -133,10 +135,13 @@ class Client:
         Only updates names we already had (so we don't grow our cookie set
         unexpectedly with third-party cookies the server set). Empty-string
         rotations are captured (`is not None`, not truthiness) — a cookie
-        rotated to empty is a real state change.
+        rotated to empty is a real state change. The session token is left to
+        `_capture_session_token`.
         """
         changed = False
         for name in list(self._cookies):
+            if name.startswith(SESSION_COOKIE):
+                continue
             try:
                 new_val = self._session.cookies.get(name)
             except (KeyError, LookupError) as e:
@@ -157,6 +162,40 @@ class Client:
             self._cookies[name] = new_val
             changed = True
         return changed
+
+    def _capture_session_token(self, set_cookie: Iterable[str | None]) -> None:
+        """Hold the session token as these Set-Cookie headers leave it.
+
+        A rotated token can be split into a different number of chunks, so a new
+        one replaces every name of the old, whether or not the server expired
+        them; without one, only the names it expired go. Values are the
+        headers', as a browser stores them, since curl_cffi's jar unquotes them.
+        """
+        live: dict[str, str] = {}
+        expired: set[str] = set()
+        for header in set_cookie:
+            parsed = _parse_set_cookie(header or "")
+            if parsed is None or not parsed[0].startswith(SESSION_COOKIE):
+                continue
+            name, value, gone = parsed
+            if gone:
+                live.pop(name, None)
+                expired.add(name)
+            else:
+                live[name] = value
+                expired.discard(name)
+        # Chunks of the old token beside the new one's would corrupt the token
+        # NextAuth joins, so the old one is kept whole.
+        if not all(cookie_pair_ok(name, value) for name, value in live.items()):
+            print(
+                "warning: keeping the prior session token: the rotated one would not load",
+                file=sys.stderr,
+            )
+            return
+        held = [name for name in self._cookies if name.startswith(SESSION_COOKIE)]
+        for name in held if live else expired:
+            self._cookies.pop(name, None)
+        self._cookies.update(live)
 
     @property
     def cookies(self) -> dict[str, str]:
@@ -698,6 +737,32 @@ def _body_excerpt(resp: Any, *, redact: str | None = None) -> str:
         return content[:200].decode("utf-8", "replace")
     text = content.decode("utf-8", "replace").replace(redact, "<redacted>")
     return text[:200]
+
+
+def _parse_set_cookie(header: str) -> tuple[str, str, bool] | None:
+    """A Set-Cookie header's name, value, and whether it expires the cookie, as
+    RFC 6265 section 5.2 has a browser read them; None for a header a browser
+    ignores. Max-Age outranks Expires, and an unparsable one of either is ignored.
+    """
+    pair, *attributes = header.split(";")
+    name, eq, value = pair.partition("=")
+    name, value = name.strip(), value.strip()
+    if not eq or not name:
+        return None
+    max_age: int | None = None
+    expires: float | None = None
+    for attribute in attributes:
+        key, _, arg = attribute.partition("=")
+        key, arg = key.strip().lower(), arg.strip()
+        digits = arg.removeprefix("-")
+        if key == "max-age" and digits.isascii() and digits.isdigit():
+            max_age = int(arg)
+        elif key == "expires":
+            with contextlib.suppress(TypeError, ValueError, OverflowError):
+                expires = parsedate_to_datetime(arg).timestamp()
+    if max_age is not None:
+        return name, value, max_age <= 0
+    return name, value, expires is not None and expires <= time.time()
 
 
 def _json_body(resp: Any, path: str) -> JsonValue:

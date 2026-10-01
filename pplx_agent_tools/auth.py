@@ -82,7 +82,7 @@ _UNDECRYPTED = "could not be decrypted"
 
 # NextAuth's session cookie. A token too large for one cookie is split into
 # <name>.0, <name>.1, ..., which the server joins in order.
-_SESSION_COOKIE = "__Secure-next-auth.session-token"
+SESSION_COOKIE = "__Secure-next-auth.session-token"
 
 # Seconds from 1601-01-01, Chromium's time origin, to the Unix epoch.
 _CHROMIUM_EPOCH_OFFSET = 11_644_473_600
@@ -506,7 +506,7 @@ def read_browser_cookies(browser: str, browser_profile: str | None = None) -> di
     if not _has_session(cookies):
         cause = "; ".join(problems) or f"sign in at perplexity.ai in {browser} first"
         raise AuthError(
-            f"no usable {_SESSION_COOKIE} cookie for *.{_COOKIE_DOMAIN} in {browser}: {cause}"
+            f"no usable {SESSION_COOKIE} cookie for *.{_COOKIE_DOMAIN} in {browser}: {cause}"
         )
     for problem in problems:
         print(f"warning: {browser}: {problem}", file=sys.stderr)
@@ -522,17 +522,17 @@ def _readable_session(cookies: dict[str, str]) -> dict[str, str]:
     gap by an older split, would corrupt the token it reads.
     """
     keep: set[str] = set()
-    if _SESSION_COOKIE in cookies:
-        keep.add(_SESSION_COOKIE)
+    if SESSION_COOKIE in cookies:
+        keep.add(SESSION_COOKIE)
     else:
-        while (chunk := f"{_SESSION_COOKIE}.{len(keep)}") in cookies:
+        while (chunk := f"{SESSION_COOKIE}.{len(keep)}") in cookies:
             keep.add(chunk)
-    return {n: v for n, v in cookies.items() if not n.startswith(_SESSION_COOKIE) or n in keep}
+    return {n: v for n, v in cookies.items() if not n.startswith(SESSION_COOKIE) or n in keep}
 
 
 def _has_session(cookies: dict[str, str]) -> bool:
     """Whether `cookies`, as `_readable_session` left them, hold a session token."""
-    return _SESSION_COOKIE in cookies or f"{_SESSION_COOKIE}.0" in cookies
+    return SESSION_COOKIE in cookies or f"{SESSION_COOKIE}.0" in cookies
 
 
 class _YtDlpFailure(Exception):

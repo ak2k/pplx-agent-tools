@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 
 import pytest
+from curl_cffi.requests import Headers
 
 from pplx_agent_tools.errors import (
     AntiBotError,
@@ -246,11 +247,17 @@ def test_cookies_property_returns_copy() -> None:
 
 
 class _SessionAnswer:
-    """curl_cffi's session answering every GET with 200 and `body`."""
+    """curl_cffi's session answering every GET with 200, `body` and the
+    `set_cookie` headers."""
 
-    def __init__(self, body: object) -> None:
+    def __init__(self, body: object, set_cookie: tuple[str, ...] = ()) -> None:
         self.status_code = 200
-        self.headers = {"content-type": "application/json; charset=utf-8"}
+        self.headers = Headers(
+            [
+                ("content-type", "application/json; charset=utf-8"),
+                *(("set-cookie", h) for h in set_cookie),
+            ]
+        )
         self.content = json.dumps(body).encode()
         self.cookies: dict[str, str] = {}
         self._body = body
@@ -262,9 +269,11 @@ class _SessionAnswer:
         return self._body
 
 
-def _session_client(body: object) -> Client:
-    c = Client({"any": "cookie"})
-    c._session = _SessionAnswer(body)  # type: ignore[assignment]
+def _session_client(
+    body: object, cookies: dict[str, str] | None = None, set_cookie: tuple[str, ...] = ()
+) -> Client:
+    c = Client({"any": "cookie"} if cookies is None else cookies)
+    c._session = _SessionAnswer(body, set_cookie)  # type: ignore[assignment]
     return c
 
 
@@ -291,6 +300,75 @@ def test_auth_session_without_a_named_user_is_auth_error(body: object) -> None:
 )
 def test_auth_session_naming_its_user_is_valid(user: dict[str, str]) -> None:
     assert _session_client({"user": user}).auth_session() == {"user": user}
+
+
+# ---------- auth_session: the session token the server set ----------
+
+T = "__Secure-next-auth.session-token"
+SIGNED_IN = {"user": {"id": "u1"}}
+GONE = "Thu, 01 Jan 1970 00:00:00 GMT"
+LATER = "Fri, 01 Jan 2100 00:00:00 GMT"
+
+
+@pytest.mark.parametrize(
+    ("held", "set_cookie", "kept"),
+    [
+        # A new token replaces every name of the old one, expired or not.
+        ({"": "a"}, (f"{T}.0=b0; Path=/", f"{T}.1=b1; Path=/"), {".0": "b0", ".1": "b1"}),
+        ({".0": "a0", ".1": "a1", ".2": "a2"}, (f"{T}=b; Path=/",), {"": "b"}),
+        # With no new token, only the names expired go.
+        ({".0": "a0", ".1": "a1", ".2": "a2"}, (f"{T}.2=; Max-Age=0",), {".0": "a0", ".1": "a1"}),
+        ({".0": "a0", ".1": "a1"}, (f"{T}.1=; Expires={GONE}",), {".0": "a0"}),
+        ({".0": "a0", ".1": "a1"}, (f"{T}.1=; max-age=-1",), {".0": "a0"}),
+        # Max-Age outranks Expires; a Max-Age that is not a number is ignored.
+        ({"": "a"}, (f"{T}=b; Max-Age=60; Expires={GONE}",), {"": "b"}),
+        ({"": "a"}, (f"{T}=; Max-Age=0; Expires={LATER}",), {}),
+        ({"": "a"}, (f"{T}=; Max-Age=soon; Expires={GONE}",), {}),
+        ({"": "a"}, (f"{T}=b; Expires=not a date",), {"": "b"}),
+        # The value as sent, quotes included, as a browser keeps it.
+        ({"": "a"}, (f'{T}="b"; Path=/',), {"": '"b"'}),
+        # Headers a browser ignores change nothing.
+        ({"": "a"}, (T, "=b", f"; {T}=b"), {"": "a"}),
+    ],
+    ids=[
+        "whole-to-chunks",
+        "chunks-to-whole",
+        "max-age-0",
+        "past-expires",
+        "negative-max-age",
+        "max-age-over-past-expires",
+        "max-age-over-later-expires",
+        "bad-max-age",
+        "bad-expires",
+        "quoted",
+        "malformed",
+    ],
+)
+def test_auth_session_holds_the_session_token_the_server_set(
+    held: dict[str, str], set_cookie: tuple[str, ...], kept: dict[str, str]
+) -> None:
+    c = _session_client(
+        SIGNED_IN, {"other": "o", **{T + s: v for s, v in held.items()}}, set_cookie
+    )
+    c.auth_session()
+    assert c.cookies == {"other": "o", **{T + s: v for s, v in kept.items()}}
+
+
+def test_auth_session_adds_no_other_cookie_the_server_set() -> None:
+    c = _session_client(SIGNED_IN, {T: "a"}, ("__cf_bm=x; Path=/", "pref=; Max-Age=0"))
+    c.auth_session()
+    assert c.cookies == {T: "a"}
+
+
+def test_auth_session_keeps_the_prior_token_when_the_rotated_one_would_not_load(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    held = {f"{T}.0": "a0", f"{T}.1": "a1"}
+    c = _session_client(SIGNED_IN, held, (f"{T}.0=b0", f"{T}.1=b\tSECRET", f"{T}.2=b2"))
+    c.auth_session()
+    assert c.cookies == held
+    err = capsys.readouterr().err
+    assert "keeping the prior session token" in err and "SECRET" not in err
 
 
 # ---------- sse_post overall-deadline ----------

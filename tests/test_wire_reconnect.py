@@ -13,6 +13,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from curl_cffi.requests import Headers
 
 from pplx_agent_tools.errors import (
     AntiBotError,
@@ -44,7 +45,7 @@ class _Resp:
         json_body: Any = None,
     ) -> None:
         self.status_code = status
-        self.headers = headers or {}
+        self.headers = Headers(headers)
         self.content = content
         self._chunks = chunks or []
         self._chunk_delay_s = chunk_delay_s
