@@ -8,8 +8,7 @@ dynamic = ["version"]
 description = "Agent toolkit for Perplexity, backed by your Pro subscription's web session cookies"
 readme = "README.md"
 license = { file = "LICENSE" }
-# rookiepy has no wheel past cp312 and its sdist does not build.
-requires-python = ">=3.10,<3.13"
+requires-python = ">=3.10"
 authors = [{ name = "ak2k" }]
 classifiers = [
     "Development Status :: 1 - Planning",
@@ -19,13 +18,19 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Internet :: WWW/HTTP",
     "Environment :: Console",
 ]
 dependencies = [
     "curl_cffi>=0.7",
     "idna>=3.7",
-    "rookiepy>=0.5",
+    # 2026.07.04 reads Chromium's cookie database on SQLite builds that refuse
+    # double-quoted strings; earlier releases fail there.
+    "yt-dlp>=2026.7.4",
+    # yt-dlp reads Chromium's key from the GNOME keyring through it.
+    "secretstorage>=3; sys_platform == 'linux'",
     "trafilatura>=1.12",
     "fastembed>=0.4",
     "sqlite-vec>=0.1.6",
@@ -125,6 +130,7 @@ ignore_names = [
     "memo",
     "protocol",
     "charge",
+    "only_once",
 ]
 
 [tool.coverage.run]
@@ -173,9 +179,9 @@ strict = [
     "pplx_agent_tools/verbs/models.py",
     "pplx_agent_tools/askstream",
 ]
-# Third-party deps without stubs: curl_cffi (Rust bindings), rookiepy (Rust),
-# trafilatura (older lib, no inline annotations). Silence stub-missing noise
-# rather than burn time chasing it.
+# Third-party deps without stubs: curl_cffi (Rust bindings), trafilatura
+# (older lib, no inline annotations). Silence stub-missing noise rather than
+# burn time chasing it.
 reportMissingTypeStubs = false
 # Not "warning": an unresolved import degrades every dependent symbol to
 # Unknown, erasing real type errors while basedpyright still exits 0 — a

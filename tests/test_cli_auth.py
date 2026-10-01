@@ -443,12 +443,12 @@ def test_import_auth_error_exits_two(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
 ) -> None:
     def boom(browser: str, profile: str | None = None) -> Path:
-        raise AuthError("rookiepy couldn't read browser DB")
+        raise AuthError("cannot read chrome cookies: database is locked")
 
     monkeypatch.setattr(cli_auth, "import_from_browser", boom)
     rc = cli_auth.main(["import", "--browser", "chrome"])
     assert rc == EXIT_AUTH
-    assert "rookiepy couldn't read" in capsys.readouterr().err
+    assert "database is locked" in capsys.readouterr().err
 
 
 def test_import_requires_browser_flag() -> None:

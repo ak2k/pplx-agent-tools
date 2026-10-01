@@ -56,12 +56,12 @@ package build — run `nix flake check` to reproduce the exact gate before pushi
 invisible to it, so `git add` anything new before running it or the check runs
 against a tree that is missing it.
 
-`requires-python` stops below 3.13 because `rookiepy` publishes cp310–cp312 wheels
-only and its sdist does not build, so nothing installs it on 3.13; with that bound
-uv picks a 3.10–3.12 interpreter on its own. `.python-version` pins uv to 3.12, the
-version the flake builds with, so a bare `uv run` outside `nix develop` tests that
-version. Inside `nix develop` the shell's `UV_PYTHON` points at the flake's dev venv
-and takes precedence over `.python-version`.
+`.python-version` pins uv to 3.12, the version the flake builds with
+(`python312` in `flake.nix`), so a bare `uv run` outside `nix develop` tests what
+CI tests. Pass `--python 3.1x` to run another version; the classifiers in
+`pyproject.toml` list the versions the suite has passed on. Inside `nix develop`
+the shell's `UV_PYTHON` points at the flake's dev venv and takes precedence over
+`.python-version`.
 
 The `[tool.pyright]` table in `pyproject.toml` still configures the type
 checker — basedpyright reads the same config keys as pyright (it's a

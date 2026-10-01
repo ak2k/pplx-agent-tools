@@ -59,7 +59,7 @@ def build_parser() -> PplxArgumentParser:
         "--browser",
         choices=list(SUPPORTED_BROWSERS),
         required=True,
-        help="source browser (rookiepy must support it on this OS)",
+        help="browser to read perplexity.ai cookies from (safari: macOS only)",
     )
     p_import.add_argument(
         "--profile",

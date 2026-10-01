@@ -27,7 +27,9 @@ import os
 import stat
 import sys
 import tempfile
+from collections.abc import Iterable
 from dataclasses import dataclass
+from http.cookiejar import Cookie
 from pathlib import Path
 from typing import cast
 
@@ -37,9 +39,6 @@ from .errors import AuthError
 
 DEFAULT_PROFILE = "default"
 
-# rookiepy exposes a function per browser (rookiepy.brave, rookiepy.chrome, etc.).
-# Our CLI flag is the lowercase function name. Each function takes a list of
-# domain substrings and returns a list of cookie dicts in Cookie-Editor shape.
 SUPPORTED_BROWSERS: tuple[str, ...] = (
     "brave",
     "chrome",
@@ -47,16 +46,22 @@ SUPPORTED_BROWSERS: tuple[str, ...] = (
     "edge",
     "firefox",
     "safari",
-    "arc",
     "vivaldi",
     "opera",
     "librewolf",
     "zen",
 )
 
-# Domain filter passed to rookiepy. Substring match → covers perplexity.ai,
-# www.perplexity.ai, and any other subdomain.
+# Firefox forks whose cookie store yt-dlp reads as Firefox's, given the
+# fork's profile root; the value is the fork's Flatpak app id.
+_FIREFOX_FORKS = {
+    "librewolf": "io.gitlab.librewolf-community",
+    "zen": "app.zen_browser.zen",
+}
+
 _COOKIE_DOMAIN = "perplexity.ai"
+# The host of wire.BASE_URL; wire imports this module, so it cannot import wire.
+_REQUEST_HOST = "www.perplexity.ai"
 
 
 def resolve_profile(profile: str | None = None) -> str:
@@ -345,7 +350,7 @@ def cookie_pair_ok(name: str, value: str) -> bool:
 
 
 def _cookie_entry(entry: object, *, where: str) -> tuple[str, str]:
-    """One Cookie-Editor / rookiepy row: {"name": ..., "value": ..., ...}."""
+    """One Cookie-Editor row: {"name": ..., "value": ..., ...}."""
     if not isinstance(entry, dict):
         raise AuthError(f"{where} is not an object")
     fields = cast("dict[object, object]", entry)
@@ -379,15 +384,14 @@ def _normalize(data: object, *, source: str) -> dict[str, str]:
 
 
 def import_from_browser(browser: str, profile: str | None = None) -> Path:
-    """Read *.perplexity.ai cookies from a local browser via rookiepy and
+    """Read *.perplexity.ai cookies from a local browser's cookie store and
     write them to the file `load_cookies` reads ($PPLX_COOKIES_PATH, else the
     profile file). Atomic (tmp + rename), mode 0600.
 
-    rookiepy handles platform details: keychain on macOS, GNOME-keyring /
-    kwallet / plaintext on Linux, DPAPI on Windows, locked-DB copy-to-temp,
-    v10/v11 prefix dispatch, host-key integrity-binding strip.
+    yt-dlp reads the store: Keychain on macOS, GNOME keyring or KWallet on
+    Linux, DPAPI on Windows, a copy of a locked database. Any failure there is
+    an AuthError naming the browser and the cause.
 
-    Returned shape is Cookie-Editor array; we flatten name→value before write.
     Unlike a cookie file, a bad row is skipped with a warning: the jar holds
     third-party cookies the user cannot edit, and one of them must not block
     the import.
@@ -404,37 +408,127 @@ def import_from_browser(browser: str, profile: str | None = None) -> Path:
         ),
     )
 
+    if browser in _FIREFOX_FORKS:
+        source, browser_profile = "firefox", _firefox_fork_root(browser)
+    else:
+        source, browser_profile = browser, None
+    problems: list[str] = []
     try:
-        import rookiepy
-    except ImportError as e:
-        raise AuthError(f"rookiepy is required for browser import: {e}") from e
-
-    fn = getattr(rookiepy, browser, None)
-    if fn is None:
-        raise AuthError(
-            f"rookiepy has no '{browser}' loader; upgrade rookiepy or pick a different browser"
-        )
-
-    try:
-        rows: object = fn([_COOKIE_DOMAIN])
+        rows = [c for c in _extract_jar(source, browser_profile, problems) if _for_site(c.domain)]
     except Exception as e:
-        raise AuthError(f"rookiepy.{browser} failed: {e}") from e
+        cause = "; ".join([str(e) or type(e).__name__, *problems])
+        if browser == "safari" and isinstance(e, OSError):
+            cause += " (reading Safari's cookies needs Full Disk Access for this terminal)"
+        raise AuthError(f"cannot read {browser} cookies: {cause}") from e
 
-    if not isinstance(rows, list):
-        raise AuthError(f"rookiepy.{browser} returned {type(rows).__name__}, expected a list")
-    cookies: dict[str, str] = {}
-    for i, row in enumerate(cast("list[object]", rows)):
+    chosen: dict[str, tuple[tuple[bool, str, str], str]] = {}
+    for row in rows:
         try:
-            name, value = _cookie_entry(row, where=f"cookie entry {i} from {browser}")
+            name, value = _cookie_pair(
+                row.name, row.value, where=f"cookie for {row.domain} from {browser}"
+            )
         except AuthError as e:
             print(f"warning: skipping {e}", file=sys.stderr)
             continue
-        cookies[name] = value
+        # A flat file holds one value per name. Prefer the cookie a browser
+        # sends to the root of BASE_URL; among equals keep the last in
+        # (domain, path) order, as `_normalize` keeps the last repeat, so
+        # www.perplexity.ai beats .perplexity.ai. The jar's own order differs
+        # across Python versions. yt-dlp has already merged container and
+        # partition copies of one (domain, path, name).
+        rank = (_sent_to_request_root(row), row.domain, row.path)
+        if name not in chosen or rank >= chosen[name][0]:
+            chosen[name] = (rank, value)
+    cookies = {name: value for name, (_, value) in chosen.items()}
 
     if not cookies:
+        if problems:
+            raise AuthError(
+                f"no usable cookies for *.{_COOKIE_DOMAIN} in {browser}: " + "; ".join(problems)
+            )
         raise AuthError(
             f"no usable cookies for *.{_COOKIE_DOMAIN} in {browser}; "
             f"sign in at perplexity.ai in {browser} first"
         )
+    for problem in problems:
+        print(f"warning: {browser}: {problem}", file=sys.stderr)
 
     return save_cookies(cookies, dest=dest)
+
+
+def _extract_jar(browser: str, profile: str | None, problems: list[str]) -> Iterable[Cookie]:
+    """Every cookie in the browser's store; the one call into yt-dlp.
+
+    yt-dlp's diagnostics never reach stdout. The ones that explain missing
+    cookies are appended to `problems`, each once.
+    """
+    # Imported here so that no other verb pays for loading yt-dlp.
+    from yt_dlp.cookies import YDLLogger, extract_cookies_from_browser
+
+    def note(message: str) -> None:
+        if message not in problems:
+            problems.append(message)
+
+    class Log(YDLLogger):
+        def info(self, message: str) -> None:
+            # The only count of cookies that failed to decrypt.
+            if "could not be decrypted" in message:
+                note(message)
+
+        def warning(self, message: str, only_once: bool = False) -> None:  # noqa: ARG002 - note() keeps each once
+            note(message)
+
+        def error(self, message: str) -> None:
+            note(message)
+
+    return extract_cookies_from_browser(browser, profile, Log())
+
+
+def _firefox_fork_root(browser: str) -> str:
+    """The directory holding a Firefox fork's profiles.ini.
+
+    A directory without profiles.ini does not count: LibreWolf users create
+    ~/.librewolf for librewolf.overrides.cfg alone, and LibreWolf then uses
+    its XDG directory. The order is the browser's: the legacy dot directory
+    wins over the XDG one.
+    """
+    home = Path.home()
+    if sys.platform == "darwin":
+        candidates = [home / "Library" / "Application Support" / browser]
+    elif sys.platform == "win32":
+        appdata = os.environ.get("APPDATA")
+        candidates = [Path(appdata) / browser] if appdata else []
+    else:
+        config = Path(os.environ.get("XDG_CONFIG_HOME") or home / ".config")
+        flatpak = home / ".var" / "app" / _FIREFOX_FORKS[browser]
+        candidates = [
+            home / f".{browser}",
+            config / browser / browser,
+            flatpak / f".{browser}",
+            flatpak / "config" / browser / browser,
+        ]
+    for root in candidates:
+        if (root / "profiles.ini").is_file():
+            return str(root)
+    looked = f"looked in {', '.join(map(str, candidates))}" if candidates else "$APPDATA is not set"
+    raise AuthError(f"{browser} profile directory not found ({looked})")
+
+
+def _for_site(domain: str) -> bool:
+    """Whether a cookie domain is perplexity.ai or a subdomain of it."""
+    host = domain.lstrip(".").lower()
+    return host == _COOKIE_DOMAIN or host.endswith(f".{_COOKIE_DOMAIN}")
+
+
+def _sent_to_request_root(cookie: Cookie) -> bool:
+    """Whether a browser sends `cookie` with a request for https://www.perplexity.ai/.
+
+    A stored domain with a leading dot came from a Domain attribute and
+    matches subdomains; one without is host-only (RFC 6265 5.3 and 5.4).
+    """
+    domain = cookie.domain.lower()
+    if domain.startswith("."):
+        host_ok = domain[1:] == _REQUEST_HOST or _REQUEST_HOST.endswith(domain)
+    else:
+        host_ok = domain == _REQUEST_HOST
+    return host_ok and cookie.path in ("", "/") and not cookie.is_expired()

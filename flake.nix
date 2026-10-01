@@ -97,7 +97,7 @@
         let
           pkgs = nixpkgs.legacyPackages.${system};
           workspace = uv2nix.lib.workspace.loadWorkspace { workspaceRoot = ./.; };
-          # sourcePreference = "wheel" — curl_cffi, onnxruntime, rookiepy,
+          # sourcePreference = "wheel" — curl_cffi, onnxruntime, cryptography,
           # tokenizers, lxml all ship usable wheels; building from sdist
           # would require their full native toolchains in nixpkgs.
           overlay = workspace.mkPyprojectOverlay { sourcePreference = "wheel"; };
@@ -133,6 +133,14 @@
           name = "pplx-agent-tools";
           paths = [ venv ];
           postBuild = ''
+            # The venv links share/ whole when one dependency (yt-dlp) has it;
+            # make it a directory before adding to it.
+            if [ -L $out/share ]; then
+              target=$(readlink -f $out/share)
+              rm $out/share
+              mkdir $out/share
+              ln -s $target/* $out/share/
+            fi
             mkdir -p $out/share/skills/pplx-agent-tools
             cp ${./SKILL.md} $out/share/skills/pplx-agent-tools/SKILL.md
           '';

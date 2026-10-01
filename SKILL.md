@@ -112,7 +112,7 @@ Counts (`-n/--limit`, `--max-chars`, `--max-tokens`, `--max-tokens-per-page`) mu
 
 - `pplx snippets` downloads ~80 MB embedding model on first invocation (cached at `~/.cache/fastembed/`). Subsequent calls are 1–2 s for N≈5 URLs.
 - `pplx snippets` needs SQLite 3.38 or newer; an older build is refused with a clear error rather than quietly returning no semantic matches.
-- `pplx auth import --browser <name>` pops a macOS keychain prompt the first time; click "Always Allow" so future runs are silent.
+- On macOS, `pplx auth import` from a Chromium-based browser (Chrome, Brave, Edge, ...) pops a Keychain prompt for the browser's "Safe Storage" key: "Allow" answers once, "Always Allow" lets any program that runs the `security` tool read that key without asking. Importing from Safari needs Full Disk Access for the terminal.
 
 # Caveats
 

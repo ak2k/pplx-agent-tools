@@ -23,13 +23,12 @@ Verbs print text, or JSON with `-j`; diagnostics go to stderr. Exit codes are st
 
 ## Install
 
-Not on PyPI. Install a [release](https://github.com/ak2k/pplx-agent-tools/releases) from GitHub; the commands below use v0.9.1.
+Not on PyPI. Install a [release](https://github.com/ak2k/pplx-agent-tools/releases) from GitHub; the commands below use v0.10.0.
 
 ```bash
-# Python 3.12: rookiepy ships wheels only up to Python 3.12
-uv tool install --python 3.12 git+https://github.com/ak2k/pplx-agent-tools@v0.9.1
+uv tool install git+https://github.com/ak2k/pplx-agent-tools@v0.10.0
 # or with Nix
-nix profile install github:ak2k/pplx-agent-tools/v0.9.1
+nix profile install github:ak2k/pplx-agent-tools/v0.10.0
 
 # Claude Code: install the skill
 mkdir -p ~/.claude/skills/pplx-agent-tools
@@ -38,7 +37,7 @@ ln -sf "$(pplx skill-path)" ~/.claude/skills/pplx-agent-tools/SKILL.md
 #  which survives upgrades)
 
 # Import cookies from a browser where you are logged in to perplexity.ai
-pplx auth import --browser firefox  # also: brave, chrome, safari, arc, zen, ...
+pplx auth import --browser firefox  # also: brave, chrome, edge, safari, librewolf, zen, ...
 pplx auth check
 
 # Optional: each refresh resets the cookie's 30-day expiry
