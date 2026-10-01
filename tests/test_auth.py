@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import stat
 import sys
 import types
@@ -16,6 +17,7 @@ from pplx_agent_tools.auth import (
     DEFAULT_PROFILE,
     SUPPORTED_BROWSERS,
     _normalize,
+    cookie_write_path,
     default_cookies_path,
     import_from_browser,
     load_cookies,
@@ -229,37 +231,32 @@ def test_load_cookies_path_nonexistent_raises(monkeypatch: pytest.MonkeyPatch) -
 # ---------- save_cookies (rotation persistence) ----------
 
 
-def test_save_cookies_writes_with_0600_perms(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    dest = save_cookies({"a": "1", "b": "2"})
+def test_save_cookies_writes_with_0600_perms(tmp_path: Path) -> None:
+    dest = save_cookies({"a": "1", "b": "2"}, dest=tmp_path / "cookies.json")
     assert dest.exists()
     assert stat.S_IMODE(dest.stat().st_mode) == 0o600
     assert json.loads(dest.read_text()) == {"a": "1", "b": "2"}
 
 
-def test_save_cookies_per_profile(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    dest = save_cookies({"x": "1"}, profile="work")
-    assert "work" in str(dest)
-    assert json.loads(dest.read_text()) == {"x": "1"}
+@pytest.mark.usefixtures("no_cookie_env")
+def test_cookie_write_path_per_profile() -> None:
+    assert cookie_write_path("work", inline_refusal="x") == default_cookies_path("work")
 
 
 def test_save_cookies_creates_parent_dirs(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     # No pre-existing perplexity/<profile>/ directory
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "fresh"))
-    dest = save_cookies({"x": "1"})
+    dest = save_cookies({"x": "1"}, dest=default_cookies_path())
     assert dest.parent.is_dir()
 
 
-def test_save_cookies_atomic_replace(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+def test_save_cookies_atomic_replace(tmp_path: Path) -> None:
+    jar = tmp_path / "cookies.json"
     # First write
-    dest = save_cookies({"v": "old"})
+    dest = save_cookies({"v": "old"}, dest=jar)
     inode_a = dest.stat().st_ino
     # Overwrite with new content
-    dest2 = save_cookies({"v": "new"})
+    dest2 = save_cookies({"v": "new"}, dest=jar)
     assert dest == dest2
     assert json.loads(dest.read_text()) == {"v": "new"}
     # The .tmp file should not exist after rename
@@ -273,8 +270,47 @@ def test_save_cookies_then_load_roundtrip(monkeypatch: pytest.MonkeyPatch, tmp_p
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     monkeypatch.delenv("PPLX_COOKIES_PATH", raising=False)
     monkeypatch.delenv("PPLX_COOKIES", raising=False)
-    save_cookies({"session-token": "abc123", "csrf": "xyz"})
+    save_cookies({"session-token": "abc123", "csrf": "xyz"}, dest=default_cookies_path())
     assert load_cookies() == {"session-token": "abc123", "csrf": "xyz"}
+
+
+def test_save_cookies_writes_through_symlink(tmp_path: Path) -> None:
+    target = tmp_path / "real" / "target.json"
+    target.parent.mkdir()
+    link = tmp_path / "link.json"
+    link.symlink_to(target)
+    assert save_cookies({"a": "1"}, dest=link) == target
+    assert link.is_symlink()
+    assert json.loads(target.read_text()) == {"a": "1"}
+    assert [p.name for p in target.parent.iterdir()] == ["target.json"]
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
+def test_save_cookies_unwritable_symlink_target_fails(tmp_path: Path) -> None:
+    real = tmp_path / "real"
+    real.mkdir()
+    target = real / "target.json"
+    target.write_text('{"a": "old"}')
+    link = tmp_path / "link.json"
+    link.symlink_to(target)
+    real.chmod(0o500)
+    try:
+        with pytest.raises(AuthError, match="cannot write cookie file"):
+            save_cookies({"a": "new"}, dest=link)
+    finally:
+        real.chmod(0o700)
+    assert link.is_symlink()
+    assert json.loads(target.read_text()) == {"a": "old"}
+
+
+@pytest.mark.skipif(sys.version_info >= (3, 13), reason="resolve() stops raising on loops")
+def test_save_cookies_symlink_loop_fails(tmp_path: Path) -> None:
+    a, b = tmp_path / "a.json", tmp_path / "b.json"
+    a.symlink_to(b)
+    b.symlink_to(a)
+    with pytest.raises(AuthError, match="cannot write cookie file"):
+        save_cookies({"x": "1"}, dest=a)
+    assert a.is_symlink()
 
 
 # ---------- cookie-pair boundary (property) ----------
@@ -558,7 +594,9 @@ def test_load_errors_name_inline_source(monkeypatch: pytest.MonkeyPatch, inline:
 def test_save_cookies_drops_unloadable_values_with_warning(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    dest = save_cookies({"session": "ok", "pref": "x;SECRET", "ctl": "a\r\nb"})
+    dest = save_cookies(
+        {"session": "ok", "pref": "x;SECRET", "ctl": "a\r\nb"}, dest=default_cookies_path()
+    )
     assert load_cookies() == {"session": "ok"}
     assert json.loads(dest.read_text()) == {"session": "ok"}
     err = capsys.readouterr().err
@@ -568,7 +606,7 @@ def test_save_cookies_drops_unloadable_values_with_warning(
 
 @pytest.mark.usefixtures("no_cookie_env")
 def test_save_cookies_all_unloadable_keeps_existing_file() -> None:
-    dest = save_cookies({"session": "ok"})
+    dest = save_cookies({"session": "ok"}, dest=default_cookies_path())
     with pytest.raises(AuthError):
-        save_cookies({"session": "x;y"})
+        save_cookies({"session": "x;y"}, dest=dest)
     assert json.loads(dest.read_text()) == {"session": "ok"}

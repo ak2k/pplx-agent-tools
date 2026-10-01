@@ -135,9 +135,9 @@ def fetch(
     `max_chars` caps the returned content; the result's `truncated` flag
     indicates whether truncation occurred.
 
-    `keep_thread` keeps the chat-endpoint thread created by `--prompt` mode
-    instead of deleting it post-call (the default). `--prompt` runs incognito
-    so the thread never enters history regardless.
+    `keep_thread` keeps the chat-endpoint thread created by `--prompt` mode;
+    without it the thread is deleted post-call. `--prompt` runs incognito so
+    the thread never enters history regardless.
 
     `model` is the `model_preference` for `--prompt` mode (default `turbo`).
 

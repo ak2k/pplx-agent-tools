@@ -60,6 +60,12 @@ def _install_client_factory(
     monkeypatch.setattr(cli_auth.Client, "from_default_cookies", classmethod(factory))
 
 
+def _write_jar(path: Path, cookies: dict[str, str], *, mode: int = 0o600) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(cookies))
+    path.chmod(mode)
+
+
 @pytest.fixture(autouse=True)
 def _xdg(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Point cookie storage at a tmp dir for every test."""
@@ -295,11 +301,8 @@ def test_refresh_respects_profile_flag(monkeypatch: pytest.MonkeyPatch) -> None:
 
 # ---------- refresh writes the file load_cookies reads ----------
 
-
-def _write_jar(path: Path, cookies: dict[str, str]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(cookies))
-    path.chmod(0o600)
+# These jars start at 0644, which the stub client never loads, so a 0600 file
+# afterward shows that the save set the mode.
 
 
 @pytest.mark.parametrize("profile_file", [True, False], ids=["profile-file", "no-profile-file"])
@@ -307,7 +310,7 @@ def test_refresh_saves_to_cookies_path_env(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, profile_file: bool
 ) -> None:
     jar = tmp_path / "custom" / "jar.json"
-    _write_jar(jar, {"session-token": "old-value"})
+    _write_jar(jar, {"session-token": "old-value"}, mode=0o644)
     monkeypatch.setenv("PPLX_COOKIES_PATH", str(jar))
     profile_jar = default_cookies_path()
     if profile_file:
@@ -315,22 +318,53 @@ def test_refresh_saves_to_cookies_path_env(
     _install_client_factory(monkeypatch, _StubClient({"user": {"email": "x@y"}}))
 
     assert cli_auth.main(["refresh"]) == 0
-    assert load_cookies() == {"session-token": "rotated-value"}
     assert stat.S_IMODE(jar.stat().st_mode) == 0o600
+    assert load_cookies() == {"session-token": "rotated-value"}
     if profile_file:
         assert json.loads(profile_jar.read_text()) == {"session-token": "profile-value"}
     else:
         assert not profile_jar.exists()
 
 
+def test_refresh_cookies_path_env_wins_over_inline(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    jar = tmp_path / "custom" / "jar.json"
+    _write_jar(jar, {"session-token": "old-value"}, mode=0o644)
+    monkeypatch.setenv("PPLX_COOKIES_PATH", str(jar))
+    monkeypatch.setenv("PPLX_COOKIES", '{"session-token": "inline-value"}')
+    _install_client_factory(monkeypatch, _StubClient({"user": {"email": "x@y"}}))
+
+    assert cli_auth.main(["refresh"]) == 0
+    assert stat.S_IMODE(jar.stat().st_mode) == 0o600
+    assert load_cookies() == {"session-token": "rotated-value"}
+    assert not default_cookies_path().exists()
+
+
+def test_refresh_writes_through_symlinked_cookies_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    target = tmp_path / "real" / "target.json"
+    _write_jar(target, {"session-token": "old-value"}, mode=0o644)
+    link = tmp_path / "link.json"
+    link.symlink_to(target)
+    monkeypatch.setenv("PPLX_COOKIES_PATH", str(link))
+    _install_client_factory(monkeypatch, _StubClient({"user": {"email": "x@y"}}))
+
+    assert cli_auth.main(["refresh"]) == 0
+    assert link.is_symlink()
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+    assert json.loads(target.read_text()) == {"session-token": "rotated-value"}
+
+
 def test_refresh_saves_to_profile_file(monkeypatch: pytest.MonkeyPatch) -> None:
     jar = default_cookies_path("work")
-    _write_jar(jar, {"session-token": "old-value"})
+    _write_jar(jar, {"session-token": "old-value"}, mode=0o644)
     _install_client_factory(monkeypatch, _StubClient({"user": {"email": "x@y"}}))
 
     assert cli_auth.main(["refresh", "--profile", "work"]) == 0
-    assert load_cookies("work") == {"session-token": "rotated-value"}
     assert stat.S_IMODE(jar.stat().st_mode) == 0o600
+    assert load_cookies("work") == {"session-token": "rotated-value"}
     assert not default_cookies_path().exists()
 
 
@@ -349,8 +383,10 @@ def test_refresh_refuses_inline_env_before_any_request(
     rc = cli_auth.main(["refresh"])
     err = capsys.readouterr().err
     assert rc == EXIT_AUTH
-    assert "$PPLX_COOKIES" in err and "not changed" in err
-    assert "SECRET" not in err
+    assert err == (
+        "pplx auth refresh: cannot refresh cookies held in $PPLX_COOKIES; "
+        "unset it, or set $PPLX_COOKIES_PATH to a file\n"
+    )
     assert built == []
     assert list(tmp_path.rglob("*")) == []
 

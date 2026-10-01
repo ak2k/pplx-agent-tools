@@ -132,33 +132,27 @@ def load_cookies(profile: str | None = None) -> dict[str, str]:
     assert_never(source)
 
 
-def cookie_write_path(profile: str | None, *, what: str) -> Path:
+def cookie_write_path(profile: str | None, *, inline_refusal: str) -> Path:
     """The file `load_cookies` reads, so a write there is what the next load sees.
 
-    Raises AuthError when $PPLX_COOKIES is set; `what` names the discarded
-    write in that message (e.g. "an import").
+    Raises AuthError with `inline_refusal` when $PPLX_COOKIES is set: a child
+    process cannot change the parent's environment, so no write would be read.
     """
     source = cookie_source(profile)
     match source:
         case EnvInlineSource():
-            # A child process cannot change the parent's environment.
-            raise AuthError(
-                f"$PPLX_COOKIES is set and overrides any cookie file, so {what} "
-                "would not be used; it was not changed. Replace or unset $PPLX_COOKIES"
-            )
+            raise AuthError(inline_refusal)
         case EnvPathSource(path) | ProfileSource(_, path):
             return path
     assert_never(source)
 
 
-def save_cookies(
-    cookies: dict[str, str], profile: str | None = None, *, dest: Path | None = None
-) -> Path:
-    """Persist cookies to `dest` (default: the profile's file) with mode 0600.
+def save_cookies(cookies: dict[str, str], *, dest: Path) -> Path:
+    """Persist cookies to `dest` with mode 0600.
 
     Pairs the loader would refuse are dropped with a warning naming the cookie,
     because one of them would make the whole file unloadable. Atomic via tmp +
-    rename. Returns the path written.
+    rename. Returns the path written: `dest` with symlinks resolved.
     """
     loadable: dict[str, str] = {}
     for name, value in cookies.items():
@@ -168,12 +162,16 @@ def save_cookies(
             print(f"warning: {e}", file=sys.stderr)
     if not loadable:
         raise AuthError("no loadable cookies to save; the cookie file was not changed")
-    dest = dest or default_cookies_path(profile)
     try:
+        # The rename would replace a symlink itself and leave the file it points
+        # to (synced or managed elsewhere) stale; write beside the target instead.
+        dest = dest.resolve()
         dest.parent.mkdir(parents=True, exist_ok=True)
         atomic_write_0600(dest, json.dumps(loadable, indent=2, sort_keys=True))
     except OSError as e:
         raise AuthError(f"cannot write cookie file: {dest}: {e.strerror}") from e
+    except RuntimeError as e:  # a symlink loop, before Python 3.13
+        raise AuthError(f"cannot write cookie file: {dest}: {e}") from e
     return dest
 
 
@@ -344,7 +342,13 @@ def import_from_browser(browser: str, profile: str | None = None) -> Path:
         supported = ", ".join(SUPPORTED_BROWSERS)
         raise AuthError(f"unsupported browser: {browser!r} (supported: {supported})")
 
-    dest = cookie_write_path(profile, what="an import")
+    dest = cookie_write_path(
+        profile,
+        inline_refusal=(
+            "$PPLX_COOKIES is set and overrides any cookie file, so an import "
+            "would not be used; it was not changed. Replace or unset $PPLX_COOKIES"
+        ),
+    )
 
     try:
         import rookiepy
