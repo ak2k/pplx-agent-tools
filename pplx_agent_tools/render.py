@@ -1,6 +1,7 @@
 """Render layer: pure functions from typed Result objects to text or JSON.
 
-No I/O, no exceptions, fully deterministic — safe to snapshot-test.
+No I/O, fully deterministic — safe to snapshot-test. `envelope()` raises
+`ValueError` when a payload sets a reserved key.
 
 This module is the single rendering registry for the CLI: every verb's
 Result type has a `render_<verb>_text` / `render_<verb>_json` pair here,
@@ -12,8 +13,8 @@ two upsides:
   2. Cross-verb consistency (timestamp formatting, truncation markers,
      version envelopes in JSON) is easy to enforce.
 
-Adding a new verb means adding a new pair here — see the new-verb
-checklist in `verbs/__init__.py` for the full file-edit list.
+Adding a new verb means adding a new pair here — see "Adding a new verb"
+in CLAUDE.md for the full file-edit list.
 """
 
 from __future__ import annotations
