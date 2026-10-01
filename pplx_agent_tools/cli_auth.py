@@ -3,7 +3,7 @@
 Subcommands:
   check     — validate the session against /api/auth/session
   refresh   — keepalive ping (silent on success; designed for cron/launchd)
-  import    — pull cookies from a local browser profile (Step 3; stub for now)
+  import    — pull cookies from a local browser profile
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ from collections.abc import Sequence
 
 from .auth import (
     SUPPORTED_BROWSERS,
+    cookie_write_path,
     default_cookies_path,
     import_from_browser,
     resolve_profile,
@@ -51,7 +52,10 @@ def build_parser() -> PplxArgumentParser:
     )
     p_import.add_argument(
         "--profile",
-        help="destination cookie profile (default: 'default')",
+        help=(
+            "destination cookie profile (default: $PPLX_PROFILE or 'default'); "
+            "$PPLX_COOKIES_PATH, when set, is written instead"
+        ),
     )
 
     return parser
@@ -77,7 +81,8 @@ def cmd_check(args: argparse.Namespace) -> int:
 
 
 def cmd_refresh(args: argparse.Namespace) -> int:
-    """Ping /api/auth/session and persist any rotated cookies back to disk.
+    """Ping /api/auth/session and persist any rotated cookies back to the file
+    they were loaded from ($PPLX_COOKIES_PATH, else the profile file).
 
     Perplexity's NextAuth uses rolling sessions — each authenticated call
     returns a fresh session-token via Set-Cookie. Without persistence the
@@ -85,11 +90,14 @@ def cmd_refresh(args: argparse.Namespace) -> int:
     indefinitely (each refresh extends the 30-day TTL).
     """
     try:
+        # Before the request: under $PPLX_COOKIES the rotated token cannot be
+        # saved where the next load reads it, so nothing is sent.
+        dest = cookie_write_path(args.profile, what="refreshed cookies")
         client = Client.from_default_cookies(profile=args.profile)
         client.auth_session()
         # auth_session captures rotated cookies into client.cookies; persist
         # back so the next pplx invocation reads the fresh token.
-        save_cookies(client.cookies, profile=args.profile)
+        save_cookies(client.cookies, dest=dest)
     except PplxError as e:
         print(f"pplx auth refresh: {e}", file=sys.stderr)
         return exit_code(e)

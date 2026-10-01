@@ -132,6 +132,25 @@ def load_cookies(profile: str | None = None) -> dict[str, str]:
     assert_never(source)
 
 
+def cookie_write_path(profile: str | None, *, what: str) -> Path:
+    """The file `load_cookies` reads, so a write there is what the next load sees.
+
+    Raises AuthError when $PPLX_COOKIES is set; `what` names the discarded
+    write in that message (e.g. "an import").
+    """
+    source = cookie_source(profile)
+    match source:
+        case EnvInlineSource():
+            # A child process cannot change the parent's environment.
+            raise AuthError(
+                f"$PPLX_COOKIES is set and overrides any cookie file, so {what} "
+                "would not be used; it was not changed. Replace or unset $PPLX_COOKIES"
+            )
+        case EnvPathSource(path) | ProfileSource(_, path):
+            return path
+    assert_never(source)
+
+
 def save_cookies(
     cookies: dict[str, str], profile: str | None = None, *, dest: Path | None = None
 ) -> Path:
@@ -325,16 +344,7 @@ def import_from_browser(browser: str, profile: str | None = None) -> Path:
         supported = ", ".join(SUPPORTED_BROWSERS)
         raise AuthError(f"unsupported browser: {browser!r} (supported: {supported})")
 
-    source = cookie_source(profile)
-    match source:
-        case EnvInlineSource():
-            # A child process cannot change the parent's environment.
-            raise AuthError(
-                "$PPLX_COOKIES is set and overrides any cookie file, so an import "
-                "would not be used; it was not changed. Replace or unset $PPLX_COOKIES"
-            )
-        case EnvPathSource(dest) | ProfileSource(_, dest):
-            pass
+    dest = cookie_write_path(profile, what="an import")
 
     try:
         import rookiepy
