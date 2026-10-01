@@ -148,7 +148,7 @@ def cookie_write_path(profile: str | None, *, inline_refusal: str) -> Path:
     assert_never(source)
 
 
-def save_cookies(cookies: dict[str, str], *, dest: Path) -> Path:
+def save_cookies(cookies: dict[str, str], *, dest: Path, expected: Path | None = None) -> Path:
     """Persist cookies to `dest` with mode 0600.
 
     Pairs the loader would refuse are dropped with a warning naming the cookie,
@@ -157,6 +157,10 @@ def save_cookies(cookies: dict[str, str], *, dest: Path) -> Path:
     AuthError unless `dest` as given then leads to that file, which is what the
     next load opens; when that is found only after the write, the file is left
     where it was written and the error names it. Never deletes a cookie file.
+
+    `expected` is the file the cookies were read from, as `cookie_file_target`
+    named it before the load; if `dest` now resolves elsewhere, nothing is
+    written.
     """
     loadable: dict[str, str] = {}
     for name, value in cookies.items():
@@ -166,16 +170,15 @@ def save_cookies(cookies: dict[str, str], *, dest: Path) -> Path:
             print(f"warning: {e}", file=sys.stderr)
     if not loadable:
         raise AuthError("no loadable cookies to save; the cookie file was not changed")
-    loop = f"cannot write cookie file: {dest}: symlink loop"
-    target = dest
+    # The rename would replace a symlink itself and leave the file it points
+    # to (synced or managed elsewhere) stale; write beside the target instead.
+    target = cookie_file_target(dest)
+    if expected is not None and target != expected:
+        raise AuthError(
+            f"cannot write cookie file: {dest}: it now leads to {target}, "
+            f"not {expected}, which the cookies were read from"
+        )
     try:
-        # The rename would replace a symlink itself and leave the file it points
-        # to (synced or managed elsewhere) stale; write beside the target instead.
-        target = dest.resolve()
-        # From Python 3.13 resolve() returns a loop instead of raising; any other
-        # resolved path is free of links.
-        if any(p.is_symlink() for p in (target, *target.parents)):
-            raise AuthError(loop)
         # resolve() collapses "missing/.." even when "missing" is absent, but
         # opening `dest` cannot walk it until the directory exists. The target's
         # directory goes first: mkdir refuses a symlink in `dest` that dangles.
@@ -193,6 +196,24 @@ def save_cookies(cookies: dict[str, str], *, dest: Path) -> Path:
                 f"cannot write cookie file: {dest}: wrote {target}, "
                 "but the path does not lead to it"
             )
+    except OSError as e:
+        raise AuthError(f"cannot write cookie file: {target}: {e.strerror}") from e
+    return target
+
+
+def cookie_file_target(dest: Path) -> Path:
+    """The file a save to `dest` writes: `dest` with symlinks resolved.
+
+    Raises AuthError on a symlink loop.
+    """
+    loop = f"cannot write cookie file: {dest}: symlink loop"
+    target = dest
+    try:
+        target = dest.resolve()
+        # From Python 3.13 resolve() returns a loop instead of raising; any other
+        # resolved path is free of links.
+        if any(p.is_symlink() for p in (target, *target.parents)):
+            raise AuthError(loop)
     except OSError as e:
         raise AuthError(f"cannot write cookie file: {target}: {e.strerror}") from e
     except RuntimeError as e:  # a symlink loop, before Python 3.13

@@ -89,7 +89,9 @@ def test_main_dispatches_to_refresh(monkeypatch: pytest.MonkeyPatch, tmp_path: P
     client = _StubClient({"user": {"email": "u@example.com"}})
     _install_client_factory(monkeypatch, client)
     saved: list[Any] = []
-    monkeypatch.setattr(cli_auth, "save_cookies", lambda c, *, dest: saved.append((c, dest)))
+    monkeypatch.setattr(
+        cli_auth, "save_cookies", lambda c, *, dest, expected: saved.append((c, dest))
+    )
     rc = cli_auth.main(["refresh"])
     assert rc == 0
     assert client.session_calls == 1
@@ -247,7 +249,9 @@ def test_refresh_persists_rotated_cookies(monkeypatch: pytest.MonkeyPatch) -> No
     client = _StubClient({"user": {"email": "x@y"}})
     _install_client_factory(monkeypatch, client)
     saved: list[Any] = []
-    monkeypatch.setattr(cli_auth, "save_cookies", lambda c, *, dest: saved.append((c, dest)))
+    monkeypatch.setattr(
+        cli_auth, "save_cookies", lambda c, *, dest, expected: saved.append((c, dest))
+    )
 
     rc = cli_auth.main(["refresh"])
     assert rc == 0
@@ -263,7 +267,7 @@ def test_refresh_silent_on_success(
 ) -> None:
     """Designed for cron/launchd: exit 0 with no stdout/stderr noise."""
     _install_client_factory(monkeypatch, _StubClient({"user": {"email": "x@y"}}))
-    monkeypatch.setattr(cli_auth, "save_cookies", lambda c, *, dest: None)
+    monkeypatch.setattr(cli_auth, "save_cookies", lambda c, *, dest, expected: None)
     cli_auth.main(["refresh"])
     cap = capsys.readouterr()
     assert cap.out == ""
@@ -289,7 +293,9 @@ def test_refresh_respects_profile_flag(monkeypatch: pytest.MonkeyPatch) -> None:
         return _StubClient({"user": {"email": "x@y"}})
 
     monkeypatch.setattr(cli_auth.Client, "from_default_cookies", classmethod(factory))
-    monkeypatch.setattr(cli_auth, "save_cookies", lambda c, *, dest: saved.append((c, dest)))
+    monkeypatch.setattr(
+        cli_auth, "save_cookies", lambda c, *, dest, expected: saved.append((c, dest))
+    )
 
     cli_auth.main(["refresh", "--profile", "work"])
     assert received_factory["profile"] == "work"
@@ -352,6 +358,34 @@ def test_refresh_writes_through_symlinked_cookies_path(
     assert link.is_symlink()
     assert stat.S_IMODE(target.stat().st_mode) == 0o600
     assert json.loads(target.read_text()) == {"session-token": "rotated-value"}
+
+
+def test_refresh_refuses_symlink_repointed_during_request(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture, tmp_path: Path
+) -> None:
+    account_a = tmp_path / "account-a.json"
+    account_b = tmp_path / "account-b.json"
+    _write_jar(account_a, {"session-token": "a-value"})
+    _write_jar(account_b, {"session-token": "b-value"})
+    current = tmp_path / "current.json"
+    current.symlink_to(account_a)
+    monkeypatch.setenv("PPLX_COOKIES_PATH", str(current))
+
+    class _Repointing(_StubClient):
+        def auth_session(self) -> dict[str, Any]:
+            current.unlink()
+            current.symlink_to(account_b)
+            return super().auth_session()
+
+    _install_client_factory(monkeypatch, _Repointing({"user": {"email": "x@y"}}))
+
+    assert cli_auth.main(["refresh"]) == EXIT_AUTH
+    assert capsys.readouterr().err == (
+        f"pplx auth refresh: cannot write cookie file: {current}: it now leads to "
+        f"{account_b}, not {account_a}, which the cookies were read from\n"
+    )
+    assert json.loads(account_a.read_text()) == {"session-token": "a-value"}
+    assert json.loads(account_b.read_text()) == {"session-token": "b-value"}
 
 
 def test_refresh_saves_to_profile_file(monkeypatch: pytest.MonkeyPatch) -> None:

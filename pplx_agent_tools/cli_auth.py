@@ -15,6 +15,7 @@ from collections.abc import Sequence
 from .auth import (
     SUPPORTED_BROWSERS,
     ProfileSource,
+    cookie_file_target,
     cookie_source,
     cookie_write_path,
     describe_cookie_source,
@@ -111,11 +112,15 @@ def cmd_refresh(args: argparse.Namespace) -> int:
                 "unset it, or set $PPLX_COOKIES_PATH to a file"
             ),
         )
+        # Resolved before the load: if a symlink at `dest` is repointed while
+        # the request runs, the save refuses rather than write this session's
+        # cookies into another account's file.
+        expected = cookie_file_target(dest)
         client = Client.from_default_cookies(profile=args.profile)
         client.auth_session()
         # auth_session captures rotated cookies into client.cookies; persist
         # back so the next pplx invocation reads the fresh token.
-        save_cookies(client.cookies, dest=dest)
+        save_cookies(client.cookies, dest=dest, expected=expected)
     except PplxError as e:
         print(f"pplx auth refresh: {e}", file=sys.stderr)
         return exit_code(e)
