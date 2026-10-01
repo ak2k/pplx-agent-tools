@@ -98,8 +98,8 @@ def cookie_source(profile: str | None = None) -> CookieSource:
     return ProfileSource(resolve_profile(profile), default_cookies_path(profile))
 
 
-def _describe(source: CookieSource) -> str:
-    """Names the source for error messages; never includes cookie values."""
+def describe_cookie_source(source: CookieSource) -> str:
+    """Names the source for messages; never includes cookie values."""
     match source:
         case EnvPathSource(path):
             return f"$PPLX_COOKIES_PATH file {path}"
@@ -117,7 +117,7 @@ def load_cookies(profile: str | None = None) -> dict[str, str]:
     Every error names the source it read.
     """
     source = cookie_source(profile)
-    label = _describe(source)
+    label = describe_cookie_source(source)
     match source:
         case EnvInlineSource(text):
             try:
@@ -132,14 +132,35 @@ def load_cookies(profile: str | None = None) -> dict[str, str]:
     assert_never(source)
 
 
-def save_cookies(
-    cookies: dict[str, str], profile: str | None = None, *, dest: Path | None = None
-) -> Path:
-    """Persist cookies to `dest` (default: the profile's file) with mode 0600.
+def cookie_write_path(profile: str | None, *, inline_refusal: str) -> Path:
+    """The file `load_cookies` reads, so a write there is what the next load sees.
+
+    Raises AuthError with `inline_refusal` when $PPLX_COOKIES is set and
+    $PPLX_COOKIES_PATH is not: a child process cannot change the parent's
+    environment, so no write would be read.
+    """
+    source = cookie_source(profile)
+    match source:
+        case EnvInlineSource():
+            raise AuthError(inline_refusal)
+        case EnvPathSource(path) | ProfileSource(_, path):
+            return path
+    assert_never(source)
+
+
+def save_cookies(cookies: dict[str, str], *, dest: Path, expected: Path | None = None) -> Path:
+    """Persist cookies to `dest` with mode 0600.
 
     Pairs the loader would refuse are dropped with a warning naming the cookie,
     because one of them would make the whole file unloadable. Atomic via tmp +
-    rename. Returns the path written.
+    rename. Returns the path written: `dest` with symlinks resolved. Raises
+    AuthError unless `dest` as given then leads to that file, which is what the
+    next load opens; when that is found only after the write, the file is left
+    where it was written and the error names it. Never deletes a cookie file.
+
+    `expected` is the file the cookies were read from, as `cookie_file_target`
+    named it before the load; if `dest` now resolves elsewhere, nothing is
+    written.
     """
     loadable: dict[str, str] = {}
     for name, value in cookies.items():
@@ -149,13 +170,63 @@ def save_cookies(
             print(f"warning: {e}", file=sys.stderr)
     if not loadable:
         raise AuthError("no loadable cookies to save; the cookie file was not changed")
-    dest = dest or default_cookies_path(profile)
+    # The rename would replace a symlink itself and leave the file it points
+    # to (synced or managed elsewhere) stale; write beside the target instead.
+    target = cookie_file_target(dest)
+    if expected is not None and target != expected:
+        raise AuthError(
+            f"cannot write cookie file: {dest}: it now leads to {target}, "
+            f"not {expected}, which the cookies were read from"
+        )
     try:
+        # resolve() collapses "missing/.." even when "missing" is absent, but
+        # opening `dest` cannot walk it until the directory exists. The target's
+        # directory goes first: mkdir refuses a symlink in `dest` that dangles.
+        target.parent.mkdir(parents=True, exist_ok=True)
         dest.parent.mkdir(parents=True, exist_ok=True)
-        atomic_write_0600(dest, json.dumps(loadable, indent=2, sort_keys=True))
+        # A symlink in `dest` can still name such a path, so check that `dest`
+        # leads to the file, before overwriting one and after creating one.
+        if target.exists() and not _leads_to(dest, target):
+            raise AuthError(f"cannot write cookie file: {dest}: the path does not lead to {target}")
+        atomic_write_0600(target, json.dumps(loadable, indent=2, sort_keys=True))
+        # The file stays: a concurrent save can rename its own file in between
+        # the check's two stats, and deleting `target` would delete that one.
+        if not _leads_to(dest, target):
+            raise AuthError(
+                f"cannot write cookie file: {dest}: wrote {target}, "
+                "but the path does not lead to it"
+            )
     except OSError as e:
-        raise AuthError(f"cannot write cookie file: {dest}: {e.strerror}") from e
-    return dest
+        raise AuthError(f"cannot write cookie file: {target}: {e.strerror}") from e
+    return target
+
+
+def cookie_file_target(dest: Path) -> Path:
+    """The file a save to `dest` writes: `dest` with symlinks resolved.
+
+    Raises AuthError on a symlink loop.
+    """
+    loop = f"cannot write cookie file: {dest}: symlink loop"
+    target = dest
+    try:
+        target = dest.resolve()
+        # From Python 3.13 resolve() returns a loop instead of raising; any other
+        # resolved path is free of links.
+        if any(p.is_symlink() for p in (target, *target.parents)):
+            raise AuthError(loop)
+    except OSError as e:
+        raise AuthError(f"cannot write cookie file: {target}: {e.strerror}") from e
+    except RuntimeError as e:  # a symlink loop, before Python 3.13
+        raise AuthError(loop) from e
+    return target
+
+
+def _leads_to(path: Path, target: Path) -> bool:
+    """Whether opening `path` as given reaches the file at `target`."""
+    try:
+        return path.samefile(target)
+    except OSError:
+        return False
 
 
 def atomic_write_0600(dest: Path, content: str) -> None:
@@ -325,16 +396,13 @@ def import_from_browser(browser: str, profile: str | None = None) -> Path:
         supported = ", ".join(SUPPORTED_BROWSERS)
         raise AuthError(f"unsupported browser: {browser!r} (supported: {supported})")
 
-    source = cookie_source(profile)
-    match source:
-        case EnvInlineSource():
-            # A child process cannot change the parent's environment.
-            raise AuthError(
-                "$PPLX_COOKIES is set and overrides any cookie file, so an import "
-                "would not be used; it was not changed. Replace or unset $PPLX_COOKIES"
-            )
-        case EnvPathSource(dest) | ProfileSource(_, dest):
-            pass
+    dest = cookie_write_path(
+        profile,
+        inline_refusal=(
+            "$PPLX_COOKIES is set and overrides any cookie file, so an import "
+            "would not be used; it was not changed. Replace or unset $PPLX_COOKIES"
+        ),
+    )
 
     try:
         import rookiepy

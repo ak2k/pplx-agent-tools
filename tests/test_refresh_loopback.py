@@ -53,8 +53,6 @@ def test_refresh_keeps_quoted_octal_cookie_loadable(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, session_server: str
 ) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    monkeypatch.delenv("PPLX_COOKIES_PATH", raising=False)
-    monkeypatch.delenv("PPLX_COOKIES", raising=False)
     original = {"session": "tok", "preference": '"x\\073y"'}
     path = default_cookies_path()
     path.parent.mkdir(parents=True)

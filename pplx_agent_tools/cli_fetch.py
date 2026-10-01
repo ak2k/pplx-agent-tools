@@ -58,9 +58,8 @@ def build_parser() -> PplxArgumentParser:
         "--keep-thread",
         action="store_true",
         help=(
-            "for --prompt mode: keep the chat thread in your Perplexity UI. "
-            "Default behavior deletes it post-call so agent runs don't pollute "
-            "thread history. Also honors $PPLX_KEEP_THREADS=1."
+            "for --prompt mode: keep the (incognito) thread instead of deleting it. "
+            "Honors $PPLX_KEEP_THREADS=1."
         ),
     )
     parser.add_argument(

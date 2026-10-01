@@ -3,7 +3,7 @@
 Subcommands:
   check     — validate the session against /api/auth/session
   refresh   — keepalive ping (silent on success; designed for cron/launchd)
-  import    — pull cookies from a local browser profile (Step 3; stub for now)
+  import    — pull cookies from a local browser profile
 """
 
 from __future__ import annotations
@@ -14,9 +14,12 @@ from collections.abc import Sequence
 
 from .auth import (
     SUPPORTED_BROWSERS,
-    default_cookies_path,
+    ProfileSource,
+    cookie_file_target,
+    cookie_source,
+    cookie_write_path,
+    describe_cookie_source,
     import_from_browser,
-    resolve_profile,
     save_cookies,
 )
 from .cli_types import PplxArgumentParser
@@ -34,13 +37,22 @@ def build_parser() -> PplxArgumentParser:
     p_check = sub.add_parser("check", help="validate the session against /api/auth/session")
     p_check.add_argument(
         "--profile",
-        help="cookie profile (default: $PPLX_PROFILE or 'default')",
+        help=(
+            "cookie profile (default: $PPLX_PROFILE or 'default'); "
+            "$PPLX_COOKIES_PATH or $PPLX_COOKIES, when set, is read instead"
+        ),
     )
 
     p_refresh = sub.add_parser(
         "refresh", help="ping the session endpoint to extend TTL (silent on success)"
     )
-    p_refresh.add_argument("--profile", help="cookie profile")
+    p_refresh.add_argument(
+        "--profile",
+        help=(
+            "cookie profile (default: $PPLX_PROFILE or 'default'); "
+            "$PPLX_COOKIES_PATH, when set, is read and written instead"
+        ),
+    )
 
     p_import = sub.add_parser("import", help="import cookies from a local browser profile")
     p_import.add_argument(
@@ -51,14 +63,16 @@ def build_parser() -> PplxArgumentParser:
     )
     p_import.add_argument(
         "--profile",
-        help="destination cookie profile (default: 'default')",
+        help=(
+            "destination cookie profile (default: $PPLX_PROFILE or 'default'); "
+            "$PPLX_COOKIES_PATH, when set, is written instead"
+        ),
     )
 
     return parser
 
 
 def cmd_check(args: argparse.Namespace) -> int:
-    profile = resolve_profile(args.profile)
     try:
         client = Client.from_default_cookies(profile=args.profile)
         session = client.auth_session()
@@ -69,27 +83,44 @@ def cmd_check(args: argparse.Namespace) -> int:
     user = session.get("user") or {}
     email = user.get("email") or "(no email)"
     expires = session.get("expires") or "(no expiry)"
-    cookie_path = default_cookies_path(profile)
     print(f"session valid: {email}")
     print(f"expires: {expires}")
-    print(f"profile: {profile} ({cookie_path})")
+    source = cookie_source(args.profile)
+    if isinstance(source, ProfileSource):
+        print(f"profile: {source.profile} ({source.path})")
+    else:
+        print(f"cookies: {describe_cookie_source(source)}")
     return 0
 
 
 def cmd_refresh(args: argparse.Namespace) -> int:
-    """Ping /api/auth/session and persist any rotated cookies back to disk.
+    """Ping /api/auth/session and save rotated cookies to the file they came from.
 
-    Perplexity's NextAuth uses rolling sessions — each authenticated call
-    returns a fresh session-token via Set-Cookie. Without persistence the
-    rotation is wasted; with it, periodic refresh keeps the session alive
-    indefinitely (each refresh extends the 30-day TTL).
+    That file is $PPLX_COOKIES_PATH, else the profile file. Perplexity's
+    NextAuth uses rolling sessions — each authenticated call returns a fresh
+    session-token via Set-Cookie. Without persistence the rotation is wasted;
+    with it, periodic refresh keeps the session alive indefinitely (each
+    refresh extends the 30-day TTL).
     """
     try:
+        # Before the request: under $PPLX_COOKIES the rotated token cannot be
+        # saved where the next load reads it, so nothing is sent.
+        dest = cookie_write_path(
+            args.profile,
+            inline_refusal=(
+                "cannot refresh cookies held in $PPLX_COOKIES; "
+                "unset it, or set $PPLX_COOKIES_PATH to a file"
+            ),
+        )
+        # Resolved before the load: if a symlink at `dest` is repointed while
+        # the request runs, the save refuses rather than write this session's
+        # cookies into another account's file.
+        expected = cookie_file_target(dest)
         client = Client.from_default_cookies(profile=args.profile)
         client.auth_session()
         # auth_session captures rotated cookies into client.cookies; persist
         # back so the next pplx invocation reads the fresh token.
-        save_cookies(client.cookies, profile=args.profile)
+        save_cookies(client.cookies, dest=dest, expected=expected)
     except PplxError as e:
         print(f"pplx auth refresh: {e}", file=sys.stderr)
         return exit_code(e)

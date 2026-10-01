@@ -8,7 +8,8 @@ dynamic = ["version"]
 description = "Agent toolkit for Perplexity, backed by your Pro subscription's web session cookies"
 readme = "README.md"
 license = { file = "LICENSE" }
-requires-python = ">=3.10"
+# rookiepy has no wheel past cp312 and its sdist does not build.
+requires-python = ">=3.10,<3.13"
 authors = [{ name = "ak2k" }]
 classifiers = [
     "Development Status :: 1 - Planning",
@@ -18,7 +19,6 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
     "Topic :: Internet :: WWW/HTTP",
     "Environment :: Console",
 ]

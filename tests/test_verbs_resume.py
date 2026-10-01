@@ -58,7 +58,6 @@ TOKEN = SENTINEL_RW_TOKEN
 def state_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     home = tmp_path / "state"
     monkeypatch.setenv("XDG_STATE_HOME", str(home))
-    monkeypatch.delenv("PPLX_PROFILE", raising=False)
     return home
 
 
