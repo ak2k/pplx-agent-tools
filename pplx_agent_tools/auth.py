@@ -155,7 +155,8 @@ def save_cookies(cookies: dict[str, str], *, dest: Path) -> Path:
     because one of them would make the whole file unloadable. Atomic via tmp +
     rename. Returns the path written: `dest` with symlinks resolved. Raises
     AuthError unless `dest` as given then leads to that file, which is what the
-    next load opens.
+    next load opens; when that is found only after the write, the file is left
+    where it was written and the error names it. Never deletes a cookie file.
     """
     loadable: dict[str, str] = {}
     for name, value in cookies.items():
@@ -182,13 +183,16 @@ def save_cookies(cookies: dict[str, str], *, dest: Path) -> Path:
         dest.parent.mkdir(parents=True, exist_ok=True)
         # A symlink in `dest` can still name such a path, so check that `dest`
         # leads to the file, before overwriting one and after creating one.
-        unreachable = f"cannot write cookie file: {dest}: the path does not lead to {target}"
         if target.exists() and not _leads_to(dest, target):
-            raise AuthError(unreachable)
+            raise AuthError(f"cannot write cookie file: {dest}: the path does not lead to {target}")
         atomic_write_0600(target, json.dumps(loadable, indent=2, sort_keys=True))
+        # The file stays: a concurrent save can rename its own file in between
+        # the check's two stats, and deleting `target` would delete that one.
         if not _leads_to(dest, target):
-            target.unlink()
-            raise AuthError(unreachable)
+            raise AuthError(
+                f"cannot write cookie file: {dest}: wrote {target}, "
+                "but the path does not lead to it"
+            )
     except OSError as e:
         raise AuthError(f"cannot write cookie file: {target}: {e.strerror}") from e
     except RuntimeError as e:  # a symlink loop, before Python 3.13

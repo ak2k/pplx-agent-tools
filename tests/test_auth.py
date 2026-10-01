@@ -17,6 +17,7 @@ from pplx_agent_tools.auth import (
     DEFAULT_PROFILE,
     SUPPORTED_BROWSERS,
     _normalize,
+    atomic_write_0600,
     cookie_write_path,
     default_cookies_path,
     import_from_browser,
@@ -322,15 +323,33 @@ def test_save_cookies_symlink_through_missing_dir_fails(tmp_path: Path, existing
     link.symlink_to("missing/../cookies.json")
     with pytest.raises(AuthError) as ei:
         save_cookies({"a": "new"}, dest=link)
-    assert str(ei.value) == (
-        f"cannot write cookie file: {link}: the path does not lead to {collapsed}"
-    )
-    assert link.is_symlink()
-    assert sorted(p.name for p in tmp_path.iterdir()) == (
-        ["cookies.json", "link.json"] if existing else ["link.json"]
-    )
-    if existing:
+    if existing:  # refused before the write
+        assert str(ei.value) == (
+            f"cannot write cookie file: {link}: the path does not lead to {collapsed}"
+        )
         assert json.loads(collapsed.read_text()) == {"a": "old"}
+    else:
+        assert str(ei.value) == (
+            f"cannot write cookie file: {link}: wrote {collapsed}, but the path does not lead to it"
+        )
+        assert json.loads(collapsed.read_text()) == {"a": "new"}
+    assert str(link.readlink()) == "missing/../cookies.json"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["cookies.json", "link.json"]
+
+
+def test_save_cookies_failed_check_keeps_concurrent_write(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    jar = tmp_path / "cookies.json"
+
+    def other_save_lands_between_stats(path: Path, target: Path) -> bool:
+        atomic_write_0600(target, '{"b": "2"}')
+        return False
+
+    monkeypatch.setattr("pplx_agent_tools.auth._leads_to", other_save_lands_between_stats)
+    with pytest.raises(AuthError):
+        save_cookies({"a": "1"}, dest=jar)
+    assert json.loads(jar.read_text()) == {"b": "2"}
 
 
 @pytest.mark.parametrize("returns_link", [False, True], ids=["real-resolve", "returns-link"])
