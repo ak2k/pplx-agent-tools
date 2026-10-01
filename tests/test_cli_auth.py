@@ -98,20 +98,33 @@ def test_main_dispatches_to_refresh(monkeypatch: pytest.MonkeyPatch, tmp_path: P
     assert saved == [(client.cookies, default_cookies_path())]
 
 
+def _install_import(
+    monkeypatch: pytest.MonkeyPatch, client: _StubClient
+) -> list[tuple[str, str | None]]:
+    """Stub the browser read and the session check's client; returns each read's arguments."""
+    reads: list[tuple[str, str | None]] = []
+
+    def read(browser: str, browser_profile: str | None = None) -> dict[str, str]:
+        reads.append((browser, browser_profile))
+        return {"session-token": "browser-value"}
+
+    monkeypatch.setattr(cli_auth, "read_browser_cookies", read)
+    monkeypatch.setattr(cli_auth, "Client", lambda cookies: client)
+    return reads
+
+
 def test_main_dispatches_to_import(
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture,
-    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
 ) -> None:
-    dest = tmp_path / "cookies.json"
-    monkeypatch.setattr(
-        cli_auth, "import_from_browser", lambda browser, profile=None, browser_profile=None: dest
-    )
+    client = _StubClient({"user": {"email": "u@example.com"}})
+    _install_import(monkeypatch, client)
     rc = cli_auth.main(["import", "--browser", "chrome"])
     assert rc == 0
-    out = capsys.readouterr().out
-    assert "chrome" in out
-    assert str(dest) in out
+    assert client.session_calls == 1
+    assert capsys.readouterr().out == (
+        f"imported chrome cookies to {default_cookies_path()}\nsession valid: u@example.com\n"
+    )
+    assert load_cookies() == {"session-token": "rotated-value"}
 
 
 def test_main_requires_subcommand(capsys: pytest.CaptureFixture) -> None:
@@ -384,7 +397,7 @@ def test_refresh_refuses_symlink_repointed_during_request(
     assert cli_auth.main(["refresh"]) == EXIT_AUTH
     assert capsys.readouterr().err == (
         f"pplx auth refresh: cannot write cookie file: {current}: it now leads to "
-        f"{account_b}, not {account_a}, which the cookies were read from\n"
+        f"{account_b}, not to {account_a} as it did before the session check\n"
     )
     assert json.loads(account_a.read_text()) == {"session-token": "a-value"}
     assert json.loads(account_b.read_text()) == {"session-token": "b-value"}
@@ -433,23 +446,20 @@ def test_import_prints_destination(
     tmp_path: Path,
 ) -> None:
     dest = tmp_path / "out" / "cookies.json"
-    monkeypatch.setattr(
-        cli_auth, "import_from_browser", lambda b, profile=None, browser_profile=None: dest
-    )
+    monkeypatch.setenv("PPLX_COOKIES_PATH", str(dest))
+    _install_import(monkeypatch, _StubClient({"user": {"email": "u@example.com"}}))
     rc = cli_auth.main(["import", "--browser", "firefox"])
     assert rc == 0
-    out = capsys.readouterr().out
-    assert "firefox" in out
-    assert str(dest) in out
+    assert capsys.readouterr().out.startswith(f"imported firefox cookies to {dest}\n")
 
 
 def test_import_auth_error_exits_two(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
 ) -> None:
-    def boom(browser: str, profile: str | None = None, browser_profile: str | None = None) -> Path:
+    def boom(browser: str, browser_profile: str | None = None) -> dict[str, str]:
         raise AuthError("cannot read chrome cookies: database is locked")
 
-    monkeypatch.setattr(cli_auth, "import_from_browser", boom)
+    monkeypatch.setattr(cli_auth, "read_browser_cookies", boom)
     rc = cli_auth.main(["import", "--browser", "chrome"])
     assert rc == EXIT_AUTH
     assert "database is locked" in capsys.readouterr().err
@@ -468,19 +478,10 @@ def test_import_rejects_unsupported_browser() -> None:
         cli_auth.main(["import", "--browser", "not-a-real-browser"])
 
 
-def test_import_passes_profile_to_helper(monkeypatch: pytest.MonkeyPatch) -> None:
-    received: dict[str, Any] = {}
-
-    def fake_import(
-        browser: str, profile: str | None = None, browser_profile: str | None = None
-    ) -> Path:
-        received["browser"] = browser
-        received["profile"] = profile
-        received["browser_profile"] = browser_profile
-        return Path("/tmp/x")
-
-    monkeypatch.setattr(cli_auth, "import_from_browser", fake_import)
-    cli_auth.main(["import", "--browser", "safari", "--profile", "personal"])
-    assert received == {"browser": "safari", "profile": "personal", "browser_profile": None}
-    cli_auth.main(["import", "--browser", "chrome", "--browser-profile", "Profile 1"])
-    assert received == {"browser": "chrome", "profile": None, "browser_profile": "Profile 1"}
+def test_import_passes_profiles_through(monkeypatch: pytest.MonkeyPatch) -> None:
+    reads = _install_import(monkeypatch, _StubClient({"user": {"email": "u@example.com"}}))
+    assert cli_auth.main(["import", "--browser", "safari", "--profile", "personal"]) == 0
+    assert load_cookies("personal") == {"session-token": "rotated-value"}
+    assert not default_cookies_path().exists()
+    assert cli_auth.main(["import", "--browser", "chrome", "--browser-profile", "Profile 1"]) == 0
+    assert reads == [("safari", None), ("chrome", "Profile 1")]

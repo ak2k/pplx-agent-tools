@@ -191,9 +191,9 @@ def save_cookies(cookies: dict[str, str], *, dest: Path, expected: Path | None =
     next load opens; when that is found only after the write, the file is left
     where it was written and the error names it. Never deletes a cookie file.
 
-    `expected` is the file the cookies were read from, as `cookie_file_target`
-    named it before the load; if `dest` now resolves elsewhere, nothing is
-    written.
+    `expected` is the file `dest` led to before the session check, as
+    `cookie_file_target` named it; if `dest` now resolves elsewhere, nothing is
+    written, rather than put this session's cookies in another account's file.
     """
     loadable: dict[str, str] = {}
     for name, value in cookies.items():
@@ -209,7 +209,7 @@ def save_cookies(cookies: dict[str, str], *, dest: Path, expected: Path | None =
     if expected is not None and target != expected:
         raise AuthError(
             f"cannot write cookie file: {dest}: it now leads to {target}, "
-            f"not {expected}, which the cookies were read from"
+            f"not to {expected} as it did before the session check"
         )
     try:
         # resolve() collapses "missing/.." even when "missing" is absent, but
@@ -411,12 +411,9 @@ def _normalize(data: object, *, source: str) -> dict[str, str]:
     return flat
 
 
-def import_from_browser(
-    browser: str, profile: str | None = None, browser_profile: str | None = None
-) -> Path:
-    """Read *.perplexity.ai cookies from a local browser's cookie store and
-    write them to the file `load_cookies` reads ($PPLX_COOKIES_PATH, else the
-    profile file). Atomic (tmp + rename), mode 0600.
+def read_browser_cookies(browser: str, browser_profile: str | None = None) -> dict[str, str]:
+    """The *.perplexity.ai cookies in a local browser's cookie store, one
+    value per name.
 
     `browser_profile` is the browser profile to read, by directory name or
     path, or for Safari the path of a Cookies.binarycookies file; without it
@@ -425,31 +422,33 @@ def import_from_browser(
     yt-dlp reads the store: Keychain on macOS, GNOME keyring or KWallet on
     Linux, DPAPI on Windows, a copy of a locked database. Any failure there is
     an AuthError naming the browser and the cause, and so is a store whose key
-    yt-dlp could not get (see `_extract_jar`) and an import without a session
-    token (see `_has_session`); nothing is written then.
+    yt-dlp could not get (see `_extract_jar`) and a read without a session
+    token (see `_has_session`).
 
-    Unlike a cookie file, a bad row is skipped with a warning: the jar holds
-    third-party cookies the user cannot edit, and one of them must not block
-    the import.
+    Expired and empty cookies are left out, and so are session-token chunks
+    the server would misread (see `_readable_session`). Unlike a cookie file,
+    a bad row is skipped with a warning: the jar holds third-party cookies the
+    user cannot edit, and one of them must not block the import.
+
+    Whether the session token works only perplexity.ai can say.
     """
     if browser not in SUPPORTED_BROWSERS:
         supported = ", ".join(SUPPORTED_BROWSERS)
         raise AuthError(f"unsupported browser: {browser!r} (supported: {supported})")
 
-    dest = cookie_write_path(
-        profile,
-        inline_refusal=(
-            "$PPLX_COOKIES is set and overrides any cookie file, so an import "
-            "would not be used; it was not changed. Replace or unset $PPLX_COOKIES"
-        ),
-    )
-
-    if browser_profile is not None and browser_profile.startswith("~"):
-        browser_profile = str(Path(browser_profile).expanduser())
-    if browser in _FIREFOX_FORKS:
-        source, where = "firefox", _fork_profile(browser, browser_profile)
-    else:
-        source, where = browser, browser_profile
+    try:
+        if browser_profile is not None and browser_profile.startswith("~"):
+            expanded = str(Path(browser_profile).expanduser())
+        else:
+            expanded = browser_profile
+        if browser in _FIREFOX_FORKS:
+            source, where = "firefox", _fork_profile(browser, expanded)
+        else:
+            source, where = browser, expanded
+    except (RuntimeError, OSError) as e:
+        # RuntimeError: a home directory that cannot be found, as for ~nosuchuser.
+        given = f" {browser_profile!r}" if browser_profile is not None else ""
+        raise AuthError(f"cannot find the {browser} profile{given}: {e}") from e
 
     def named(message: str) -> str:
         # yt-dlp reads a fork's store as Firefox's and says "firefox".
@@ -476,7 +475,8 @@ def import_from_browser(
 
     # yt-dlp gives Firefox's and Safari's expiry in Unix time, Chromium's as stored.
     chromium = source not in ("firefox", "safari")
-    chosen: dict[str, tuple[tuple[bool, bool, bool, str, str], str]] = {}
+    now = time.time()
+    chosen: dict[str, tuple[tuple[bool, str, str], str]] = {}
     for row in rows:
         try:
             name, value = _cookie_pair(
@@ -485,23 +485,24 @@ def import_from_browser(
         except AuthError as e:
             print(f"warning: skipping {e}", file=sys.stderr)
             continue
-        expires = _chromium_expiry(row.expires) if chromium else row.expires
-        # A flat file holds one value per name. Prefer a non-empty value: an
-        # empty one authenticates nothing, and is what a wrong key most often
-        # decrypts to. Then an unexpired one, whatever its path. Then the
-        # cookie a browser sends to the root of BASE_URL; among equals keep the
-        # last in (domain, path) order, as `_normalize` keeps the last repeat,
-        # so www.perplexity.ai beats .perplexity.ai. The jar's own order
-        # differs across Python versions. yt-dlp has already merged partition
-        # copies of one (domain, path, name).
-        unexpired = expires is None or expires > time.time()
-        rank = (value != "", unexpired, _sent_to_request_root(row), row.domain, row.path)
+        # 0, like None, marks a cookie that ends with the browser session.
+        expires = _chromium_expiry(row.expires) if chromium else row.expires or None
+        # An empty value authenticates nothing, and is what a wrong key most
+        # often decrypts to; the browser no longer sends an expired cookie.
+        if value == "" or (expires is not None and expires <= now):
+            continue
+        # A flat file holds one value per name. Prefer the cookie a browser
+        # sends to the root of BASE_URL; among equals keep the last in
+        # (domain, path) order, as `_normalize` keeps the last repeat, so
+        # www.perplexity.ai beats .perplexity.ai. The jar's own order differs
+        # across Python versions. yt-dlp has already merged partition copies of
+        # one (domain, path, name).
+        rank = (_sent_to_request_root(row), row.domain, row.path)
         if name not in chosen or rank >= chosen[name][0]:
             chosen[name] = (rank, value)
-    cookies = {name: value for name, (_, value) in chosen.items()}
+    cookies = _readable_session({name: value for name, (_, value) in chosen.items()})
 
-    # Without it the other cookies authenticate nothing, and must not replace
-    # a working file. A wrong key all but never decrypts it to a value that loads.
+    # Without it the other cookies authenticate nothing, so no request is sent.
     if not _has_session(cookies):
         cause = "; ".join(problems) or f"sign in at perplexity.ai in {browser} first"
         raise AuthError(
@@ -509,23 +510,29 @@ def import_from_browser(
         )
     for problem in problems:
         print(f"warning: {browser}: {problem}", file=sys.stderr)
+    return cookies
 
-    return save_cookies(cookies, dest=dest)
+
+def _readable_session(cookies: dict[str, str]) -> dict[str, str]:
+    """`cookies` with only the session token NextAuth can read: whole, else
+    its chunks from .0 up to the first one missing.
+
+    NextAuth joins, in suffix order, every cookie whose name starts with the
+    session cookie's, so a whole token beside chunks, or a chunk left past a
+    gap by an older split, would corrupt the token it reads.
+    """
+    keep: set[str] = set()
+    if _SESSION_COOKIE in cookies:
+        keep.add(_SESSION_COOKIE)
+    else:
+        while (chunk := f"{_SESSION_COOKIE}.{len(keep)}") in cookies:
+            keep.add(chunk)
+    return {n: v for n, v in cookies.items() if not n.startswith(_SESSION_COOKIE) or n in keep}
 
 
 def _has_session(cookies: dict[str, str]) -> bool:
-    """Whether `cookies` hold a non-empty, loadable session token: whole, or
-    as every chunk from .0 up with none missing."""
-
-    def present(name: str) -> bool:
-        value = cookies.get(name, "")
-        return value != "" and cookie_pair_ok(name, value)
-
-    if present(_SESSION_COOKIE):
-        return True
-    prefix = f"{_SESSION_COOKIE}."
-    count = sum(1 for n in cookies if n.startswith(prefix) and n[len(prefix) :].isdigit())
-    return count > 0 and all(present(f"{prefix}{i}") for i in range(count))
+    """Whether `cookies`, as `_readable_session` left them, hold a session token."""
+    return _SESSION_COOKIE in cookies or f"{_SESSION_COOKIE}.0" in cookies
 
 
 class _YtDlpFailure(Exception):

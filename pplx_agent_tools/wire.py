@@ -50,6 +50,9 @@ DEFAULT_SSE_READ_TIMEOUT = 60.0
 CLEANUP_TIMEOUT_SECONDS = 5.0
 # A thread's stream, reattached; the thread's backend uuid follows.
 RECONNECT_PATH = "/rest/sse/perplexity_ask/reconnect/"
+# Fields of an authenticated session's `user` that name the account; Perplexity
+# sends id, email and username.
+_USER_KEYS = ("id", "email", "username", "name")
 # Hard cap on un-dispatched SSE buffer (a single event with no `\n\n` terminator).
 # Defends against a server that trickles bytes forever without a terminator.
 _MAX_SSE_BUFFER_BYTES = 16 * 1024 * 1024
@@ -99,8 +102,9 @@ class Client:
     def auth_session(self) -> dict[str, Any]:
         """GET /api/auth/session. Returns parsed JSON.
 
-        NextAuth returns `{}` for unauthenticated; a populated dict (with `user`)
-        for an authenticated session. We treat empty/missing-user as AuthError.
+        It answers 200 `{}` with no session cookie or an invalid or expired
+        one. A session counts as authenticated only when its `user` names
+        someone (`_USER_KEYS`); anything else is AuthError.
 
         Captures rotated cookies into `self._cookies` (NextAuth's rolling-session
         pattern issues a fresh `__Secure-next-auth.session-token` on each call;
@@ -114,7 +118,10 @@ class Client:
             raise SchemaError("non-JSON response from /api/auth/session") from e
         if not isinstance(data, dict):
             raise SchemaError(f"/api/auth/session returned {type(data).__name__}, expected object")
-        if not data or "user" not in data:
+        user = data.get("user")
+        if not isinstance(user, dict) or not any(
+            isinstance(user.get(k), str) and user.get(k) for k in _USER_KEYS
+        ):
             raise AuthError("session expired or unauthenticated; re-import cookies")
         self._capture_rotated_cookies()
         return data

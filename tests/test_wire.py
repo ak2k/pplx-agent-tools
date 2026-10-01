@@ -242,6 +242,57 @@ def test_cookies_property_returns_copy() -> None:
     assert c.cookies["a"] == "1"
 
 
+# ---------- auth_session: what counts as signed in ----------
+
+
+class _SessionAnswer:
+    """curl_cffi's session answering every GET with 200 and `body`."""
+
+    def __init__(self, body: object) -> None:
+        self.status_code = 200
+        self.headers = {"content-type": "application/json; charset=utf-8"}
+        self.content = json.dumps(body).encode()
+        self.cookies: dict[str, str] = {}
+        self._body = body
+
+    def get(self, url: str, **_kwargs: object) -> _SessionAnswer:
+        return self
+
+    def json(self) -> object:
+        return self._body
+
+
+def _session_client(body: object) -> Client:
+    c = Client({"any": "cookie"})
+    c._session = _SessionAnswer(body)  # type: ignore[assignment]
+    return c
+
+
+# perplexity.ai answers `{}` with no session cookie and with an invalid one.
+@pytest.mark.parametrize(
+    "body",
+    [
+        {},
+        {"expires": "2099-01-01T00:00:00.000Z"},
+        {"user": None},
+        {"user": {}},
+        {"user": {"email": "", "id": None}},
+        {"user": {"image": "https://example.com/a.png"}},
+        {"user": "someone"},
+    ],
+)
+def test_auth_session_without_a_named_user_is_auth_error(body: object) -> None:
+    with pytest.raises(AuthError, match="session expired or unauthenticated"):
+        _session_client(body).auth_session()
+
+
+@pytest.mark.parametrize(
+    "user", [{"id": "u1"}, {"email": "a@b"}, {"username": "ab"}, {"name": "A"}]
+)
+def test_auth_session_naming_its_user_is_valid(user: dict[str, str]) -> None:
+    assert _session_client({"user": user}).auth_session() == {"user": user}
+
+
 # ---------- sse_post overall-deadline ----------
 
 

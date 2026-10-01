@@ -47,6 +47,7 @@ pplx auth refresh                   # run from cron / launchd
 Cookies are stored in `~/.config/perplexity/<profile>/cookies.json`. Pass `--profile` or set `$PPLX_PROFILE` to use more than one account.
 
 `auth import` reads the browser profile whose cookies changed last, which may be another account's. `--browser-profile` picks one by profile directory name (e.g. `Default`, `Profile 1`, `xxxx.default-release`) or path; for Safari, give the path of a `Cookies.binarycookies` file.
+`auth import` saves the cookies only once perplexity.ai accepts the session, and prints the account; `--no-verify` saves them unchecked, for offline use.
 Arc is not supported: export its perplexity.ai cookies as JSON with the Cookie-Editor extension to the cookie file above, mode 600.
 
 ## Caveats

@@ -1,8 +1,9 @@
-"""Browser import: `pplx auth import` and `auth.import_from_browser`.
+"""Browser import: `pplx auth import` and `auth.read_browser_cookies`.
 
 Most tests replace `auth._extract_jar`, the one call into yt-dlp. The ones
 that run yt-dlp point it at tmp_path, with a stand-in keyring where it needs
-one, so no test reads a real browser's cookie store or key.
+one, so no test reads a real browser's cookie store or key. A stand-in for
+perplexity.ai answers the session check, so none reaches the network.
 """
 
 from __future__ import annotations
@@ -25,10 +26,11 @@ from pplx_agent_tools import auth, cli_auth
 from pplx_agent_tools.auth import (
     SUPPORTED_BROWSERS,
     default_cookies_path,
-    import_from_browser,
     load_cookies,
+    read_browser_cookies,
 )
-from pplx_agent_tools.errors import EXIT_AUTH, EXIT_GENERIC, AuthError
+from pplx_agent_tools.errors import EXIT_AUTH, EXIT_GENERIC, EXIT_NETWORK, AuthError
+from tests._doubles import _TestClientBase
 
 FAR_FUTURE = 4102444800  # 2100-01-01
 PAST = 1577836800  # 2020-01-01
@@ -50,12 +52,72 @@ def _own_cookie_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
 
 
+SESSION_URL = "https://www.perplexity.ai/api/auth/session"
+SIGNED_IN = {
+    "user": {"id": "0a0a0a0a-1111-4222-8333-444444444444", "email": "me@example.com"},
+    "expires": "2099-01-01T00:00:00.000Z",
+}
+
+
+class _Answer:
+    def __init__(self, status: int, body: object) -> None:
+        self.status_code = status
+        self.headers = {"content-type": "application/json; charset=utf-8"}
+        self.content = json.dumps(body).encode()
+        self._body = body
+
+    def json(self) -> object:
+        return self._body
+
+
+class _Server:
+    """curl_cffi's session under a real `Client`, standing in for perplexity.ai:
+    every GET gets `status` and `body`, or raises `error`; a 200 also sets the
+    `rotate` cookies, as Set-Cookie would."""
+
+    def __init__(self) -> None:
+        self.status = 200
+        self.body: object = SIGNED_IN
+        self.error: Exception | None = None
+        self.rotate: dict[str, str] = {}
+        self.cookies: dict[str, str] = {}
+        self.requests: list[tuple[str, dict[str, str]]] = []
+        self.on_request: Callable[[], None] = lambda: None
+
+    def get(self, url: str, *, cookies: dict[str, str], **_: object) -> _Answer:
+        self.requests.append((url, dict(cookies)))
+        self.on_request()
+        if self.error is not None:
+            raise self.error
+        if self.status == 200:
+            self.cookies.update(self.rotate)
+        return _Answer(self.status, self.body)
+
+
+class _CheckedClient(_TestClientBase):
+    """A real `Client` over `_Server`: its `auth_session` judges the answer and
+    captures rotated cookies as it would against perplexity.ai."""
+
+    def __init__(self, cookies: dict[str, str], server: _Server) -> None:
+        super().__init__(cookies)
+        self._session = server  # type: ignore[assignment]
+
+
+@pytest.fixture(autouse=True)
+def server(monkeypatch: pytest.MonkeyPatch) -> _Server:
+    """perplexity.ai as `pplx auth import` reaches it: by default it accepts the session."""
+    srv = _Server()
+    monkeypatch.setattr(cli_auth, "Client", lambda cookies: _CheckedClient(cookies, srv))
+    return srv
+
+
 def _cookie(
     name: str,
     value: str | None,
     domain: str = ".perplexity.ai",
     path: str = "/",
-    expires: int | None = FAR_FUTURE,
+    # None, a session cookie, means the same in every browser's expiry format.
+    expires: int | None = None,
 ) -> Cookie:
     return Cookie(
         version=0,
@@ -167,12 +229,13 @@ def test_import_help_lists_the_browsers(capsys: pytest.CaptureFixture[str]) -> N
     out = capsys.readouterr().out
     assert "{" + ",".join(SUPPORTED_BROWSERS) + "}" in out
     assert "--browser-profile NAME_OR_PATH" in out
+    assert "--no-verify" in out
 
 
 def test_unsupported_browser_from_python_is_auth_error(monkeypatch: pytest.MonkeyPatch) -> None:
     calls = _fake_extractor(monkeypatch)
     with pytest.raises(AuthError, match="unsupported browser: 'arc'"):
-        import_from_browser("arc")
+        read_browser_cookies("arc")
     assert calls == []
 
 
@@ -183,7 +246,7 @@ def test_browser_is_passed_to_the_extractor_by_name(
     monkeypatch: pytest.MonkeyPatch, browser: str
 ) -> None:
     calls = _fake_extractor(monkeypatch, [SESSION])
-    import_from_browser(browser)
+    read_browser_cookies(browser)
     assert calls == [(browser, None)]
 
 
@@ -197,7 +260,7 @@ def test_firefox_fork_is_read_as_firefox_from_its_root(
     root.mkdir(parents=True)
     (root / "profiles.ini").touch()
     calls = _fake_extractor(monkeypatch, [SESSION])
-    import_from_browser(browser)
+    read_browser_cookies(browser)
     assert calls == [("firefox", str(root))]
 
 
@@ -216,14 +279,14 @@ def test_browser_profile_is_passed_to_the_extractor(
     monkeypatch: pytest.MonkeyPatch, browser: str, given: str
 ) -> None:
     calls = _fake_extractor(monkeypatch, [SESSION])
-    import_from_browser(browser, browser_profile=given)
+    read_browser_cookies(browser, browser_profile=given)
     assert calls == [(browser, given)]
 
 
 def test_browser_profile_path_expands_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
     calls = _fake_extractor(monkeypatch, [SESSION])
-    import_from_browser("chrome", browser_profile="~/chrome/Default")
+    read_browser_cookies("chrome", browser_profile="~/chrome/Default")
     assert calls == [("chrome", str(tmp_path / "chrome" / "Default"))]
 
 
@@ -250,14 +313,14 @@ def test_fork_profile_name_is_found_under_the_fork_root(
     root.joinpath(*nested).mkdir(parents=True)
     (root / "profiles.ini").touch()
     calls = _fake_extractor(monkeypatch, [SESSION])
-    import_from_browser("zen", browser_profile="abc.work")
+    read_browser_cookies("zen", browser_profile="abc.work")
     assert calls == [("firefox", str(root.joinpath(*nested)))]
 
 
 def test_fork_profile_path_needs_no_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
     calls = _fake_extractor(monkeypatch, [SESSION])
-    import_from_browser("librewolf", browser_profile="/elsewhere/abc.default")
+    read_browser_cookies("librewolf", browser_profile="/elsewhere/abc.default")
     assert calls == [("firefox", "/elsewhere/abc.default")]
 
 
@@ -287,7 +350,7 @@ def test_fork_store_errors_name_the_fork(
     root.mkdir()
     (root / "profiles.ini").touch()
     with pytest.raises(AuthError) as ei:
-        import_from_browser("zen", browser_profile=given)
+        read_browser_cookies("zen", browser_profile=given)
     assert str(ei.value).startswith(
         "cannot read zen cookies: could not find zen cookies database in "
     )
@@ -311,7 +374,7 @@ def test_missing_fork_profile_names_the_platforms_profile_path(
     (root / "profiles.ini").touch()
     looked = root / "nope" if platform == "linux" else root / "Profiles" / "nope"
     with pytest.raises(AuthError) as ei:
-        import_from_browser("zen", browser_profile="nope")
+        read_browser_cookies("zen", browser_profile="nope")
     assert str(ei.value) == (
         f"cannot read zen cookies: could not find zen cookies database in {str(looked)!r}"
     )
@@ -394,15 +457,18 @@ def test_fork_root_on_windows(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -
 @pytest.mark.parametrize("platform", ["darwin", "linux", "win32"])
 @pytest.mark.parametrize("browser", ["librewolf", "zen"])
 def test_missing_fork_root_is_auth_error_and_writes_nothing(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, platform: str, browser: str
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+    platform: str,
+    browser: str,
 ) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.delenv("APPDATA", raising=False)
     monkeypatch.setattr(sys, "platform", platform)
     calls = _fake_extractor(monkeypatch, [SESSION])
-    with pytest.raises(AuthError) as ei:
-        import_from_browser(browser)
-    assert f"{browser} profile directory not found" in str(ei.value)
+    assert cli_auth.main(["import", "--browser", browser]) == EXIT_AUTH
+    assert f"{browser} profile directory not found" in capsys.readouterr().err
     assert calls == []
     assert not default_cookies_path().exists()
 
@@ -412,8 +478,8 @@ def test_missing_fork_root_is_auth_error_and_writes_nothing(
 
 def test_import_saves_rows(monkeypatch: pytest.MonkeyPatch) -> None:
     _fake_extractor(monkeypatch, [_cookie("a", "1"), SESSION])
-    dest = import_from_browser("brave")
-    assert dest == default_cookies_path()
+    assert cli_auth.main(["import", "--browser", "brave"]) == 0
+    dest = default_cookies_path()
     assert json.loads(dest.read_text()) == {"a": "1", TOKEN: "tok"}
     assert stat.S_IMODE(dest.stat().st_mode) == 0o600
 
@@ -431,8 +497,7 @@ def test_import_saves_rows(monkeypatch: pytest.MonkeyPatch) -> None:
 )
 def test_domain_on_label_boundary_matches(monkeypatch: pytest.MonkeyPatch, domain: str) -> None:
     _fake_extractor(monkeypatch, [_cookie(TOKEN, "1", domain)])
-    import_from_browser("chrome")
-    assert _saved() == {TOKEN: "1"}
+    assert read_browser_cookies("chrome") == {TOKEN: "1"}
 
 
 @pytest.mark.parametrize(
@@ -449,8 +514,7 @@ def test_domain_on_label_boundary_matches(monkeypatch: pytest.MonkeyPatch, domai
 )
 def test_domain_off_label_boundary_is_ignored(monkeypatch: pytest.MonkeyPatch, domain: str) -> None:
     _fake_extractor(monkeypatch, [SESSION, _cookie("other", "SECRET", domain)])
-    import_from_browser("chrome")
-    assert _saved() == {TOKEN: "tok"}
+    assert read_browser_cookies("chrome") == {TOKEN: "tok"}
 
 
 def _pick(monkeypatch: pytest.MonkeyPatch, rows: list[Cookie], browser: str = "firefox") -> str:
@@ -458,8 +522,7 @@ def _pick(monkeypatch: pytest.MonkeyPatch, rows: list[Cookie], browser: str = "f
     picked: set[str] = set()
     for order in (rows, rows[::-1]):
         _fake_extractor(monkeypatch, [*order, SESSION])
-        import_from_browser(browser)
-        picked.add(_saved()["n"])
+        picked.add(read_browser_cookies(browser)["n"])
     assert len(picked) == 1, f"choice depends on row order: {picked}"
     return picked.pop()
 
@@ -539,20 +602,16 @@ def test_duplicate_prefers_a_value_over_an_empty_one(monkeypatch: pytest.MonkeyP
     assert _pick(monkeypatch, rows) == "v"
 
 
-def test_empty_value_beside_a_real_one_is_written(monkeypatch: pytest.MonkeyPatch) -> None:
-    _fake_extractor(monkeypatch, [_cookie("a", ""), SESSION])
-    import_from_browser("chrome")
-    assert _saved() == {"a": "", TOKEN: "tok"}
-
-
 _NO_SESSION = re.escape(f"no usable {TOKEN} cookie for *.perplexity.ai in ") + "{browser}: "
 
 
-def test_only_empty_values_write_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_only_empty_values_write_nothing(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     before = _working_file()
     _fake_extractor(monkeypatch, [_cookie("a", ""), _cookie(TOKEN, "", "www.perplexity.ai")])
-    with pytest.raises(AuthError, match=_NO_SESSION.format(browser="chrome")):
-        import_from_browser("chrome")
+    assert cli_auth.main(["import", "--browser", "chrome"]) == EXIT_AUTH
+    assert re.search(_NO_SESSION.format(browser="chrome"), capsys.readouterr().err)
     assert default_cookies_path().read_text() == before
 
 
@@ -586,22 +645,21 @@ def test_chunked_session_token_is_accepted(monkeypatch: pytest.MonkeyPatch, coun
     # NextAuth splits a large token into cookies named <name>.0, <name>.1, ...
     chunks = {f"{TOKEN}.{i}": f"part{i}" for i in range(count)}
     _fake_extractor(monkeypatch, [_cookie(n, v) for n, v in chunks.items()])
-    import_from_browser("chrome")
-    assert _saved() == chunks
+    assert read_browser_cookies("chrome") == chunks
 
 
 @pytest.mark.parametrize(
     "chunks",
-    [{".1": "b"}, {".0": "a", ".2": "c"}, {".0": "a", ".1": ""}],
-    ids=["no-first", "gap", "empty-chunk"],
+    [{".1": "b"}, {".1": "b", ".2": "c"}, {".0": "", ".1": "b"}],
+    ids=["one", "two", "empty-first"],
 )
-def test_incomplete_chunked_session_token_is_refused(
-    monkeypatch: pytest.MonkeyPatch, chunks: dict[str, str]
+def test_chunked_session_token_without_its_first_chunk_is_refused(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], chunks: dict[str, str]
 ) -> None:
     before = _working_file()
     _fake_extractor(monkeypatch, [_cookie(TOKEN + n, v) for n, v in chunks.items()])
-    with pytest.raises(AuthError, match=_NO_SESSION.format(browser="chrome")):
-        import_from_browser("chrome")
+    assert cli_auth.main(["import", "--browser", "chrome"]) == EXIT_AUTH
+    assert re.search(_NO_SESSION.format(browser="chrome"), capsys.readouterr().err)
     assert default_cookies_path().read_text() == before
 
 
@@ -640,8 +698,7 @@ def test_import_skips_bad_rows_with_warning(
         _cookie("a;b", "SECRET4"),
     ]
     _fake_extractor(monkeypatch, rows)
-    import_from_browser("brave")
-    assert _saved() == {TOKEN: "good"}
+    assert read_browser_cookies("brave") == {TOKEN: "good"}
     err = capsys.readouterr().err
     assert err.count("warning: skipping") == 5
     for name in ("nullish", "crlf", "tabbed", "surr"):
@@ -650,18 +707,19 @@ def test_import_skips_bad_rows_with_warning(
     assert "SECRET" not in err
 
 
-def test_import_all_rows_bad_writes_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_import_all_rows_bad_writes_nothing(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     _fake_extractor(monkeypatch, [_cookie("a", "x\r\ny")])
-    with pytest.raises(AuthError, match="sign in"):
-        import_from_browser("brave")
+    assert cli_auth.main(["import", "--browser", "brave"]) == EXIT_AUTH
+    assert "sign in" in capsys.readouterr().err
     assert not default_cookies_path().exists()
 
 
 def test_import_empty_says_sign_in(monkeypatch: pytest.MonkeyPatch) -> None:
     _fake_extractor(monkeypatch, [_cookie("other", "1", "example.com")])
     with pytest.raises(AuthError, match=r"sign in at perplexity\.ai in brave first"):
-        import_from_browser("brave")
-    assert not default_cookies_path().exists()
+        read_browser_cookies("brave")
 
 
 # ---------- destination: the file load_cookies reads ----------
@@ -671,21 +729,22 @@ def test_import_writes_to_cookies_path_env(monkeypatch: pytest.MonkeyPatch, tmp_
     target = tmp_path / "custom" / "jar.json"
     monkeypatch.setenv("PPLX_COOKIES_PATH", str(target))
     _fake_extractor(monkeypatch, [SESSION])
-    assert import_from_browser("brave") == target
+    assert cli_auth.main(["import", "--browser", "brave"]) == 0
     assert stat.S_IMODE(target.stat().st_mode) == 0o600
     assert load_cookies() == {TOKEN: "tok"}
     assert not default_cookies_path().exists()
 
 
-def test_import_refuses_when_inline_env_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_import_refuses_when_inline_env_overrides(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], server: _Server
+) -> None:
     monkeypatch.setenv("PPLX_COOKIES", '{"a": "SECRET"}')
     calls = _fake_extractor(monkeypatch, [SESSION])
-    with pytest.raises(AuthError) as ei:
-        import_from_browser("brave")
-    msg = str(ei.value)
+    assert cli_auth.main(["import", "--browser", "brave"]) == EXIT_AUTH
+    msg = capsys.readouterr().err
     assert "$PPLX_COOKIES" in msg and "not changed" in msg
     assert "SECRET" not in msg
-    assert calls == []
+    assert (calls, server.requests) == ([], [])
     assert not default_cookies_path().exists()
 
 
@@ -731,7 +790,7 @@ def test_extractor_exception_includes_logged_problems(monkeypatch: pytest.Monkey
         raises=OSError("no D-Bus session"),
     )
     with pytest.raises(AuthError) as ei:
-        import_from_browser("chromium")
+        read_browser_cookies("chromium")
     assert str(ei.value) == (
         "cannot read chromium cookies: no D-Bus session; secretstorage not available"
     )
@@ -741,14 +800,14 @@ def test_cause_logged_and_raised_is_named_once(monkeypatch: pytest.MonkeyPatch) 
     message = "Failed to decrypt with DPAPI"
     _fake_extractor(monkeypatch, problems=[message, "other"], raises=RuntimeError(message))
     with pytest.raises(AuthError) as ei:
-        import_from_browser("edge")
+        read_browser_cookies("edge")
     assert str(ei.value) == f"cannot read edge cookies: {message}; other"
 
 
 def test_safari_os_error_names_full_disk_access(monkeypatch: pytest.MonkeyPatch) -> None:
     _fake_extractor(monkeypatch, raises=PermissionError(1, "Operation not permitted"))
     with pytest.raises(AuthError, match="Full Disk Access"):
-        import_from_browser("safari")
+        read_browser_cookies("safari")
 
 
 def test_safari_profile_not_found_is_a_wrong_path(
@@ -756,7 +815,7 @@ def test_safari_profile_not_found_is_a_wrong_path(
 ) -> None:
     monkeypatch.setattr(sys, "platform", "darwin")
     with pytest.raises(AuthError) as ei:
-        import_from_browser("safari", browser_profile=str(tmp_path / "Cookies.binarycookies"))
+        read_browser_cookies("safari", browser_profile=str(tmp_path / "Cookies.binarycookies"))
     assert str(ei.value) == "cannot read safari cookies: custom safari cookies database not found"
 
 
@@ -859,7 +918,9 @@ def test_undecryptable_cookies_warn_but_the_rest_import(
     rc = cli_auth.main(["import", "--browser", "chrome"])
     assert rc == 0
     out, err = capsys.readouterr()
-    assert out == f"imported chrome cookies to {default_cookies_path()}\n"
+    assert out == (
+        f"imported chrome cookies to {default_cookies_path()}\nsession valid: me@example.com\n"
+    )
     assert err.splitlines() == [
         "warning: chrome: failed to decrypt cookie (AES-CBC) because UTF-8 decoding failed. "
         "Possibly the key is wrong?",
@@ -970,7 +1031,9 @@ def test_yt_dlp_round_trip_through_a_fork_profile(
     _firefox_profile(root, profile, rows)
     assert cli_auth.main(["import", "--browser", "zen"]) == 0
     out, err = capsys.readouterr()
-    assert out == f"imported zen cookies to {default_cookies_path()}\n"
+    assert out == (
+        f"imported zen cookies to {default_cookies_path()}\nsession valid: me@example.com\n"
+    )
     assert err == ""
     assert _saved() == {"pplx.visitor-id": "v1", TOKEN: "tok"}
 
@@ -984,8 +1047,7 @@ def test_firefox_container_cookies_are_not_imported(tmp_path: Path) -> None:
     ]
     profile = tmp_path / "firefox" / "abc.default"
     _firefox_profile(tmp_path / "firefox", profile, rows)
-    import_from_browser("firefox", browser_profile=str(profile))
-    assert _saved() == {TOKEN: "default-context"}
+    assert read_browser_cookies("firefox", str(profile)) == {TOKEN: "default-context"}
 
 
 def _gnome_keyring(monkeypatch: pytest.MonkeyPatch, items: dict[str, bytes]) -> None:
@@ -1221,3 +1283,215 @@ def test_yt_dlp_messages_relied_on_are_in_its_source() -> None:
     source = inspect.getsource(yt_dlp.cookies)
     for message in (*auth._NO_KEY, auth._KWALLET_EMPTY_PASSWORD, auth._UNDECRYPTED):
         assert message in source, message
+
+
+# ---------- the server decides ----------
+
+
+def test_import_saves_the_cookies_as_the_session_check_rotated_them(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], server: _Server
+) -> None:
+    _fake_extractor(monkeypatch, [_cookie("pplx.visitor-id", "v"), SESSION])
+    server.rotate = {TOKEN: "rotated", "__cf_bm": "set-by-the-server"}
+    assert cli_auth.main(["import", "--browser", "firefox"]) == 0
+    assert server.requests == [(SESSION_URL, {"pplx.visitor-id": "v", TOKEN: "tok"})]
+    assert _saved() == {"pplx.visitor-id": "v", TOKEN: "rotated"}
+    assert capsys.readouterr() == (
+        f"imported firefox cookies to {default_cookies_path()}\nsession valid: me@example.com\n",
+        "",
+    )
+
+
+@pytest.mark.parametrize(
+    ("user", "shown"), [({"id": "a1", "username": "me"}, "me"), ({"id": "a1"}, "a1")]
+)
+def test_import_names_the_account_without_an_email(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    server: _Server,
+    user: dict[str, str],
+    shown: str,
+) -> None:
+    _fake_extractor(monkeypatch, [SESSION])
+    server.body = {"user": user}
+    assert cli_auth.main(["import", "--browser", "firefox"]) == 0
+    assert capsys.readouterr().out.endswith(f"\nsession valid: {shown}\n")
+
+
+@pytest.mark.parametrize(
+    ("status", "body"),
+    [
+        (200, {}),
+        (200, {"user": None}),
+        (200, {"user": {}}),
+        (200, {"user": {"email": ""}}),
+        (401, {}),
+        (403, {"error": "forbidden"}),
+    ],
+    ids=["empty", "null-user", "empty-user", "blank-email", "401", "403"],
+)
+def test_session_the_server_rejects_exits_two_and_writes_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    server: _Server,
+    status: int,
+    body: object,
+) -> None:
+    before = _working_file()
+    _fake_extractor(monkeypatch, [SESSION])
+    server.status, server.body = status, body
+    # NextAuth clears a session cookie it rejects.
+    server.rotate = {TOKEN: ""}
+    assert cli_auth.main(["import", "--browser", "firefox"]) == EXIT_AUTH
+    assert capsys.readouterr() == (
+        "",
+        "pplx auth import: perplexity.ai did not accept the firefox session: it is missing "
+        "or expired; sign in at perplexity.ai in firefox, then import again\n",
+    )
+    assert len(server.requests) == 1
+    assert default_cookies_path().read_text() == before
+
+
+def test_unreachable_server_exits_four_naming_no_verify(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], server: _Server
+) -> None:
+    before = _working_file()
+    _fake_extractor(monkeypatch, [SESSION])
+    server.error = ConnectionError("Could not resolve host: www.perplexity.ai")
+    assert cli_auth.main(["import", "--browser", "firefox"]) == EXIT_NETWORK
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert err == (
+        "pplx auth import: cannot verify the firefox session: request to /api/auth/session "
+        "failed: Could not resolve host: www.perplexity.ai; nothing was saved. Retry, or pass "
+        "--no-verify to save the cookies unverified\n"
+    )
+    assert default_cookies_path().read_text() == before
+
+
+def test_no_verify_saves_without_a_request_and_warns(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], server: _Server
+) -> None:
+    _fake_extractor(monkeypatch, [_cookie("a", "1"), SESSION])
+    assert cli_auth.main(["import", "--browser", "firefox", "--no-verify"]) == 0
+    assert server.requests == []
+    assert _saved() == {"a": "1", TOKEN: "tok"}
+    assert capsys.readouterr() == (
+        f"imported firefox cookies to {default_cookies_path()}\n",
+        "warning: the firefox session was not verified with perplexity.ai (--no-verify)\n",
+    )
+
+
+@pytest.mark.parametrize("no_verify", [False, True], ids=["verify", "no-verify"])
+def test_no_session_token_fails_without_a_request(
+    monkeypatch: pytest.MonkeyPatch, server: _Server, no_verify: bool
+) -> None:
+    before = _working_file()
+    _fake_extractor(monkeypatch, [_cookie("pplx.visitor-id", "v"), _cookie(TOKEN + ".1", "b")])
+    argv = ["import", "--browser", "firefox", *(["--no-verify"] if no_verify else [])]
+    assert cli_auth.main(argv) == EXIT_AUTH
+    assert server.requests == []
+    assert default_cookies_path().read_text() == before
+
+
+def test_symlink_repointed_during_the_session_check_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    server: _Server,
+    tmp_path: Path,
+) -> None:
+    account_a, account_b = tmp_path / "account-a.json", tmp_path / "account-b.json"
+    for path, value in ((account_a, "a-value"), (account_b, "b-value")):
+        path.write_text(json.dumps({TOKEN: value}))
+        path.chmod(0o600)
+    current = tmp_path / "current.json"
+    current.symlink_to(account_a)
+    monkeypatch.setenv("PPLX_COOKIES_PATH", str(current))
+
+    def repoint() -> None:
+        current.unlink()
+        current.symlink_to(account_b)
+
+    server.on_request = repoint
+    _fake_extractor(monkeypatch, [SESSION])
+    assert cli_auth.main(["import", "--browser", "firefox"]) == EXIT_AUTH
+    assert capsys.readouterr().err == (
+        f"pplx auth import: cannot write cookie file: {current}: it now leads to "
+        f"{account_b}, not to {account_a} as it did before the session check\n"
+    )
+    assert json.loads(account_a.read_text()) == {TOKEN: "a-value"}
+    assert json.loads(account_b.read_text()) == {TOKEN: "b-value"}
+
+
+# ---------- what is sent and saved ----------
+
+
+@pytest.mark.parametrize(("browser", "stored"), _STORED_TIME)
+def test_expired_and_empty_cookies_are_neither_sent_nor_saved(
+    monkeypatch: pytest.MonkeyPatch, server: _Server, browser: str, stored: Callable[[int], int]
+) -> None:
+    rows = [
+        _cookie(TOKEN, "tok", "www.perplexity.ai", expires=stored(FAR_FUTURE)),
+        _cookie("expired", "old", expires=stored(PAST)),
+        _cookie("empty", "", expires=stored(FAR_FUTURE)),
+        _cookie("live", "v", expires=stored(FAR_FUTURE)),
+        # Both Chromium and Firefox store 0 for a cookie that ends with the session.
+        _cookie("session-only", "s", expires=0),
+    ]
+    _fake_extractor(monkeypatch, rows)
+    assert cli_auth.main(["import", "--browser", browser]) == 0
+    kept = {TOKEN: "tok", "live": "v", "session-only": "s"}
+    assert _saved() == kept
+    assert server.requests == [(SESSION_URL, kept)]
+
+
+@pytest.mark.parametrize(
+    ("stored", "kept"),
+    [
+        ({".0": "a", ".1": "b", ".3": "d"}, {".0": "a", ".1": "b"}),
+        ({".0": "a", ".2": "c"}, {".0": "a"}),
+        ({".0": "a", ".1": "", ".2": "c"}, {".0": "a"}),
+        ({"": "whole", ".0": "a", ".1": "b"}, {"": "whole"}),
+        ({".0": "a", ".01": "b", ".x": "c"}, {".0": "a"}),
+    ],
+    ids=["leftover-past-a-gap", "gap", "empty-chunk", "whole-beside-chunks", "not-chunk-names"],
+)
+def test_only_the_session_token_the_server_would_read_whole_is_kept(
+    monkeypatch: pytest.MonkeyPatch, server: _Server, stored: dict[str, str], kept: dict[str, str]
+) -> None:
+    # NextAuth joins every cookie whose name starts with the session cookie's.
+    rows = [_cookie(TOKEN + suffix, value) for suffix, value in stored.items()]
+    _fake_extractor(monkeypatch, [_cookie("a", "1"), *rows])
+    assert cli_auth.main(["import", "--browser", "firefox"]) == 0
+    expected = {"a": "1", **{TOKEN + suffix: value for suffix, value in kept.items()}}
+    assert _saved() == expected
+    assert server.requests == [(SESSION_URL, expected)]
+
+
+def test_profile_under_an_unknown_users_home_exits_two(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], server: _Server
+) -> None:
+    calls = _fake_extractor(monkeypatch, [SESSION])
+    given = "~no-such-user-pplx/Default"
+    assert cli_auth.main(["import", "--browser", "chrome", "--browser-profile", given]) == EXIT_AUTH
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert err.startswith(f"pplx auth import: cannot find the chrome profile {given!r}: ")
+    assert "home directory" in err
+    assert (calls, server.requests) == ([], [])
+    assert not default_cookies_path().exists()
+
+
+def test_fork_root_without_a_home_exits_two(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def no_home(cls: type[Path]) -> Path:
+        raise RuntimeError("Could not determine home directory.")
+
+    monkeypatch.setattr(Path, "home", classmethod(no_home))
+    calls = _fake_extractor(monkeypatch, [SESSION])
+    assert cli_auth.main(["import", "--browser", "zen"]) == EXIT_AUTH
+    assert capsys.readouterr().err == (
+        "pplx auth import: cannot find the zen profile: Could not determine home directory.\n"
+    )
+    assert calls == []

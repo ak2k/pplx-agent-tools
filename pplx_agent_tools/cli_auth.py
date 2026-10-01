@@ -3,7 +3,8 @@
 Subcommands:
   check     — validate the session against /api/auth/session
   refresh   — keepalive ping (silent on success; designed for cron/launchd)
-  import    — pull cookies from a local browser profile
+  import    — pull cookies from a local browser profile, saved once
+              /api/auth/session accepts them
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ from __future__ import annotations
 import argparse
 import sys
 from collections.abc import Sequence
+from typing import Any
 
 from .auth import (
     SUPPORTED_BROWSERS,
@@ -19,11 +21,11 @@ from .auth import (
     cookie_source,
     cookie_write_path,
     describe_cookie_source,
-    import_from_browser,
+    read_browser_cookies,
     save_cookies,
 )
 from .cli_types import PplxArgumentParser
-from .errors import PplxError, exit_code
+from .errors import AuthError, NetworkError, PplxError, exit_code
 from .wire import Client
 
 
@@ -54,7 +56,10 @@ def build_parser() -> PplxArgumentParser:
         ),
     )
 
-    p_import = sub.add_parser("import", help="import cookies from a local browser profile")
+    p_import = sub.add_parser(
+        "import",
+        help="import cookies from a local browser profile once perplexity.ai accepts the session",
+    )
     p_import.add_argument(
         "--browser",
         choices=list(SUPPORTED_BROWSERS),
@@ -78,6 +83,14 @@ def build_parser() -> PplxArgumentParser:
             "$PPLX_COOKIES_PATH, when set, is written instead"
         ),
     )
+    p_import.add_argument(
+        "--no-verify",
+        action="store_true",
+        help=(
+            "save without asking perplexity.ai whether the session works (offline use); "
+            "only a missing session cookie is caught"
+        ),
+    )
 
     return parser
 
@@ -90,10 +103,8 @@ def cmd_check(args: argparse.Namespace) -> int:
         print(f"pplx auth check: {e}", file=sys.stderr)
         return exit_code(e)
 
-    user = session.get("user") or {}
-    email = user.get("email") or "(no email)"
     expires = session.get("expires") or "(no expiry)"
-    print(f"session valid: {email}")
+    print(f"session valid: {_account(session)}")
     print(f"expires: {expires}")
     source = cookie_source(args.profile)
     if isinstance(source, ProfileSource):
@@ -138,15 +149,62 @@ def cmd_refresh(args: argparse.Namespace) -> int:
 
 
 def cmd_import(args: argparse.Namespace) -> int:
+    """Read the browser's cookies and save them, as `refresh` saves, once
+    /api/auth/session accepts them; with --no-verify, without asking."""
+    browser: str = args.browser
+    session: dict[str, Any] | None = None
     try:
-        dest = import_from_browser(
-            args.browser, profile=args.profile, browser_profile=args.browser_profile
+        dest = cookie_write_path(
+            args.profile,
+            inline_refusal=(
+                "$PPLX_COOKIES is set and overrides any cookie file, so an import "
+                "would not be used; it was not changed. Replace or unset $PPLX_COOKIES"
+            ),
         )
+        # Pinned before the request, as `cmd_refresh` pins it.
+        expected = cookie_file_target(dest)
+        cookies = read_browser_cookies(browser, args.browser_profile)
+        if args.no_verify:
+            print(
+                f"warning: the {browser} session was not verified with perplexity.ai (--no-verify)",
+                file=sys.stderr,
+            )
+        else:
+            client = Client(cookies)
+            session = _browser_session(client, browser)
+            # The check can rotate the session token.
+            cookies = client.cookies
+        written = save_cookies(cookies, dest=dest, expected=expected)
     except PplxError as e:
         print(f"pplx auth import: {e}", file=sys.stderr)
         return exit_code(e)
-    print(f"imported {args.browser} cookies to {dest}")
+    print(f"imported {browser} cookies to {written}")
+    if session is not None:
+        print(f"session valid: {_account(session)}")
     return 0
+
+
+def _browser_session(client: Client, browser: str) -> dict[str, Any]:
+    """`client.auth_session()`, its errors worded for cookies read from `browser`."""
+    try:
+        return client.auth_session()
+    except AuthError as e:
+        raise AuthError(
+            f"perplexity.ai did not accept the {browser} session: it is missing or expired; "
+            f"sign in at perplexity.ai in {browser}, then import again"
+        ) from e
+    except NetworkError as e:
+        raise NetworkError(
+            f"cannot verify the {browser} session: {e}; nothing was saved. "
+            "Retry, or pass --no-verify to save the cookies unverified"
+        ) from e
+
+
+def _account(session: dict[str, Any]) -> str:
+    """The account an authenticated /api/auth/session answer names."""
+    user = session.get("user") or {}
+    named = (user.get(k) for k in ("email", "username", "name", "id"))
+    return next((v for v in named if v), "(no email)")
 
 
 def main(argv: Sequence[str] | None = None) -> int:
