@@ -7,10 +7,12 @@ status-branching method directly with a tiny FakeResponse stand-in.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 from curl_cffi.requests import Headers
 
+from pplx_agent_tools.auth import user_agent_path
 from pplx_agent_tools.errors import (
     AntiBotError,
     AuthError,
@@ -582,3 +584,85 @@ def test_a_delete_refusal_that_echoes_the_token_never_prints_it(
     err = capsys.readouterr().err
     assert "cleanup failed" in err and "returned 422" in err
     assert token[:8] not in err
+
+
+# ---------- user agent and the Cloudflare challenge ----------
+
+
+def test_client_user_agent_is_a_session_header() -> None:
+    c = Client({"a": "b"}, user_agent="Mozilla/5.0 test")
+    assert c._session.headers["user-agent"] == "Mozilla/5.0 test"
+
+
+def test_client_without_user_agent_keeps_impersonated_one() -> None:
+    assert "user-agent" not in Client({"a": "b"})._session.headers
+
+
+def test_from_default_cookies_loads_profile_user_agent(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PPLX_COOKIES", '{"a": "b"}')
+    path = user_agent_path("wire-ua")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("Mozilla/5.0 profile\n")
+    c = Client.from_default_cookies("wire-ua")
+    assert c._session.headers["user-agent"] == "Mozilla/5.0 profile"
+    assert c._user_agent_file == path
+
+
+def _challenge() -> FakeResp:
+    return FakeResp(
+        403, headers={"content-type": "text/html"}, content=b"<title>Just a moment...</title>"
+    )
+
+
+def test_anti_bot_message_names_the_fix_and_the_profile_file(tmp_path: Path) -> None:
+    c = Client({"a": "b"}, user_agent_file=tmp_path / "user-agent")
+    with pytest.raises(AntiBotError) as exc:
+        c._check_status(_challenge(), "/rest/rate-limit/status")
+    assert str(exc.value) == (
+        "Cloudflare block on /rest/rate-limit/status (status 403); if every request from "
+        "this host is challenged, add a cf_clearance cookie a Chromium-based browser earned "
+        f"from this host's IP and put that browser's User-Agent in {tmp_path / 'user-agent'} "
+        "or $PPLX_USER_AGENT"
+    )
+
+
+def _renewal_hint(source: str) -> str:
+    return (
+        "Cloudflare HTML body on /rest/rate-limit/status; if every request from this host is "
+        "challenged, the cf_clearance cookie may have expired or this host's IP or User-Agent "
+        f"may have changed, so earn a new cf_clearance in a Chromium-based browser that sends the User-Agent in {source}"
+    )
+
+
+def test_anti_bot_message_with_a_profile_file_user_agent_names_the_file(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PPLX_COOKIES", '{"a": "b"}')
+    path = user_agent_path("hint-file")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("Mozilla/5.0 file\n")
+    c = Client.from_default_cookies("hint-file")
+    with pytest.raises(AntiBotError) as exc:
+        c._check_cloudflare_body(_challenge(), "/rest/rate-limit/status")
+    assert str(exc.value) == _renewal_hint(str(path))
+
+
+def test_anti_bot_message_with_an_env_user_agent_names_the_variable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PPLX_COOKIES", '{"a": "b"}')
+    monkeypatch.setenv("PPLX_USER_AGENT", "Mozilla/5.0 env")
+    path = user_agent_path("hint-env")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("Mozilla/5.0 file\n")
+    c = Client.from_default_cookies("hint-env")
+    with pytest.raises(AntiBotError) as exc:
+        c._check_cloudflare_body(_challenge(), "/rest/rate-limit/status")
+    assert str(exc.value) == _renewal_hint("$PPLX_USER_AGENT")
+
+
+def test_anti_bot_message_without_a_profile_file(client: Client) -> None:
+    with pytest.raises(AntiBotError) as exc:
+        client._check_status(_challenge(), "/x")
+    assert str(exc.value).startswith("Cloudflare block on /x (status 403); ")
+    assert "the user-agent file beside the profile's cookies.json" in str(exc.value)

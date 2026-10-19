@@ -50,6 +50,8 @@ Cookies are stored in `~/.config/perplexity/<profile>/cookies.json`. Pass `--pro
 `auth import` saves the cookies only once perplexity.ai accepts the session, and prints the account; `--no-verify` saves them unchecked, for offline use.
 Arc is not supported: export its perplexity.ai cookies as JSON with the Cookie-Editor extension to the cookie file above, mode 600.
 
+On a host that Cloudflare challenges on every request (exit 5, `Cloudflare block`), pplx needs a `cf_clearance` cookie earned by a Chromium-based browser on that host, plus that browser's exact User-Agent on one line in `~/.config/perplexity/<profile>/user-agent` (or in `$PPLX_USER_AGENT`). Cloudflare accepts the cookie only from the same IP and User-Agent.
+
 ## Caveats
 
 - **Unofficial and not affiliated with Perplexity AI.** It uses internal web endpoints, not the Sonar API, and they can change without notice.

@@ -40,7 +40,7 @@ def _private_cookies(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]
     they export: a test that needs a cookie source or profile sets its own, and
     profile files default to a tmp dir."""
     with pytest.MonkeyPatch.context() as mp:
-        for name in ("PPLX_COOKIES_PATH", "PPLX_COOKIES", "PPLX_PROFILE"):
+        for name in ("PPLX_COOKIES_PATH", "PPLX_COOKIES", "PPLX_PROFILE", "PPLX_USER_AGENT"):
             mp.delenv(name, raising=False)
         mp.setenv("XDG_CONFIG_HOME", str(tmp_path_factory.mktemp("xdg-config")))
         yield

@@ -18,8 +18,10 @@ from pplx_agent_tools.auth import (
     cookie_write_path,
     default_cookies_path,
     load_cookies,
+    load_user_agent,
     resolve_profile,
     save_cookies,
+    user_agent_path,
 )
 from pplx_agent_tools.errors import AuthError
 
@@ -566,3 +568,82 @@ def test_save_cookies_all_unloadable_keeps_existing_file() -> None:
     with pytest.raises(AuthError):
         save_cookies({"session": "x;y"}, dest=dest)
     assert json.loads(dest.read_text()) == {"session": "ok"}
+
+
+# ---------- user agent ----------
+
+UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0 Safari/537.36"
+
+
+def test_user_agent_path_is_beside_profile_cookies() -> None:
+    assert user_agent_path("work") == default_cookies_path("work").parent / "user-agent"
+
+
+def test_load_user_agent_absent_is_none() -> None:
+    assert not user_agent_path().exists()
+    assert load_user_agent() is None
+
+
+def test_load_user_agent_reads_profile_file() -> None:
+    path = user_agent_path("ua-file")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"  {UA}\n")
+    assert load_user_agent("ua-file") == UA
+
+
+def test_load_user_agent_blank_file_is_none() -> None:
+    path = user_agent_path("ua-blank")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(" \n")
+    assert load_user_agent("ua-blank") is None
+
+
+def test_load_user_agent_env_beats_file(monkeypatch: pytest.MonkeyPatch) -> None:
+    path = user_agent_path("ua-env")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("from-file\n")
+    monkeypatch.setenv("PPLX_USER_AGENT", UA)
+    assert load_user_agent("ua-env") == UA
+
+
+@pytest.mark.parametrize("value", ["", "   "])
+def test_load_user_agent_empty_env_falls_back_to_file(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    path = user_agent_path("ua-env-empty")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(UA)
+    monkeypatch.setenv("PPLX_USER_AGENT", value)
+    assert load_user_agent("ua-env-empty") == UA
+
+
+@pytest.mark.parametrize(
+    "bad", ["a\r\nX-Injected: 1", "a\nb", "a\tb", "a\x00b", "a\x7fb", "Mozilla/5.0 \u00e9"]
+)
+def test_load_user_agent_rejects_bad_file_value(bad: str) -> None:
+    path = user_agent_path("ua-bad")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(bad, encoding="utf-8")
+    with pytest.raises(AuthError, match="printable ASCII") as exc:
+        load_user_agent("ua-bad")
+    assert str(path) in str(exc.value)
+
+
+def test_load_user_agent_rejects_bad_env_value(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PPLX_USER_AGENT", "a\r\nb")
+    with pytest.raises(AuthError, match=r"\$PPLX_USER_AGENT must be"):
+        load_user_agent()
+
+
+def test_load_user_agent_non_utf8_file_refused() -> None:
+    path = user_agent_path("ua-latin1")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"Mozilla \xff")
+    with pytest.raises(AuthError, match="not UTF-8"):
+        load_user_agent("ua-latin1")
+
+
+def test_load_user_agent_unreadable_file_refused() -> None:
+    user_agent_path("ua-dir").mkdir(parents=True)
+    with pytest.raises(AuthError, match="user-agent file unreadable"):
+        load_user_agent("ua-dir")
