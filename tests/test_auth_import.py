@@ -1447,9 +1447,9 @@ def test_unreachable_server_exits_four_naming_no_verify(
             "text/html",
             b"<title>Just a moment...</title>",
             EXIT_ANTI_BOT,
-            "Cloudflare block on /api/auth/session (status 403); to pass the challenge, add a "
-            "cf_clearance cookie earned from this host's IP and put the User-Agent of the "
-            "browser that earned it in {ua_file} or $PPLX_USER_AGENT",
+            "Cloudflare block on /api/auth/session (status 403); if every request from this "
+            "host is challenged, add a cf_clearance cookie earned from this host's IP and put "
+            "the User-Agent of the browser that earned it in {ua_file} or $PPLX_USER_AGENT",
         ),
         (503, JSON_TYPE, {}, EXIT_NETWORK, "server error 503 on /api/auth/session"),
         (422, JSON_TYPE, {}, EXIT_GENERIC, "unexpected status 422 on /api/auth/session"),

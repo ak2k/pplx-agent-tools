@@ -619,9 +619,23 @@ def test_anti_bot_message_names_the_fix_and_the_profile_file(tmp_path: Path) -> 
     with pytest.raises(AntiBotError) as exc:
         c._check_status(_challenge(), "/rest/rate-limit/status")
     assert str(exc.value) == (
-        "Cloudflare block on /rest/rate-limit/status (status 403); to pass the challenge, "
-        "add a cf_clearance cookie earned from this host's IP and put the User-Agent of the "
-        f"browser that earned it in {tmp_path / 'user-agent'} or $PPLX_USER_AGENT"
+        "Cloudflare block on /rest/rate-limit/status (status 403); if every request from "
+        "this host is challenged, add a cf_clearance cookie earned from this host's IP and "
+        f"put the User-Agent of the browser that earned it in {tmp_path / 'user-agent'} or "
+        "$PPLX_USER_AGENT"
+    )
+
+
+def test_anti_bot_message_with_a_user_agent_says_to_earn_a_new_clearance(
+    tmp_path: Path,
+) -> None:
+    c = Client({"a": "b"}, user_agent="Mozilla/5.0 x", user_agent_file=tmp_path / "user-agent")
+    with pytest.raises(AntiBotError) as exc:
+        c._check_cloudflare_body(_challenge(), "/rest/rate-limit/status")
+    assert str(exc.value) == (
+        "Cloudflare HTML body on /rest/rate-limit/status; the cf_clearance cookie may have "
+        "expired or this host's IP or User-Agent may have changed, so earn a new "
+        "cf_clearance in a browser that sends the configured User-Agent"
     )
 
 

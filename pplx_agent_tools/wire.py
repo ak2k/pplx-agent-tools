@@ -82,6 +82,7 @@ class Client:
         self._cookies = dict(cookies)
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
+        self._user_agent = user_agent
         self._user_agent_file = user_agent_file
         headers = {"user-agent": user_agent} if user_agent else None
         # curl_cffi types `impersonate` as a closed Literal union; our default
@@ -578,11 +579,19 @@ class Client:
             raise self._anti_bot(f"Cloudflare HTML body on {path}")
 
     def _anti_bot(self, what: str) -> AntiBotError:
+        # An intermittent edge block also lands here, so the clearance advice
+        # is conditional: most hosts never need a browser.
+        if self._user_agent:
+            return AntiBotError(
+                f"{what}; the cf_clearance cookie may have expired or this host's IP or "
+                "User-Agent may have changed, so earn a new cf_clearance in a browser "
+                "that sends the configured User-Agent"
+            )
         where = self._user_agent_file or "the user-agent file beside the profile's cookies.json"
         return AntiBotError(
-            f"{what}; to pass the challenge, add a cf_clearance cookie earned from this "
-            f"host's IP and put the User-Agent of the browser that earned it in {where} "
-            "or $PPLX_USER_AGENT"
+            f"{what}; if every request from this host is challenged, add a cf_clearance "
+            "cookie earned from this host's IP and put the User-Agent of the browser that "
+            f"earned it in {where} or $PPLX_USER_AGENT"
         )
 
     @staticmethod
