@@ -589,8 +589,9 @@ class Client:
         if self._user_agent:
             source = self._user_agent_source or "the configured User-Agent"
             return AntiBotError(
-                f"{what}; the cf_clearance cookie may have expired or this host's IP or "
-                "User-Agent may have changed, so earn a new cf_clearance in a Chromium-based "
+                f"{what}; if every request from this host is challenged, the cf_clearance "
+                "cookie may have expired or this host's IP or User-Agent may have changed, so "
+                "earn a new cf_clearance in a Chromium-based "
                 f"browser that sends the User-Agent in {source}"
             )
         where = self._user_agent_file or "the user-agent file beside the profile's cookies.json"

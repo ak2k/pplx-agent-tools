@@ -628,9 +628,9 @@ def test_anti_bot_message_names_the_fix_and_the_profile_file(tmp_path: Path) -> 
 
 def _renewal_hint(source: str) -> str:
     return (
-        "Cloudflare HTML body on /rest/rate-limit/status; the cf_clearance cookie may have "
-        "expired or this host's IP or User-Agent may have changed, so earn a new "
-        f"cf_clearance in a Chromium-based browser that sends the User-Agent in {source}"
+        "Cloudflare HTML body on /rest/rate-limit/status; if every request from this host is "
+        "challenged, the cf_clearance cookie may have expired or this host's IP or User-Agent "
+        f"may have changed, so earn a new cf_clearance in a Chromium-based browser that sends the User-Agent in {source}"
     )
 
 
