@@ -18,6 +18,8 @@ written here is refused on the next load.
 
 Cookie files must be mode 0600. World-readable files are refused; group-readable
 files are auto-chmodded with a warning to stderr.
+
+A profile can also carry the User-Agent to send (`load_user_agent`).
 """
 
 from __future__ import annotations
@@ -163,6 +165,43 @@ def load_cookies(profile: str | None = None) -> dict[str, str]:
         case EnvPathSource(path) | ProfileSource(_, path):
             return _load_from_file(path, label=label)
     assert_never(source)
+
+
+def user_agent_path(profile: str | None = None) -> Path:
+    """The profile's User-Agent file, beside its default cookie file."""
+    return default_cookies_path(profile).parent / "user-agent"
+
+
+def load_user_agent(profile: str | None = None) -> str | None:
+    """The User-Agent to send for a profile, or None to keep curl_cffi's.
+
+    $PPLX_USER_AGENT when set and non-empty, else the profile's `user-agent`
+    file, one line with surrounding whitespace stripped; a missing or blank
+    file is None. Cloudflare binds a cf_clearance cookie to the IP and
+    User-Agent that earned it, so the browser's UA must go with it.
+
+    Unlike the cookie file, no mode is enforced: a User-Agent is not a secret.
+    Raises AuthError on a value that is not printable ASCII, which a header
+    cannot carry intact, or on an unreadable file.
+    """
+    if env := os.environ.get("PPLX_USER_AGENT", "").strip():
+        return _user_agent_value(env, source="$PPLX_USER_AGENT")
+    path = user_agent_path(profile)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    except OSError as e:
+        raise AuthError(f"user-agent file unreadable: {path}: {e.strerror}") from e
+    except UnicodeDecodeError as e:
+        raise AuthError(f"user-agent file is not UTF-8: {path}") from e
+    return _user_agent_value(text.strip(), source=f"user-agent file {path}") or None
+
+
+def _user_agent_value(value: str, *, source: str) -> str:
+    if not all(" " <= c <= "~" for c in value):
+        raise AuthError(f"{source} must be one line of printable ASCII, without control characters")
+    return value
 
 
 def cookie_write_path(profile: str | None, *, inline_refusal: str) -> Path:

@@ -109,7 +109,7 @@ def _install_import(
         return {"session-token": "browser-value"}
 
     monkeypatch.setattr(cli_auth, "read_browser_cookies", read)
-    monkeypatch.setattr(cli_auth, "Client", lambda cookies: client)
+    monkeypatch.setattr(cli_auth, "Client", lambda cookies, **_: client)
     return reads
 
 

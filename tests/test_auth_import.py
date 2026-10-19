@@ -29,6 +29,7 @@ from pplx_agent_tools.auth import (
     default_cookies_path,
     load_cookies,
     read_browser_cookies,
+    user_agent_path,
 )
 from pplx_agent_tools.errors import (
     EXIT_ANTI_BOT,
@@ -104,6 +105,8 @@ class _Server:
         self.cookies: dict[str, str] = {}
         self.requests: list[tuple[str, dict[str, str]]] = []
         self.on_request: Callable[[], None] = lambda: None
+        # The User-Agent each `cli_auth.Client(...)` was built with.
+        self.user_agents: list[str | None] = []
 
     def get(self, url: str, *, cookies: dict[str, str], **_: object) -> _Answer:
         self.requests.append((url, dict(cookies)))
@@ -140,8 +143,17 @@ class _Clients:
     def __init__(self, server: _Server) -> None:
         self._server = server
 
-    def __call__(self, cookies: dict[str, str]) -> _CheckedClient:
-        return _CheckedClient(cookies, self._server)
+    def __call__(
+        self,
+        cookies: dict[str, str],
+        *,
+        user_agent: str | None = None,
+        user_agent_file: Path | None = None,
+    ) -> _CheckedClient:
+        self._server.user_agents.append(user_agent)
+        client = _CheckedClient(cookies, self._server)
+        client._user_agent_file = user_agent_file
+        return client
 
     def from_default_cookies(self, profile: str | None = None) -> _CheckedClient:
         return _CheckedClient(load_cookies(profile), self._server)
@@ -1346,6 +1358,19 @@ def test_import_saves_the_cookies_as_the_session_check_rotated_them(
     )
 
 
+def test_import_verifies_with_the_profile_user_agent_and_keeps_cf_clearance(
+    monkeypatch: pytest.MonkeyPatch, server: _Server
+) -> None:
+    ua = "Mozilla/5.0 (X11; Linux x86_64) Chrome/146.0 Safari/537.36"
+    user_agent_path().parent.mkdir(parents=True)
+    user_agent_path().write_text(ua + "\n")
+    _fake_extractor(monkeypatch, [_cookie("cf_clearance", "clear"), SESSION])
+    assert cli_auth.main(["import", "--browser", "firefox"]) == 0
+    assert server.user_agents == [ua]
+    assert server.requests == [(SESSION_URL, {"cf_clearance": "clear", TOKEN: "tok"})]
+    assert _saved() == {"cf_clearance": "clear", TOKEN: "tok"}
+
+
 @pytest.mark.parametrize(
     ("user", "shown"), [({"id": "a1", "username": "me"}, "me"), ({"id": "a1"}, "a1")]
 )
@@ -1422,7 +1447,9 @@ def test_unreachable_server_exits_four_naming_no_verify(
             "text/html",
             b"<title>Just a moment...</title>",
             EXIT_ANTI_BOT,
-            "Cloudflare block on /api/auth/session (status 403)",
+            "Cloudflare block on /api/auth/session (status 403); to pass the challenge, add a "
+            "cf_clearance cookie earned from this host's IP and put the User-Agent of the "
+            "browser that earned it in {ua_file} or $PPLX_USER_AGENT",
         ),
         (503, JSON_TYPE, {}, EXIT_NETWORK, "server error 503 on /api/auth/session"),
         (422, JSON_TYPE, {}, EXIT_GENERIC, "unexpected status 422 on /api/auth/session"),
@@ -1444,6 +1471,7 @@ def test_check_failing_other_than_by_rejection_keeps_its_code_and_names_no_verif
     _fake_extractor(monkeypatch, [SESSION])
     server.status, server.content_type, server.body = status, content_type, body
     assert cli_auth.main(["import", "--browser", "firefox"]) == code
+    cause = cause.replace("{ua_file}", str(user_agent_path()))
     assert capsys.readouterr() == (
         "",
         f"pplx auth import: cannot verify the firefox session: {cause}; nothing was saved. "

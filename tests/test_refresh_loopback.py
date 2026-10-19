@@ -17,14 +17,21 @@ from typing import ClassVar
 import pytest
 
 from pplx_agent_tools import cli_auth
-from pplx_agent_tools.auth import default_cookies_path, load_cookies
+from pplx_agent_tools.auth import (
+    default_cookies_path,
+    load_cookies,
+    load_user_agent,
+    user_agent_path,
+)
 from pplx_agent_tools.wire import Client
 
 
 class _SessionHandler(BaseHTTPRequestHandler):
     set_cookie: ClassVar[list[str]] = []
+    user_agents: ClassVar[list[str | None]] = []
 
     def do_GET(self) -> None:
+        self.user_agents.append(self.headers.get("user-agent"))
         body = json.dumps({"user": {"email": "u@example.com"}}).encode()
         self.send_response(200)
         self.send_header("content-type", "application/json")
@@ -99,3 +106,27 @@ def test_refresh_saves_a_session_token_split_into_fewer_chunks(
     monkeypatch.setattr(cli_auth.Client, "from_default_cookies", classmethod(from_default))
     assert cli_auth.main(["refresh"]) == 0
     assert load_cookies() == {"other": "o", f"{token}.0": "b0", f"{token}.1": "b1"}
+
+
+def test_refresh_keeps_cf_clearance_and_sends_the_profile_user_agent(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, session_server: str
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setattr(_SessionHandler, "user_agents", [])
+    original = {"__Secure-next-auth.session-token": "tok", "cf_clearance": "clear"}
+    path = default_cookies_path()
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(original))
+    path.chmod(0o600)
+    ua = "Mozilla/5.0 (X11; Linux x86_64) Chrome/146.0 Safari/537.36"
+    user_agent_path().write_text(ua + "\n")
+
+    def from_default(cls: type[Client], profile: str | None = None) -> Client:
+        return cls(
+            load_cookies(profile), base_url=session_server, user_agent=load_user_agent(profile)
+        )
+
+    monkeypatch.setattr(cli_auth.Client, "from_default_cookies", classmethod(from_default))
+    assert cli_auth.main(["refresh"]) == 0
+    assert _SessionHandler.user_agents == [ua]
+    assert load_cookies() == original

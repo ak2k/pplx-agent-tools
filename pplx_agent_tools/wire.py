@@ -15,6 +15,7 @@ import time
 from collections.abc import Callable, Iterable, Iterator
 from email.utils import parsedate_to_datetime
 from functools import partial
+from pathlib import Path
 from typing import Any
 
 from curl_cffi import CurlECode, CurlError
@@ -73,14 +74,20 @@ class Client:
         base_url: str = BASE_URL,
         impersonate: str = DEFAULT_IMPERSONATE,
         timeout: float = DEFAULT_TIMEOUT,
+        user_agent: str | None = None,
+        user_agent_file: Path | None = None,
     ) -> None:
+        """`user_agent` replaces the impersonated one on every request.
+        `user_agent_file` is only named in the Cloudflare-challenge message."""
         self._cookies = dict(cookies)
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
+        self._user_agent_file = user_agent_file
+        headers = {"user-agent": user_agent} if user_agent else None
         # curl_cffi types `impersonate` as a closed Literal union; our default
         # is "chrome" (an alias the lib accepts at runtime). Cast rather than
         # mirror an internal Literal list that drifts on every curl_cffi release.
-        self._session = cf_requests.Session(impersonate=impersonate)  # type: ignore[arg-type]
+        self._session = cf_requests.Session(impersonate=impersonate, headers=headers)  # type: ignore[arg-type]
 
     @classmethod
     def from_default_cookies(
@@ -91,13 +98,15 @@ class Client:
         impersonate: str = DEFAULT_IMPERSONATE,
         timeout: float = DEFAULT_TIMEOUT,
     ) -> Client:
-        from .auth import load_cookies
+        from .auth import load_cookies, load_user_agent, user_agent_path
 
         return cls(
             load_cookies(profile),
             base_url=base_url,
             impersonate=impersonate,
             timeout=timeout,
+            user_agent=load_user_agent(profile),
+            user_agent_file=user_agent_path(profile),
         )
 
     def auth_session(self) -> dict[str, Any]:
@@ -503,7 +512,7 @@ class Client:
             return
         if status in (401, 403):
             if self._looks_like_cloudflare(resp):
-                raise AntiBotError(f"Cloudflare block on {path} (status {status})")
+                raise self._anti_bot(f"Cloudflare block on {path} (status {status})")
             raise AuthError(f"auth rejected on {path} (status {status})")
         if status == 429:
             retry_after = self._parse_retry_after(resp)
@@ -521,7 +530,7 @@ class Client:
         if resp.status_code == 403:
             media = _media_type(resp)
             if media == "text/html":
-                raise AntiBotError(f"Cloudflare block on {where} (status 403)")
+                raise self._anti_bot(f"Cloudflare block on {where} (status 403)")
             if media == "application/json":
                 said = _body_excerpt(resp, redact=backend_uuid).strip()
                 with contextlib.suppress(Exception):
@@ -566,7 +575,15 @@ class Client:
 
     def _check_cloudflare_body(self, resp: Any, path: str) -> None:
         if self._looks_like_cloudflare(resp):
-            raise AntiBotError(f"Cloudflare HTML body on {path}")
+            raise self._anti_bot(f"Cloudflare HTML body on {path}")
+
+    def _anti_bot(self, what: str) -> AntiBotError:
+        where = self._user_agent_file or "the user-agent file beside the profile's cookies.json"
+        return AntiBotError(
+            f"{what}; to pass the challenge, add a cf_clearance cookie earned from this "
+            f"host's IP and put the User-Agent of the browser that earned it in {where} "
+            "or $PPLX_USER_AGENT"
+        )
 
     @staticmethod
     def _parse_retry_after(resp: Any) -> float | None:
