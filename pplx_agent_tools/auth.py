@@ -184,7 +184,7 @@ def load_user_agent(profile: str | None = None) -> str | None:
     Raises AuthError on a value that is not printable ASCII, which a header
     cannot carry intact, or on an unreadable file.
     """
-    if env := os.environ.get("PPLX_USER_AGENT", "").strip():
+    if env := _user_agent_env():
         return _user_agent_value(env, source="$PPLX_USER_AGENT")
     path = user_agent_path(profile)
     try:
@@ -196,6 +196,15 @@ def load_user_agent(profile: str | None = None) -> str | None:
     except UnicodeDecodeError as e:
         raise AuthError(f"user-agent file is not UTF-8: {path}") from e
     return _user_agent_value(text.strip(), source=f"user-agent file {path}") or None
+
+
+def user_agent_source(profile: str | None = None) -> str:
+    """Where `load_user_agent` reads: "$PPLX_USER_AGENT" or the file's path."""
+    return "$PPLX_USER_AGENT" if _user_agent_env() else str(user_agent_path(profile))
+
+
+def _user_agent_env() -> str:
+    return os.environ.get("PPLX_USER_AGENT", "").strip()
 
 
 def _user_agent_value(value: str, *, source: str) -> str:

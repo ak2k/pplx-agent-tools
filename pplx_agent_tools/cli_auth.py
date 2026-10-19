@@ -25,6 +25,7 @@ from .auth import (
     read_browser_cookies,
     save_cookies,
     user_agent_path,
+    user_agent_source,
 )
 from .cli_types import PplxArgumentParser
 from .errors import AuthError, PplxError, exit_code
@@ -178,6 +179,7 @@ def cmd_import(args: argparse.Namespace) -> int:
                 cookies,
                 user_agent=load_user_agent(args.profile),
                 user_agent_file=user_agent_path(args.profile),
+                user_agent_source=user_agent_source(args.profile),
             )
             try:
                 session = client.auth_session()

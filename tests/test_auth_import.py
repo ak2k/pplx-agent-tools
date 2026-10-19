@@ -149,10 +149,12 @@ class _Clients:
         *,
         user_agent: str | None = None,
         user_agent_file: Path | None = None,
+        user_agent_source: str | None = None,
     ) -> _CheckedClient:
         self._server.user_agents.append(user_agent)
         client = _CheckedClient(cookies, self._server)
         client._user_agent_file = user_agent_file
+        client._user_agent_source = user_agent_source
         return client
 
     def from_default_cookies(self, profile: str | None = None) -> _CheckedClient:
@@ -1448,8 +1450,9 @@ def test_unreachable_server_exits_four_naming_no_verify(
             b"<title>Just a moment...</title>",
             EXIT_ANTI_BOT,
             "Cloudflare block on /api/auth/session (status 403); if every request from this "
-            "host is challenged, add a cf_clearance cookie earned from this host's IP and put "
-            "the User-Agent of the browser that earned it in {ua_file} or $PPLX_USER_AGENT",
+            "host is challenged, add a cf_clearance cookie a Chromium-based browser earned "
+            "from this host's IP and put that browser's User-Agent in {ua_file} or "
+            "$PPLX_USER_AGENT",
         ),
         (503, JSON_TYPE, {}, EXIT_NETWORK, "server error 503 on /api/auth/session"),
         (422, JSON_TYPE, {}, EXIT_GENERIC, "unexpected status 422 on /api/auth/session"),

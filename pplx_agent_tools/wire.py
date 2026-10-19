@@ -76,14 +76,17 @@ class Client:
         timeout: float = DEFAULT_TIMEOUT,
         user_agent: str | None = None,
         user_agent_file: Path | None = None,
+        user_agent_source: str | None = None,
     ) -> None:
         """`user_agent` replaces the impersonated one on every request.
-        `user_agent_file` is only named in the Cloudflare-challenge message."""
+        `user_agent_file`, and `user_agent_source` (where `user_agent` came
+        from), are only named in the Cloudflare-challenge message."""
         self._cookies = dict(cookies)
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
         self._user_agent = user_agent
         self._user_agent_file = user_agent_file
+        self._user_agent_source = user_agent_source
         headers = {"user-agent": user_agent} if user_agent else None
         # curl_cffi types `impersonate` as a closed Literal union; our default
         # is "chrome" (an alias the lib accepts at runtime). Cast rather than
@@ -99,7 +102,7 @@ class Client:
         impersonate: str = DEFAULT_IMPERSONATE,
         timeout: float = DEFAULT_TIMEOUT,
     ) -> Client:
-        from .auth import load_cookies, load_user_agent, user_agent_path
+        from .auth import load_cookies, load_user_agent, user_agent_path, user_agent_source
 
         return cls(
             load_cookies(profile),
@@ -108,6 +111,7 @@ class Client:
             timeout=timeout,
             user_agent=load_user_agent(profile),
             user_agent_file=user_agent_path(profile),
+            user_agent_source=user_agent_source(profile),
         )
 
     def auth_session(self) -> dict[str, Any]:
@@ -581,17 +585,19 @@ class Client:
     def _anti_bot(self, what: str) -> AntiBotError:
         # An intermittent edge block also lands here, so the clearance advice
         # is conditional: most hosts never need a browser.
+        # Chromium-based because the TLS fingerprint pplx sends is Chrome's.
         if self._user_agent:
+            source = self._user_agent_source or "the configured User-Agent"
             return AntiBotError(
                 f"{what}; the cf_clearance cookie may have expired or this host's IP or "
-                "User-Agent may have changed, so earn a new cf_clearance in a browser "
-                "that sends the configured User-Agent"
+                "User-Agent may have changed, so earn a new cf_clearance in a Chromium-based "
+                f"browser that sends the User-Agent in {source}"
             )
         where = self._user_agent_file or "the user-agent file beside the profile's cookies.json"
         return AntiBotError(
             f"{what}; if every request from this host is challenged, add a cf_clearance "
-            "cookie earned from this host's IP and put the User-Agent of the browser that "
-            f"earned it in {where} or $PPLX_USER_AGENT"
+            "cookie a Chromium-based browser earned from this host's IP and put that "
+            f"browser's User-Agent in {where} or $PPLX_USER_AGENT"
         )
 
     @staticmethod
